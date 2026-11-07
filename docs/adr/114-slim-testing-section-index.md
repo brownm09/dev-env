@@ -74,6 +74,12 @@ Two structural constraints bound the change:
 - **Leave `CLAUDE.md` as-is and gate only future growth** — rejected: the existing 47k
   tokens are the cost; a growth gate without the move saves nothing.
 
+## Amendment 1 (2026-11-06): the two lists stop at item 117
+
+The two-file sync rule still holds for items 1 to 117, but a new test now adds an item to neither file:
+its entry and detail live in the test file. Decision and alternatives:
+[ADR-074 Amendment 1](074-pre-merge-numbering-collision-check.md).
+
 ## Follow-ups
 
 - dev-env#852 — instruction-weight phase 2 (global CLAUDE.md narratives → ADRs, journal

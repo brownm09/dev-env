@@ -160,3 +160,80 @@ globally in `~/.claude/settings.json` but the two files being checked are dev-en
   worktree" principle this check's `git fetch origin main` step extends to a pre-merge numbering
   check.
 - `claude/scripts/pre-merge-numbering-check.py`, `claude/scripts/tests/test_pre_merge_numbering_check.py`.
+
+## Amendment 1 (2026-11-06): new tests take no number, so they can't conflict
+
+**Trigger.** [dev-env#1309](https://github.com/brownm09/dev-env/issues/1309). This check stops a bad
+merge, but it doesn't reduce the conflicts or the renumbering behind them. On 2026-11-06
+[PR #1276](https://github.com/brownm09/dev-env/pull/1276) took item 114, then 115, then 116, and
+finished as 117, while #1284 and #1304 claimed the same numbers. Each round meant a merge, a
+renumber, a change to the test README's counts, a PR body edit and a CI restart.
+
+**Corrections to the context above.** Two PRs appending at the end of the list do conflict; the
+clean merge and silent duplicate described above need different insertion points. Testing numbers
+are also cited outside the list now, for example `dev-env-sync.py` cites "Testing item 68", so they
+can't be renumbered.
+
+**Decision.** The numbered list stops at item 117, and those items keep their numbers. A new test
+edits only its own file: a `Required when ...` line and a `Run: ...` line in its first 10 lines, with
+what it pins and its scope gaps below them in the same docstring or comment. It adds nothing to
+`CLAUDE.md`, `docs/TESTING.md` or `claude/scripts/tests/README.md`, and it's cited by file name.
+The README loses its header counts, because every new test changed them.
+
+Two gates hold this, both in CI:
+
+- `test_testing_index_parity.py` (item 76) refuses any item past `LAST_NUMBERED_ITEM`. That constant
+  is 117, the last number on `origin/main` when the list was frozen. The check is exact, so there's
+  no margin to tune. Known good: `main`. Known bad: an added item 118, as
+  [PR #1284](https://github.com/brownm09/dev-env/pull/1284) has.
+- `test_readme_index_parity.py` (item 84) requires each file in `claude/scripts/tests/` to have a row
+  or its own entry. Known good: `test_testing_index_merge.py`. Known bad: a test with neither, which
+  that same test builds and expects to fail.
+
+This pre-merge check stays. It still covers the ADR table, which is unchanged, and it still catches a
+Testing number that reaches a merge. Its message now tells a Testing collision not to renumber.
+
+**Alternatives rejected.**
+
+- **A custom merge driver.** A driver is defined in
+  [`.git/config`, not in `.gitattributes`](https://git-scm.com/docs/gitattributes#_defining_a_custom_merge_driver),
+  so a repository can't carry it to GitHub's merge.
+- **`merge=union` on the three files.** This built-in removes the conflict but not the duplicate: both
+  PRs still claim 118, so this check still blocks one and it still renumbers. The attribute also
+  covers the whole file, so two edits to the same line anywhere in `CLAUDE.md` would keep both sides
+  with no conflict, and the
+  [Git documentation](https://git-scm.com/docs/gitattributes#_built_in_merge_drivers) warns that the
+  result needs checking. Whether GitHub honours it wasn't tested, since these reasons already rule it
+  out.
+- **Different numbers in the same files**, such as the issue number, or no number. The insertions
+  still land at the same point, so they still conflict. Sorting by name only makes that less frequent.
+- **One small file per item**, such as `docs/testing/<test>.md`. This also can't conflict, but it adds
+  a second file per test and a gate to keep the two matched. The test's docstring already does that
+  job.
+
+**GitHub's merge.** GitHub merges with
+[`merge-ort` and no working tree](https://github.blog/engineering/infrastructure/scaling-merge-ort-across-github/),
+so the choice has to work without local configuration. Branches that each add a different file have
+no text to merge, so this doesn't depend on attributes or a driver. This was checked on 2026-11-06
+through the [merge-a-branch endpoint](https://docs.github.com/en/rest/branches/branches#merge-a-branch),
+on throwaway refs since deleted, cut from this change:
+
+| # | Branches, in merge order | First merge | Second merge |
+|---|---|---|---|
+| 1 | New test A, then new test B | 201 Created | 201 Created |
+| 2 | New test B, then new test A | 201 Created | 201 Created |
+| 3 | Numbered item A, then numbered item B | 201 Created | 409 Conflict |
+
+Row 3 is the known-bad reference, showing the endpoint reports a conflict for the old way.
+`test_testing_index_merge.py` repeats the check on every CI run with `git merge`, and with
+`git merge-tree` in a bare clone.
+
+**Consequences.**
+
+- `CLAUDE.md` loads in every session, and it no longer lists every test. A session finds a newer test
+  with `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. The list stops growing
+  in the always-loaded file, which is the direction [ADR-114](114-slim-testing-section-index.md) set.
+- An open PR that added item 118 fails item 76 once this merges, and the failure says what to change.
+- Adding a script still conflicts in `claude/scripts/README.md`, on its counts and rows. That's
+  tracked in [dev-env#1311](https://github.com/brownm09/dev-env/issues/1311).
+- To reverse this: revert the change, then give each test added since then a number and a row.

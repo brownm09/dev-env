@@ -122,6 +122,13 @@ number against `origin/main` at merge.
 - Declared fail direction: like every other test in the suite it simply asserts and exits non-zero on
   failure; it is not a wired hook, so the hook fail-open/closed convention does not apply.
 
+## Amendment 1 (2026-11-06): the tests README has no header counts
+
+Every new test changed `claude/scripts/tests/README.md`'s counts, so any two test-adding PRs conflicted
+on that line. Those counts and check 6 (component completeness, which existed only to support them) are
+gone, and a new test there may carry its own entry instead of a row (check 1). `claude/scripts/README.md`
+is unchanged. Decision and alternatives: [ADR-074 Amendment 1](074-pre-merge-numbering-collision-check.md).
+
 ## References
 
 - [dev-env#901](https://github.com/brownm09/dev-env/issues/901) — this issue
