@@ -31,7 +31,7 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
    python "$WORKTREE_ROOT/claude/scripts/prune-merged-worktrees.py" \
      --scan-dir C:/Users/brown/Git --include-named
    ```
-   It lists only the skipped worktrees and fetch failures that are new or changed since its last run, and prints the full report when its state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see the whole list, add `--full`, which leaves the state file alone ([ADR-160](../../../docs/adr/160-maintenance-routines-report-what-changed.md)).
+   It lists only the skipped worktrees and fetch failures that are new or changed since its last run, and prints the full report when its state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see the whole list, add `--full`, which leaves the state file alone ([ADR-161](../../../docs/adr/161-maintenance-routines-report-what-changed.md)).
 2. Report what the script printed: what was pruned, each newly skipped worktree with its reason, and the totals. Don't reconstruct or re-list anything it left out as unchanged.
 3. Read the final `RESULT:` line (`repos_scanned=N pruned=P skipped=S fetch_failed=F dry_run=... new_skipped=K no_longer_skipped=L new_fetch_failed=J baseline=...`) and send a push notification **only for changed findings**: when `new_skipped` or `new_fetch_failed` is greater than 0, listing the worktrees or repos the script printed so the user can investigate. When both are 0, send no notification, however large `skipped` or `fetch_failed` are, because those totals repeat what was already reported.
 

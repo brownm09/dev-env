@@ -600,7 +600,7 @@ def test_validated_config_non_dict_json() -> str:
     return "a valid-but-non-object hook-config.json (e.g. a bare array) is 'bad-config', not a crash"
 
 
-# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-160).
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
 # Runs the real main() with only the gh boundary, and the production item cache, patched out.
 
 def _scan_board(repo_root, state, issues, items, *flags, fetch_error=None) -> tuple[int, str]:

@@ -1,4 +1,4 @@
-# ADR-160: Maintenance Routines Report What Changed Since Their Last Run
+# ADR-161: Maintenance Routines Report What Changed Since Their Last Run
 
 **Date:** 2026-11-07
 **Status:** Accepted

@@ -47,7 +47,7 @@ Usage:
                        Takes precedence over --repo-root when both are given.
                        Lists only the needs-attention issues that are new or changed
                        since the last --scan-dir run; a missing or unreadable state
-                       file gives the full list (dev-env#1307, ADR-160).
+                       file gives the full list (dev-env#1307, ADR-161).
     --dry-run          report orphans + missing fields without adding anything; compares
                        against the stored state but doesn't update it
     --full             with --scan-dir: print the full list, and neither read nor update

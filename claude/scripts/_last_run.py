@@ -1,7 +1,7 @@
 """What a maintenance script's last --scan-dir run found, so a repeat run prints only changes.
 
 The nightly routines re-printed the same lists every night, which uses plan limit and hides
-the new entry that matters (dev-env#1307, ADR-160). A script records its findings per repo and
+the new entry that matters (dev-env#1307, ADR-161). A script records its findings per repo and
 per section, as {key: value}, and gets back which keys are new or changed and which have gone.
 
 A repo or section a run never records keeps its stored findings, so a repo that failed to

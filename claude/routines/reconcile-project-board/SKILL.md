@@ -47,7 +47,7 @@ documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-s
    the issues that are new or changed since its last run, and prints the full list when its
    state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see every
    issue still flagged, add `--full`, which leaves the state file alone
-   ([ADR-160](../../../docs/adr/160-maintenance-routines-report-what-changed.md)).
+   ([ADR-161](../../../docs/adr/161-maintenance-routines-report-what-changed.md)).
 2. Report the script output per repo: how many orphan issues were added (vs. attempted — a
    partial failure shows as `Added M/N ... (K failed)`), and the per-issue list it printed
    (the exact `gh project item-edit` commands for each, under its own `Repo: <name>` heading).

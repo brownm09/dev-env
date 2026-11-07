@@ -732,7 +732,7 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
     return "abbreviations, empty paths and bad liveness windows exit 2"
 
 
-# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-160).
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
 # The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
 # network, because is_merged() skips its `gh` fallback for a commit with no branch name.
 

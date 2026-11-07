@@ -2,7 +2,7 @@
 """Unit tests for _last_run.py, the stored findings behind "print only what changed".
 
 Required when changing claude/scripts/_last_run.py; also run test_reconcile_project_board.py and
-test_prune_merged_worktrees.py, the two scripts that use it (dev-env#1307, ADR-160).
+test_prune_merged_worktrees.py, the two scripts that use it (dev-env#1307, ADR-161).
 Run: py -3 claude/scripts/tests/test_last_run.py
 
 Uses real files in a temp directory, never the real state under ~/.claude/scratch/last-run/.

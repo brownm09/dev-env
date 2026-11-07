@@ -50,7 +50,7 @@ Usage:
                since the last --scan-dir run; a missing or unreadable state file gives the
                full report. Skips for the primary or current worktree or a live session are
                counted but not listed, since they come and go without being a finding
-               (dev-env#1307, ADR-160).
+               (dev-env#1307, ADR-161).
   --full       With --scan-dir: print the full report, and neither read nor update the
                stored state.
   --state-file PATH
