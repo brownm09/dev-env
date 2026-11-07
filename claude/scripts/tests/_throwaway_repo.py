@@ -19,6 +19,7 @@ any live run: a script that ignored --repo-path would otherwise act on the real 
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -48,6 +49,7 @@ class ThrowawayRepo:
         self.branch = "claude/merged"
         self.node_modules = self.worktree / "node_modules"
         self.fetch_head = self.primary / ".git" / "FETCH_HEAD"
+        self.admin_dir = self.primary / ".git" / "worktrees" / "wt"
         self._env = _env()
         # An empty config dir: the liveness guard must not match a real transcript whose
         # worktree happens to share this fixture's short name.
@@ -95,6 +97,13 @@ class ThrowawayRepo:
 
     def git(self, *args: str) -> None:
         self._git(self.primary, *args)
+
+    def age_git_state(self, seconds: float = 7 * 24 * 60 * 60) -> float:
+        """Date the worktree's git state back, as if idle since. Returns the new mtime."""
+        stamp = time.time() - seconds
+        for path in (self.admin_dir, *self.admin_dir.iterdir()):
+            os.utime(path, (stamp, stamp))
+        return stamp
 
     def current_branch(self, worktree: Path) -> str:
         r = subprocess.run(

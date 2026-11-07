@@ -4,6 +4,14 @@ description: Add open issues missing from each configured repo's GitHub project 
 schedule: "0 6 * * *"
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-reconcile-project-board-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine reconcile-project-board --file C:/Users/brown/.claude/scratch/routine-finding-reconcile-project-board-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Reconcile every configured repo's GitHub project board against its own open issues. Run fully
 autonomously — do not ask the user anything, and **never guess Impact or Why (or any other
 required field)**.
@@ -21,9 +29,10 @@ required field)**.
 > mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
 
 **Why:** `post-tool-use.py` auto-adds each newly-created issue to its repo's board, but
-PostToolUse hooks are inert in background / SDK-launched sessions
-([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)), so issues
-filed from such a session are silently never boarded — missing Impact, Why, and the Status
+it only runs when PostToolUse runs for the create call: a chain that exits non-zero runs none, and
+in the rare inert session none run at all
+([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md) and its
+2026-11-07 amendment). Issues filed that way are silently never boarded — missing Impact, Why, and the Status
 workflow. This routine is the nightly backstop that catches them, across every repo that has
 adopted board tracking, not just dev-env (dev-env #447, #462; remediation of the gap ADR-053
 documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-scan-dir.md)).

@@ -244,7 +244,7 @@ a second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.m
 
 **Machine-local only — never commit:**
 
-`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`
+`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`, `routine-findings/`
 
 **Installed by dev-env, but deliberately *outside* every junction — `~/.claude/hook-launch.py`:**
 
@@ -341,7 +341,7 @@ All new dev-env issues and PRs must be added to the **Dev Env** project and give
 
 The hook's config, `.claude/hook-config.json`, is gitignored here. Its tracked source is [`claude/hook-config.shared.json`](claude/hook-config.shared.json): change project IDs there, in a PR. `dev-env-sync.py` copies it into the canonical's `.claude/` on any prompt where that file is missing, and never overwrites an existing one. If the config is missing anyway, the hook prints a `[project-hook] WARNING: ... NOT added to project #3` with the seed command and the manual `gh project item-add`, instead of exiting silently ([ADR-052 Amendment 2](docs/adr/052-worktree-config-canonical-fallback.md), dev-env#669).
 
-**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually (substitute the PR URL for the issue URL when the item is a PR). Requires project scope — add once if needed: `gh auth refresh -s project`. A *wholesale* non-fire — no `[project-hook]` output at all after `gh issue create` or `gh pr create`, and older `spawn_task` chips also not rendering — most often means the session was launched as a background task or via the SDK, where **every** PostToolUse hook is silently inert ([ADR-053](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)); these manual steps are the recovery.
+**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually (substitute the PR URL for the issue URL when the item is a PR). Requires project scope — add once if needed: `gh auth refresh -s project`. No `[project-hook]` output after a create usually isn't a launch problem: a chain whose last command exits non-zero runs no PostToolUse hook at all, even when its `gh` command succeeded. To check for the rare inert state, where **every** PostToolUse hook is silent, look at `~/.claude/scratch/bash_state_<session-id>.json`: a file updated at the last successful shell call means hooks ran ([ADR-053's 2026-11-07 amendment](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)). Either way, these manual steps are the recovery.
 
 ```bash
 # 1. Add issue/PR to project, capture item ID

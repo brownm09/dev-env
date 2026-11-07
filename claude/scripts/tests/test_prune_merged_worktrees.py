@@ -132,7 +132,7 @@ def _dispatch(args, **_kwargs):
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
         return _ok(_PORCELAIN)
-    if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
+    if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
     if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
@@ -153,7 +153,7 @@ def _dispatch_named(args, **_kwargs):
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
         return _ok(_PORCELAIN_NAMED)
-    if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
+    if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
     if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
@@ -422,7 +422,7 @@ def _make_dispatch_detached(merge_base_ok: bool, rev_parse_ok: bool = True):
             if rev_parse_ok and cwd == _DETACHED_WORKTREE_PATH:
                 return _ok(f"{_DETACHED_SHA}\n")
             return types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: not a git repository")
-        if args[1:3] == ["status", "--porcelain"]:  # is_dirty -> not dirty
+        if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty -> not dirty
             return _ok("")
         if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged: ancestor check
             return _ok() if merge_base_ok else types.SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -449,13 +449,14 @@ def test_detached_head_merged_commit_pruned() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                            repo="/FAKE_REPO_DETACHED",
+                            dry_run=False,
+                            liveness_window_seconds=86400,
+                            include_named=True,
+                        )
     assert pruned_count == 1, f"expected 1 pruned (detached commit is merged), got {pruned_count}"
     assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
     assert not fetch_failed, "fetch should not be marked failed"
@@ -469,18 +470,22 @@ def test_detached_head_unmerged_commit_skipped() -> str:
     actually skipped for a resolved SHA (skip_pr_fallback=True): the dispatch's ["pr", "list"]
     branch would return a non-empty match here if it were ever called, so a pass here means
     is_merged() genuinely never issued that call for the detached path."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (detached commit is not merged), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + not-merged detached), got {skipped_count}"
+    assert ": not merged into origin/main\n" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned, gh pr list fallback skipped"
 
 
@@ -488,18 +493,22 @@ def test_detached_head_rev_parse_failure_skipped() -> str:
     """When the detached worktree's own `git rev-parse HEAD` itself fails (e.g. a corrupted
     worktree), the fix must fail safe -- skip with a distinct reason -- rather than crash or
     silently fall through to a misleading generic message (dev-env#979)."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True, rev_parse_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (commit unresolvable), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + unresolvable), got {skipped_count}"
+    assert "commit unresolvable" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, rev-parse HEAD itself fails: fails safe (skipped, reason distinct), no crash"
 
 
@@ -695,6 +704,7 @@ def test_cli_control_dry_run_keeps_and_plain_run_prunes() -> str:
     """Proves the two tests above can fail: this same repo really is prunable."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp))
+        repo.age_git_state()
         r = repo.run_script(_MODULE_PATH, "--dry-run")
         if r.returncode != 0 or "would remove" not in r.stdout or not repo.worktree.exists():
             raise AssertionError(f"--dry-run: exit {r.returncode}, should report and keep\n{r.stdout}\n{r.stderr}")
@@ -705,6 +715,59 @@ def test_cli_control_dry_run_keeps_and_plain_run_prunes() -> str:
         if r.returncode != 0 or repo.worktree.exists() or repo.branch_exists():
             raise AssertionError(f"plain run: exit {r.returncode}, should prune\n{r.stdout}\n{r.stderr}")
     return "--dry-run keeps the worktree; a plain run removes it and deletes its branch"
+
+
+# --- Worktrees in use by a session whose transcript is elsewhere (dev-env#1330).
+
+def test_recent_git_activity_keeps_worktree_with_no_transcript() -> str:
+    """The real incident shape: fresh, 0 commits ahead, so merged by ancestry, no transcript."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "would remove" in r.stdout or "recent git activity" not in r.stdout:
+            raise AssertionError(f"--dry-run should report it as active\n{r.stdout}")
+        r = repo.run_script(_MODULE_PATH)
+        if r.returncode != 0 or not repo.worktree.exists() or not repo.branch_exists():
+            raise AssertionError(f"plain run removed a worktree in use\n{r.stdout}\n{r.stderr}")
+    return "fresh worktree with no transcript: kept and reported; the control test removes it once aged"
+
+
+def test_idle_zero_commit_worktree_is_still_removed() -> str:
+    """ADR-051 Amendment 1 keeps a zero-commit branch counting as merged, once it is idle."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        ahead = subprocess.run(
+            ["git", "rev-list", "--count", f"main..{repo.branch}"],
+            cwd=repo.primary, capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+        if ahead != "0":
+            raise AssertionError(f"fixture should be 0 commits ahead, was {ahead!r}")
+        repo.age_git_state(25 * 60 * 60)
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "would remove" not in r.stdout:
+            raise AssertionError(f"idle zero-commit worktree 25h old should be removable\n{r.stdout}")
+    return "zero commits ahead and idle 25h: still removable, so abandoned ones don't pile up"
+
+
+def test_is_dirty_does_not_refresh_the_index() -> str:
+    """A dry run must not renew the signal the guard reads."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        index = repo.admin_dir / "index"
+        stamp = repo.age_git_state()
+        # Touching a tracked file makes its cached stat data stale, which is what prompts a
+        # plain `git status` to rewrite the index.
+        (repo.worktree / ".gitignore").touch()
+        if prune.is_dirty(str(repo.worktree)):
+            raise AssertionError("touching a file without changing it should read as clean")
+        if abs(index.stat().st_mtime - stamp) > 1:
+            raise AssertionError("is_dirty rewrote the index")
+        repo._git(repo.worktree, "status", "--porcelain")
+        if abs(index.stat().st_mtime - stamp) <= 1:
+            raise AssertionError("plain git status left the index alone, so this test proves nothing")
+    return "is_dirty leaves the index's mtime alone where a plain git status moves it"
 
 
 def test_cli_parser_accepts_existing_callers() -> str:
@@ -993,6 +1056,9 @@ def main() -> int:
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run prunes", test_cli_control_dry_run_keeps_and_plain_run_prunes),
+        ("recent git activity keeps a worktree with no transcript", test_recent_git_activity_keeps_worktree_with_no_transcript),
+        ("idle zero-commit worktree is still removed", test_idle_zero_commit_worktree_is_still_removed),
+        ("is_dirty does not refresh the index", test_is_dirty_does_not_refresh_the_index),
         ("CLI parser: existing callers still parse", test_cli_parser_accepts_existing_callers),
         ("CLI parser: abbreviation and bad values rejected", test_cli_parser_rejects_abbreviation_and_bad_values),
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),

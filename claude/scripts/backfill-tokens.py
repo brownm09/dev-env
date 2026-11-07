@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _token_pricing import SYNTHETIC_MODEL, compute_cost, flat_usage, get_pricing
+from _token_pricing import ResponseTotals, compute_cost, get_pricing
 
 CLAUDE_DIR = Path.home() / ".claude"
 SCRATCH_DIR = CLAUDE_DIR / "scratch"
@@ -23,15 +23,7 @@ TOKEN_LOG = SCRATCH_DIR / "token-sessions.jsonl"
 
 def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
     """Return (token totals, turn count, last seen model) from a single JSONL file."""
-    totals = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_write_1h_input_tokens": 0,
-    }
-    turn_count = 0
-    model = ""
+    responses = ResponseTotals()
     with open(jsonl_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -42,15 +34,8 @@ def _count_turns_from_jsonl(jsonl_path: Path) -> tuple[dict, int, str]:
             except json.JSONDecodeError:
                 continue
             if record.get("type") == "assistant":
-                msg = record.get("message", {})
-                usage = flat_usage(msg.get("usage", {}))
-                if usage:
-                    for key in totals:
-                        totals[key] += usage.get(key, 0)
-                    turn_count += 1
-                    if msg.get("model") and msg["model"] != SYNTHETIC_MODEL:
-                        model = msg["model"]
-    return totals, turn_count, model
+                responses.add(record.get("message", {}))
+    return responses.totals(), responses.turn_count, responses.model
 
 
 def process_transcript(transcript_path: Path) -> dict | None:

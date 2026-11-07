@@ -62,7 +62,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import re
 import sys
 import time
 
@@ -72,8 +71,7 @@ DEFAULT_MINUTES = 60
 CONFIG_FILE = ".claude/hook-config.json"
 
 # Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
-# Mirrors session-mode-prompt.py's _AUTOMATED_PREFIX (lowercase-initial tags only).
-_AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
+_AUTOMATED_PREFIX = _hookutil.AUTOMATED_PROMPT
 
 
 def parse_iso_to_epoch(ts):

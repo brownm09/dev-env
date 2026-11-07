@@ -34,7 +34,15 @@ Reducing token spend ([dev-env#1213](https://github.com/brownm09/dev-env/issues/
 ## Consequences
 
 - Rewriting stored `estimated_cost_usd` values is not part of this. Older log rows stay as recorded, because they're a record of what was reported at the time.
-- `token-tracker.py` and `backfill-tokens.py` still sum every transcript record, so new rows in the session log overstate usage until [dev-env#1223](https://github.com/brownm09/dev-env/issues/1223) lands. Attribution doesn't read that log.
+- `token-tracker.py` and `backfill-tokens.py` summed every transcript record, which overstated the session log. [Amendment 1](#amendment-1-session-totals-count-each-response-once-2026-11-07) ended that for new rows. Attribution doesn't read that log.
 - Session totals can't see per-call detail, so the tracker can't apply the Haiku 5.5 long-prompt tier or detect fast mode. Attribution does both.
 - The report's bands and ratios only sort spend into rows, and no check acts on them, so no gate is introduced ([ADR-144](144-gate-calibration-pass-3-dimension.md)). Any savings claim built on the report still needs `/experiment-audit` ([ADR-115](115-experimental-rigor-protocol.md)).
 - Adding a model means adding a row by hand. Until then it shows as unpriced, which is the intended signal.
+
+## Amendment 1: session totals count each response once (2026-11-07)
+
+Decision 3's rule now applies to session totals too ([dev-env#1223](https://github.com/brownm09/dev-env/issues/1223)). `_token_pricing.ResponseTotals` holds it for `token-tracker.py`, `backfill-tokens.py` and `read_subagents`: a message id is one response, its last record with tokens wins, and a record with no tokens or a synthetic model is not a response, so it no longer counts as a turn. A test compares the result with `read_transcript` on the same file.
+
+The rule is per file. A resumed session's transcript that copies earlier calls still counts them in that session's total, because only attribution reads across files.
+
+The first consequence above still holds, so older log rows aren't rewritten. A session's row is replaced only when that session records a new turn, and `backfill-tokens.py` skips any session already logged. So the log mixes inflated older rows with accurate new ones, and a before-and-after comparison must not span the change. `token-report.py --attribution` reads transcripts, so it gives comparable numbers on both sides.

@@ -556,8 +556,10 @@ For a one-line navigational map of the older tests, see
     become `-`), the recency boundary (incl. unknown and future mtimes), exact-slug and basename-suffix
     transcript-dir resolution, recursive newest-`.jsonl` mtime (incl. `subagents/`), the live/stale/no-session
     verdicts that stop prune/reclaim from severing an active session, and the prune=24h / reclaim=6h default
-    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). The git-driven prune/reclaim loops are
-    exercised by `--dry-run` in the PR, not here.
+    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). Also pins `git_activity_skip_reason()` against
+    real throwaway worktrees: work in the worktree reads as active, while `git gc` and a fetch in the primary
+    don't, and unreadable git state keeps the worktree ([ADR-051 Amendment 1](adr/051-worktree-liveness-guard.md#amendment-1-2026-11-07-a-worktrees-own-git-state),
+    dev-env#1330). The git-driven prune/reclaim loops are exercised by `--dry-run` in the PR, not here.
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_liveness.py
@@ -2959,7 +2961,12 @@ For a one-line navigational map of the older tests, see
     `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
     (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper
     convention); the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract
-    gate).
+    gate). `_count_turns` and `aggregate_session` count each API response once through
+    `_token_pricing.ResponseTotals` (dev-env#1223): three records of one message id give the last record's
+    usage and one turn, in a main file and a subagent; a later record with no tokens or a synthetic model
+    changes nothing; records with no id stay separate; and an unhashable id skips that record instead of
+    losing the session. A mixed fixture holds `aggregate_session` to `token-report.py`'s `read_transcript`,
+    and its last record for one id is smaller than the one before, so a "largest wins" rule would fail.
 
     ```bash
     py -3 claude/scripts/tests/test_token_tracker.py
@@ -5154,6 +5161,9 @@ For a one-line navigational map of the older tests, see
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
+     To stay well inside the runner's 300-second cap on a busy machine (dev-env#1325), most tests
+     copy a shared snapshot of the repositories, and tests run side by side, each in its own process.
+     Pass a test's name to run just that one.
      A moved stub and manifest take the target branch's date, checked with the same glob
      `/journal-compose` uses, and the manifest's `stub` field names the new path in whichever form
      it had: a bare filename or a `sessions/<project>/` path, since both occur in real shards. A
@@ -5201,8 +5211,9 @@ For a one-line navigational map of the older tests, see
      rows, and `backfill-tokens.py`'s `process_transcript` records `model_unpriced`. The empty-extraction
      check asserts tables rendered before it checks their `#` columns. Deliberately not covered: whether
      the bands, `CHARS_PER_TOKEN` and `PREFIX_LOST_RATIO` are the right values. They only sort spend into
-     rows, and no check acts on them. Each message-id rule here stops at `--attribution`:
-     `token-tracker.py`, `backfill-tokens.py` and `read_subagents` still sum every record (dev-env#1223).
+     rows, and no check acts on them. `_count_turns_from_jsonl` and `read_subagents` count a repeated
+     message id once through `_token_pricing.ResponseTotals`, each checked with three records of growing
+     output (dev-env#1223). Item 65 holds that class and `read_transcript` to the same rule.
 
      ```bash
      py -3 claude/scripts/tests/test_token_attribution.py

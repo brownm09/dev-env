@@ -12,6 +12,14 @@ schedule: "0 4 * * *"
 model: claude-opus-4-8
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-prune-stale-worktrees-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine prune-stale-worktrees --file C:/Users/brown/.claude/scratch/routine-finding-prune-stale-worktrees-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Prune stale Claude session worktrees across all git repos under `C:/Users/brown/Git`. Run fully autonomously — do not ask the user anything.
 
 > **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended scheduled run with no human present. Do **not** open with a greeting, a question, or any "how can I help" / "what would you like to work on" reply — your **first output must be a tool call** (Step 0). The live scheduled-task copy carries this same imperative at the very top *and* bottom of its prompt, because the failure it guards against (see the Autonomous-run reliability caveat below) happens *before* Step 0.5's canonical read-through is ever reached.
@@ -41,7 +49,7 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 - The run's total line names repos under `fetch failed`, `fetch timed out` and `error`, and an `error` repo makes the script exit 1 after the other repos have run. Report all three
 - Never remove the current session's worktree, regardless of branch name
 - With `--include-named`, a hand-named branch is held to the exact same merged/dirty/liveness bar as a `claude/*` branch — no looser check is applied (ADR-078)
-- Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051)
+- Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051). A session whose transcript is under another folder is covered by a second guard on the worktree's own git state, over the same 24h (ADR-051 Amendment 1)
 - Temp files (if needed) go to `C:/Users/brown/.claude/scratch/`
 
 ---
