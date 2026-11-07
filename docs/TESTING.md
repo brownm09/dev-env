@@ -5199,3 +5199,18 @@ For a one-line navigational map of the test directory, see
      ```bash
      bash claude/scripts/tests/test-claude-wrappers.sh
      ```
+
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in
+     `docs/REFERENCE.md` (dev-env#1216, ADR-159). The file loads in every session in every project, so the test fails
+     above a byte ceiling set about 5% over its size after the trim, with line endings normalized so a CRLF checkout
+     measures the same. It pins that the ceiling rejects the pre-trim sizes, 166,696 and 177,620 bytes, and that the
+     read isn't implausibly small. Rules now lean on links for their detail, so it also resolves every local link,
+     including anchors into `docs/REFERENCE.md`, using GitHub's heading-to-anchor form, and requires more than 50
+     links and more than 20 detail links so a broken extraction can't pass on nothing. Fixtures show a missing file
+     and a missing anchor being caught, and that fenced and inline code isn't read as a link or heading. A target with
+     no `/` or `.` is a template placeholder, like the tile table's `[#N](url)`, and is skipped. Deliberately not
+     covered: whether a shortened rule kept its meaning, which is a review question.
+
+     ```bash
+     py -3 claude/scripts/tests/test_claude_md_size.py
+     ```
