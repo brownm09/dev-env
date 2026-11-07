@@ -93,14 +93,17 @@ For a one-line navigational map of the older tests, see
    bash claude/scripts/tests/run-shellcheck.sh
    ```
 
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py` or
-   `Resolve-ClaudeExe` in `claude/scripts/keep-token-warm.ps1`. Both find the desktop app's binary the
-   same way, so both are pinned here against `LOCALAPPDATA` fixtures
-   ([dev-env#1286](https://github.com/brownm09/dev-env/issues/1286)): the `Claude-Data` location beats
-   the older `Packages` one, the newest version wins numerically at either depth, and a directory not
-   named like a version is skipped. The PowerShell cases parse the script and evaluate only that
-   function's text, because the script has no main guard and dot-sourcing it would run its
-   `claude -p ok` model call.
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`.
+   Runs the real `main()` on a confirmed merge against real temp credentials files
+   ([dev-env#1299](https://github.com/brownm09/dev-env/issues/1299),
+   [dev-env#1139](https://github.com/brownm09/dev-env/issues/1139)): an expired token, a missing file
+   and a file with no usable token each exit 2 with an advisory naming `claude auth login`, reach
+   neither the usage API nor any process spawn; `ok` and `expiring` tokens reach the usage API and emit
+   the snapshot, also with no spawn. Spawns are recorded at `subprocess.Popen`, which `subprocess.run`
+   goes through, and refused, so no test can start a real process. The known-bad reference is
+   `test_spawn_recorder_catches_a_reinstated_refresh`: the old refresh's call put back inside `main()`,
+   with its exception swallowed as the old code did, must be recorded. Without it the empty-list
+   assertions could pass vacuously.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
    `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
    token now yields a user-facing advisory rather than the silent skip it did before
@@ -129,7 +132,7 @@ For a one-line navigational map of the older tests, see
    `main()` and makes each branch's outcome (`"marker"`, `"rest_marker"`, `"not_merge_shape"`,
    `"help_only"`, `"no_confirm_needed"`, `"gh_view_confirmed"`, `"gh_view_unconfirmed"`) an explicit,
    traced return value — covering all seven `reason`s, including the two live-`gh pr view` outcomes via
-   an injected `confirm_fn` (mirroring `attempt_token_refresh`'s fake-injection style) so the network
+   an injected `confirm_fn` so the network
    call is never exercised, and that `no_confirm_needed` never pays that call at all. Added because two
    live reproductions after the original dev-env#474 fix landed (PR #954 on 2026-08-07, PR #988 on
    2026-08-16) both saw no snapshot appear with no way to tell which fallback branch actually ran; every
@@ -2946,7 +2949,12 @@ For a one-line navigational map of the older tests, see
     `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
     (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper
     convention); the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract
-    gate).
+    gate). `_count_turns` and `aggregate_session` count each API response once through
+    `_token_pricing.ResponseTotals` (dev-env#1223): three records of one message id give the last record's
+    usage and one turn, in a main file and a subagent; a later record with no tokens or a synthetic model
+    changes nothing; records with no id stay separate; and an unhashable id skips that record instead of
+    losing the session. A mixed fixture holds `aggregate_session` to `token-report.py`'s `read_transcript`,
+    and its last record for one id is smaller than the one before, so a "largest wins" rule would fail.
 
     ```bash
     py -3 claude/scripts/tests/test_token_tracker.py
@@ -5188,8 +5196,9 @@ For a one-line navigational map of the older tests, see
      rows, and `backfill-tokens.py`'s `process_transcript` records `model_unpriced`. The empty-extraction
      check asserts tables rendered before it checks their `#` columns. Deliberately not covered: whether
      the bands, `CHARS_PER_TOKEN` and `PREFIX_LOST_RATIO` are the right values. They only sort spend into
-     rows, and no check acts on them. Each message-id rule here stops at `--attribution`:
-     `token-tracker.py`, `backfill-tokens.py` and `read_subagents` still sum every record (dev-env#1223).
+     rows, and no check acts on them. `_count_turns_from_jsonl` and `read_subagents` count a repeated
+     message id once through `_token_pricing.ResponseTotals`, each checked with three records of growing
+     output (dev-env#1223). Item 65 holds that class and `read_transcript` to the same rule.
 
      ```bash
      py -3 claude/scripts/tests/test_token_attribution.py

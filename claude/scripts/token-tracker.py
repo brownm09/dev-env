@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _token_pricing import SYNTHETIC_MODEL, compute_cost, flat_usage, get_pricing
+from _token_pricing import ResponseTotals, compute_cost, get_pricing
 
 CLAUDE_DIR = Path.home() / ".claude"
 SCRATCH_DIR = CLAUDE_DIR / "scratch"
@@ -93,30 +93,15 @@ def _count_turns(jsonl_path: Path) -> tuple[dict, int, str]:
     (UnicodeDecodeError) stops the scan rather than crashing aggregate_session/main()
     — whatever was accumulated before the failure (zero, if it failed immediately) is
     returned rather than propagating (dev-env#804)."""
-    totals = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_write_1h_input_tokens": 0,
-    }
-    turn_count = 0
-    model = ""
+    responses = ResponseTotals()
     for line in _iter_file_lines_safely(jsonl_path):
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
         if record.get("type") == "assistant":
-            msg = record.get("message", {})
-            usage = flat_usage(msg.get("usage", {}))
-            if usage:
-                for key in totals:
-                    totals[key] += usage.get(key, 0)
-                turn_count += 1
-                if msg.get("model") and msg["model"] != SYNTHETIC_MODEL:
-                    model = msg["model"]
-    return totals, turn_count, model
+            responses.add(record.get("message", {}))
+    return responses.totals(), responses.turn_count, responses.model
 
 
 def aggregate_session(transcript_path: Path) -> dict:
@@ -126,15 +111,7 @@ def aggregate_session(transcript_path: Path) -> dict:
     anywhere in it (UnicodeDecodeError) stops the scan rather than crashing main()
     before it can record anything for this session — whatever was accumulated before
     the failure is kept, and subagent aggregation below still runs (dev-env#804)."""
-    totals = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_write_1h_input_tokens": 0,
-    }
-    turn_count = 0
-    model = ""
+    responses = ResponseTotals()
     first_ts = None
     last_ts = None
     cwd = None
@@ -147,14 +124,7 @@ def aggregate_session(transcript_path: Path) -> dict:
         except json.JSONDecodeError:
             continue
         if record.get("type") == "assistant":
-            msg = record.get("message", {})
-            usage = flat_usage(msg.get("usage", {}))
-            if usage:
-                for key in totals:
-                    totals[key] += usage.get(key, 0)
-                turn_count += 1
-                if msg.get("model") and msg["model"] != SYNTHETIC_MODEL:
-                    model = msg["model"]
+            responses.add(record.get("message", {}))
             ts = record.get("timestamp")
             if ts:
                 if first_ts is None:
@@ -166,6 +136,8 @@ def aggregate_session(transcript_path: Path) -> dict:
             git_branch = record["gitBranch"]
         if entrypoint is None and record.get("entrypoint"):
             entrypoint = record["entrypoint"]
+
+    totals = responses.totals()
 
     # Aggregate subagent JSONLs (session-uuid/subagents/agent-*.jsonl)
     subagents_dir = transcript_path.with_suffix("") / "subagents"
@@ -180,13 +152,13 @@ def aggregate_session(transcript_path: Path) -> dict:
             subagent_count += 1
 
     return {
-        "model": model,
+        "model": responses.model,
         "cwd": cwd,
         "git_branch": git_branch,
         "entrypoint": entrypoint,
         "first_turn_ts": first_ts,
         "last_turn_ts": last_ts,
-        "turn_count": turn_count,
+        "turn_count": responses.turn_count,
         "subagent_count": subagent_count,
         "subagent_turn_count": subagent_turn_count,
         "tokens": totals,
