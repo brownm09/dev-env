@@ -1,6 +1,6 @@
 # Duplicate-issue retrieval re-run: results
 
-Tracking issue: [dev-env#1282](https://github.com/brownm09/dev-env/issues/1282). Pre-registration: [comment frozen 2026-11-07T05:07:31Z](https://github.com/brownm09/dev-env/issues/1282#issuecomment-6702622020), citing commit `93c56e2`. First run: [`../results.md`](../results.md). Decision record: [ADR-157](../../../docs/adr/157-duplicate-issue-retrieval-experiment.md).
+Tracking issue: [dev-env#1282](https://github.com/brownm09/dev-env/issues/1282). Pre-registration: [comment frozen 2026-11-07T05:07:31Z](https://github.com/brownm09/dev-env/issues/1282#issuecomment-6702622020), citing commit `93c56e2`, which after a squash merge stays reachable through `refs/pull/1321/head`. First run: [`../results.md`](../results.md). Decision record: [ADR-157](../../../docs/adr/157-duplicate-issue-retrieval-experiment.md).
 
 **Result:** against a keyword arm that replaced every query that returned nothing, embedding search put the existing issue in the first 10 candidates on 39 of 43 inputs, and keyword search on 34. The gap is +0.116, below the 0.15 win bar and above the 0.05 no-gain line, and the family sign test gives p = 0.109. The frozen map reads that as inconclusive, and the audit's verdict is **inconclusive, confounded by T1 and T4**: how the keyword baseline is built moves the reading from one side of the bar to the other. This doesn't support embedding search and doesn't refute it.
 
@@ -46,7 +46,7 @@ Rows 1 and 2 reach 30 with different inputs: `A:dev-env#627` hit in the first ru
 
 The primary arm differs from recorded behaviour in both directions:
 
-- **Retry is more generous.** It replaces every empty query. Sessions that went on to file searched again after an empty result 4 of 16 times, and that sample leaves out sessions where search worked, so 25% is not a general rate. Row 3 therefore doesn't show what would happen in practice. It's a secondary figure and can't decide anything.
+- **Retry is more generous.** It replaces every empty query. Sessions that went on to file searched again after an empty result 4 of 16 times, and that sample leaves out sessions where search worked, so 25% is not a general rate. Row 3 therefore doesn't show what would happen in practice. It's a secondary figure and can't decide anything. `mine_search_behaviour.py` also counts an empty search as followed by another if the episode holds any multi-query or chained call, a clause its non-empty branch lacks, which can only inflate the 4. A lower rate would put row 3 between +0.186 and +0.209. It wasn't re-mined, since the frozen design cites 4 of 16 and the figure decides nothing.
 - **Query shape didn't take.** The frozen prompt stated the recorded shape, and it made no difference. Round-one queries still had a median of 5 terms (10th percentile 3, 90th percentile 7, n=395), against 3 recorded (1 and 6). Replacements had a median of 4 (1 and 5, n=169). No manipulation check was registered, so what ran is a retry arm, not the "real-shaped queries" field 1 names.
 
 **Length doesn't explain the empty results here.** 166 of 386 round-one queries (43%) returned nothing, against 9.5% of recorded single-query searches, which ran at default scope with no `created:` limit. By terms, the empty rate is 41% at 3, 50% at 4, 44% at 5, 33% at 6 and 50% at 7, and replacements of 1 to 3 terms came back empty 46% of the time. Stratum A at default scope with 1 to 3 terms is 28% (18 of 65). This is observational, but it doesn't back the first run's reading that shorter queries would fix this.
@@ -68,7 +68,7 @@ A reviewer found round-one queries whose every term appears in a target's title 
 | 3 | Each term alone, on the target's creation day | 72 of 87 distinct terms find the target. In 30 of 37 pairs, at least one term can't |
 | 4 | The other 7 pairs | Every term finds the target alone, and the whole query doesn't. Unexplained, and stable on re-run |
 
-The terms in row 3 that fail are identifiers and pieces of file names. A public example: dev-env#734's title holds `test_pyw_stdio.py`. Searching `test_pyw_stdio` doesn't return #734, and `test pyw stdio` does. This matches the observation only, because GitHub doesn't document this tokenizing in detail.
+The terms in row 3 that fail are identifiers and pieces of file names. A public example: dev-env#734's title holds `test_pyw_stdio.py`. Searching `test_pyw_stdio` doesn't return #734, and `test pyw stdio` does. That's one public case, and the mechanism isn't established: some failing terms are pieces of hyphenated file names rather than names with an extension, and GitHub doesn't document tokenizing at this level.
 
 **So this is how search behaves, not a harness defect.** A session running the same `gh issue list --search` gets the same list, and the +0.023 above is not a measurement of the arm. It does bear on what a session could do: telling sessions to split identifiers into words might recover some of these. That's an untested hypothesis. `calibrate_search.py` only checks one issue's own title, so it couldn't have caught this.
 
@@ -107,7 +107,7 @@ Your searches:
 
 The section carries the opaque draft ID, the repository name, the sanitized draft and the writer's own queries. It has no results, issue numbers, labels or targets, and `test_writer_sees_no_results_labels_or_targets` in `claude/scripts/tests/test_issue_dup_eval.py` pins that. Batches and queries stay local, because they carry words from private issues.
 
-**Writers can still see other drafts.** A batch holds all the drafts, and the targets of `A:career-playbook#1590`, `#1594`, `#1608`, `#2014` and `A:lifting-logbook#803` are themselves drafts in the same batch. That favours keyword search, and it's why T1 flags below. Target titles also survive sanitizing in `A:lifting-logbook#276`, `#612` and `#798`, which helps both arms.
+**Writers can still see other drafts.** A batch holds all the drafts, and the targets of `A:career-playbook#1590`, `#1594`, `#1608`, `#2014` and `A:lifting-logbook#803` are themselves drafts in the same batch. That favours keyword search, and it's why T1 flags below. So #1282's second acceptance criterion, that the arm never sees targets, holds for targets' identity and not for their text on these 5 inputs. Whether that meets the criterion is the owner's call. Target titles also survive sanitizing in `A:lifting-logbook#276`, `#612` and `#798`, which helps both arms.
 
 **Writer check, run after the writers finished.** All 6 writer transcripts show model `claude-sonnet-5-5`, and tool use limited to reading their batch and writing their output.
 
@@ -162,8 +162,9 @@ Achieved n=43, k=3 keyword, k=1 vector, as registered. No discards. Per-input ta
 | 5 | Retry searches | At most 330 calls, $0 | 237 calls, 389 s, $0 | n/a | 0 |
 | 6 | Embedding | About 3,024 documents, about 12 min, $0 | 3,050 documents, 572 s, $0 | n/a | 0 |
 | 7 | Independent review, 2 agents | $5.00 | $5.60 ($2.98, $2.62) | 1.1 | 0 |
-| 8 | This session, to this commit | $10 to $15 | About $11.60 | n/a | 0 |
-Total: about $23.26 against an estimate of $20 to $25 and a budget of $30. Opening the PR and commenting add about $2 to the session.
+| 8 | This session, to this commit | $10 to $15 | About $13.60 | n/a | 0 |
+| 9 | Pull request review, 1 agent, not in the estimate | Not estimated | $2.46 | n/a | 0 |
+Total: about $27.32 against an estimate of $20 to $25 and a budget of $30.
 Exact as priced: no call failed. Actual is from the session and subagent transcripts, priced by claude/scripts/_token_pricing.py at the 1-hour cache-write rate. On the subscription, so these figures estimate plan usage and aren't charges.
 ```
 

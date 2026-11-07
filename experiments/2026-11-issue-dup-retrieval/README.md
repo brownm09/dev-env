@@ -12,7 +12,7 @@ Compares embedding search with `gh issue list --search` for finding an existing 
 | 4 | `vector_results.json`, `keyword_results.json`, `scored.json`, `run_log.jsonl` | Committed output of the run, numbers only |
 | 5 | `requirements.txt` | Pinned packages for the vector arm. Everything else is standard library |
 | 6 | `retry_round.py`, `calibrate_search.py`, `report_rerun.py` | The re-run's reformulation round, live search check and report |
-| 7 | `rerun/` | The re-run's output, numbers only, plus its results, stage boundaries and two scripts that read private data locally and print counts |
+| 7 | `rerun/` | The re-run's output, numbers only, plus its results and stage boundaries. Scripts: `make_labels_all.py` builds `labels_all.json`, and `mine_search_behaviour.py` and `diagnose_search_misses.py` read private data locally and print counts |
 
 ## Run order
 
@@ -31,7 +31,7 @@ py -3 score.py labels.json vector_results.json keyword_results.json scored.json
 py -3 report.py labels.json vector_results.json keyword_results.json scored.json "$CACHE"
 ```
 
-The re-run replaces the keyword step with these, using `rerun/labels_all.json`, which adds one fresh input. The writers' prompts are in `rerun/results.md` and the pre-registration:
+The re-run replaces the keyword step with these, using `rerun/labels_all.json`, built by `rerun/make_labels_all.py`, which adds one fresh input. The writers' prompts are in `rerun/results.md` and the pre-registration:
 
 ```bash
 py -3 calibrate_search.py "$CACHE" rerun/run_log.jsonl

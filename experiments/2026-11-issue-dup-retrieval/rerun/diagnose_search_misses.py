@@ -2,7 +2,7 @@
 scoring because a reviewer raised it. It runs live searches and prints counts, and it can't change
 any registered figure.
 
-Usage: py -3 diagnose_search_misses.py <issue-cache-dir> <labels.json> <queries.json> <round1.json> <out.json>
+Usage: py -3 rerun/diagnose_search_misses.py <issue-cache-dir> <labels.json> <queries.json> <round1.json> <out.json>
 
 Run from the experiment directory. Queries and issue text stay local: the output has issue numbers,
 counts and character offsets only.
