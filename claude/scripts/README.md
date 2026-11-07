@@ -174,7 +174,7 @@ invocation instead.
 | `memory-write-advisory.py` | PostToolUse (Write) | Reminds Claude to pair a durable memory write with an immortalization issue when none is linked. |
 | `skill-file-size-advisory.py` | PostToolUse (Write/Edit) | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark (default 200KB), ahead of the hard-block guard's ceiling. See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `stop-experiment-verdict-gate.py` | Stop | Blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (the verdict half of the Experimental Rigor protocol, ADR-115). |
-| `posttooluse-inert-advisory.py` | Stop | Safety net for background/SDK sessions where PostToolUse hooks never fired despite a `gh issue/pr create`/`merge`. |
+| `posttooluse-inert-advisory.py` | Stop | Safety net: a dev-env `gh issue/pr create`/`merge` ran and no PostToolUse hook printed anything all session. |
 | `token-tracker.py` | Stop | Aggregates session token usage to `scratch/token-sessions.jsonl`. |
 | `token-report.py` | `py -3 token-report.py [--date\|--days\|--project\|--latest\|--show-subagents\|--attribution --since --until]` | Generates markdown/JSON token usage reports from the token-tracker log. `--attribution` reads session transcripts and shows where spend went. |
 | `backfill-tokens.py` | `py -3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook; idempotent on `session_id`. |

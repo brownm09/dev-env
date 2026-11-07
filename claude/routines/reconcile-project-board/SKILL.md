@@ -21,9 +21,10 @@ required field)**.
 > mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
 
 **Why:** `post-tool-use.py` auto-adds each newly-created issue to its repo's board, but
-PostToolUse hooks are inert in background / SDK-launched sessions
-([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)), so issues
-filed from such a session are silently never boarded — missing Impact, Why, and the Status
+it only runs when PostToolUse runs for the create call: a chain that exits non-zero runs none, and
+in the rare inert session none run at all
+([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md) and its
+2026-11-07 amendment). Issues filed that way are silently never boarded — missing Impact, Why, and the Status
 workflow. This routine is the nightly backstop that catches them, across every repo that has
 adopted board tracking, not just dev-env (dev-env #447, #462; remediation of the gap ADR-053
 documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-scan-dir.md)).

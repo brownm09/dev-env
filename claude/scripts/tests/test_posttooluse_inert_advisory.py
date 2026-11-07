@@ -572,7 +572,12 @@ def test_format_advisory_names_no_cause() -> str:
     # dev-env#1320: 4 of the advisory's 5 recorded firings were sessions whose hooks
     # were running, 3 of them launched with start_session. A message asserting that
     # hooks didn't fire, or blaming how the session was launched, sends the reader
-    # after the wrong cause.
+    # after the wrong cause. The file it tells the reader to check comes from
+    # _bash_state, so a rename there fails here instead of leaving the advisory
+    # pointing at a file that never exists (which would read as "inert").
+    import _bash_state
+
+    state_name = _bash_state.state_path("<session-id>", scratch=Path(".")).name
     for actions in (
         [{"action": "create", "label": f"issue {DEVENV_ISSUE_URL}"}],
         [{"action": "merge", "label": "PR #241"}],
@@ -581,7 +586,7 @@ def test_format_advisory_names_no_cause() -> str:
         lowered = msg.lower()
         for banned in ("background", "sdk", "spawn_task", "start_session", "did not fire"):
             assert banned not in lowered, f"advisory must not assert a cause ({banned!r}): {msg!r}"
-        assert "bash_state_<session-id>.json" in msg, f"advisory must say how to check: {msg!r}"
+        assert f"~/.claude/scratch/{state_name}" in msg, f"advisory must say how to check: {msg!r}"
         assert "doesn't prove" in msg, f"advisory must not read as a diagnosis: {msg!r}"
     return "advisory states what was observed, gives the check, and names no launch path"
 
