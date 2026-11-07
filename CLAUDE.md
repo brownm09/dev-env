@@ -9,7 +9,7 @@ guidelines, and journal conventions are defined there and apply to every project
 | Doc | Purpose |
 |---|---|
 | [README.md](README.md) | Quick-reference tables for skills, hooks, and routines |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, and ADR links |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, ADR links, and the reasoning behind each global rule (Instruction Detail) |
 | [docs/TESTING.md](docs/TESTING.md) | Per-item behavioral detail for the `## Testing` index (what each test pins, scope gaps, incident history) |
 | [docs/adr/](docs/adr/) | Design decisions behind rules in `claude/CLAUDE.md` |
 
@@ -148,6 +148,7 @@ the item). A one-line navigational map of the test directory is
 112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`, `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it (dev-env#1214, #1122, [ADR-154](docs/adr/154-token-attribution-and-shared-pricing.md)). Run: `py -3 claude/scripts/tests/test_token_attribution.py`
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
 114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd`. Runs both wrappers against fixture install directories to check which binary each one starts (dev-env#1142). Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
 
 ## Observability
 
