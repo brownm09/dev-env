@@ -1,0 +1,1225 @@
+{
+ "inputs": [
+  {
+   "id": "A:career-playbook#1114",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1114,
+   "created_before": "2026-08-06T04:54:27Z",
+   "targets": [
+    1111
+   ]
+  },
+  {
+   "id": "A:career-playbook#1247",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1247,
+   "created_before": "2026-08-08T23:20:34Z",
+   "targets": [
+    1064
+   ]
+  },
+  {
+   "id": "A:career-playbook#1505",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1505,
+   "created_before": "2026-09-04T06:32:34Z",
+   "targets": [
+    1500
+   ]
+  },
+  {
+   "id": "A:career-playbook#1523",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1523,
+   "created_before": "2026-09-04T18:56:37Z",
+   "targets": [
+    1520
+   ]
+  },
+  {
+   "id": "A:career-playbook#1590",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1590,
+   "created_before": "2026-09-14T16:20:05Z",
+   "targets": [
+    1575
+   ]
+  },
+  {
+   "id": "A:career-playbook#1594",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1594,
+   "created_before": "2026-09-14T16:41:04Z",
+   "targets": [
+    1575,
+    1590
+   ]
+  },
+  {
+   "id": "A:career-playbook#1596",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1596,
+   "created_before": "2026-09-14T16:41:06Z",
+   "targets": [
+    1502
+   ]
+  },
+  {
+   "id": "A:career-playbook#1608",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1608,
+   "created_before": "2026-09-14T20:54:09Z",
+   "targets": [
+    1575,
+    1590,
+    1594
+   ]
+  },
+  {
+   "id": "A:career-playbook#1702",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1702,
+   "created_before": "2026-09-18T19:44:00Z",
+   "targets": [
+    1466
+   ]
+  },
+  {
+   "id": "A:career-playbook#1731",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1731,
+   "created_before": "2026-09-18T22:00:21Z",
+   "targets": [
+    1428
+   ]
+  },
+  {
+   "id": "A:career-playbook#1768",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1768,
+   "created_before": "2026-09-21T19:32:38Z",
+   "targets": [
+    1767
+   ]
+  },
+  {
+   "id": "A:career-playbook#1769",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 1769,
+   "created_before": "2026-09-21T19:32:54Z",
+   "targets": [
+    1745
+   ]
+  },
+  {
+   "id": "A:career-playbook#2000",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 2000,
+   "created_before": "2026-10-04T04:45:30Z",
+   "targets": [
+    1997
+   ]
+  },
+  {
+   "id": "A:career-playbook#2014",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 2014,
+   "created_before": "2026-10-06T22:59:56Z",
+   "targets": [
+    1997,
+    2000
+   ]
+  },
+  {
+   "id": "A:career-playbook#268",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 268,
+   "created_before": "2026-05-22T16:36:57Z",
+   "targets": [
+    267
+   ]
+  },
+  {
+   "id": "A:career-playbook#709",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 709,
+   "created_before": "2026-07-13T02:59:35Z",
+   "targets": [
+    699
+   ]
+  },
+  {
+   "id": "A:career-playbook#930",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "query_issue": 930,
+   "created_before": "2026-07-27T20:04:17Z",
+   "targets": [
+    928
+   ]
+  },
+  {
+   "id": "A:dev-env#495",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 495,
+   "created_before": "2026-07-01T20:22:46Z",
+   "targets": [
+    488
+   ]
+  },
+  {
+   "id": "A:dev-env#627",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 627,
+   "created_before": "2026-07-08T15:19:09Z",
+   "targets": [
+    610
+   ]
+  },
+  {
+   "id": "A:dev-env#862",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 862,
+   "created_before": "2026-07-22T15:25:01Z",
+   "targets": [
+    844
+   ]
+  },
+  {
+   "id": "A:dev-env#899",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 899,
+   "created_before": "2026-07-23T06:34:59Z",
+   "targets": [
+    856
+   ]
+  },
+  {
+   "id": "A:dev-env#918",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 918,
+   "created_before": "2026-07-27T17:59:42Z",
+   "targets": [
+    734
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#1080",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 1080,
+   "created_before": "2026-10-27T01:09:34Z",
+   "targets": [
+    996
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#276",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 276,
+   "created_before": "2026-05-17T20:06:50Z",
+   "targets": [
+    275
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#612",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 612,
+   "created_before": "2026-06-29T14:07:09Z",
+   "targets": [
+    483
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#638",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 638,
+   "created_before": "2026-07-02T18:58:17Z",
+   "targets": [
+    627
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#768",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 768,
+   "created_before": "2026-07-09T18:25:19Z",
+   "targets": [
+    480
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#798",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 798,
+   "created_before": "2026-07-10T23:14:45Z",
+   "targets": [
+    789
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#803",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 803,
+   "created_before": "2026-07-10T23:50:29Z",
+   "targets": [
+    789,
+    798
+   ]
+  },
+  {
+   "id": "A:lifting-logbook#854",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "query_issue": 854,
+   "created_before": "2026-07-18T04:09:34Z",
+   "targets": [
+    852
+   ]
+  },
+  {
+   "id": "B:career-playbook#1471",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 1471,
+   "comment_created_at": "2026-09-04T01:36:33Z",
+   "created_before": "2026-09-04T01:36:33Z",
+   "targets": [
+    1471
+   ]
+  },
+  {
+   "id": "B:career-playbook#1575",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 1575,
+   "comment_created_at": "2026-09-14T15:45:00Z",
+   "created_before": "2026-09-14T15:45:00Z",
+   "targets": [
+    1575
+   ]
+  },
+  {
+   "id": "B:career-playbook#1659",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 1659,
+   "comment_created_at": "2026-09-21T16:20:50Z",
+   "created_before": "2026-09-21T16:20:50Z",
+   "targets": [
+    1659
+   ]
+  },
+  {
+   "id": "B:career-playbook#1681",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 1681,
+   "comment_created_at": "2026-09-24T01:33:04Z",
+   "created_before": "2026-09-24T01:33:04Z",
+   "targets": [
+    1681
+   ]
+  },
+  {
+   "id": "B:career-playbook#724",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 724,
+   "comment_created_at": "2026-07-14T23:01:23Z",
+   "created_before": "2026-07-14T23:01:23Z",
+   "targets": [
+    724
+   ]
+  },
+  {
+   "id": "B:career-playbook#839",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 839,
+   "comment_created_at": "2026-07-30T03:19:31Z",
+   "created_before": "2026-07-30T03:19:31Z",
+   "targets": [
+    839
+   ]
+  },
+  {
+   "id": "B:career-playbook#842",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 842,
+   "comment_created_at": "2026-08-28T03:13:52Z",
+   "created_before": "2026-08-28T03:13:52Z",
+   "targets": [
+    842
+   ]
+  },
+  {
+   "id": "B:career-playbook#916",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "host_issue": 916,
+   "comment_created_at": "2026-08-28T03:25:32Z",
+   "created_before": "2026-08-28T03:25:32Z",
+   "targets": [
+    916
+   ]
+  },
+  {
+   "id": "B:dev-env#1029",
+   "stratum": "B",
+   "repo": "dev-env",
+   "host_issue": 1029,
+   "comment_created_at": "2026-08-20T17:56:59Z",
+   "created_before": "2026-08-20T17:56:59Z",
+   "targets": [
+    1029
+   ]
+  },
+  {
+   "id": "B:dev-env#1086",
+   "stratum": "B",
+   "repo": "dev-env",
+   "host_issue": 1086,
+   "comment_created_at": "2026-09-15T18:10:17Z",
+   "created_before": "2026-09-15T18:10:17Z",
+   "targets": [
+    1086
+   ]
+  },
+  {
+   "id": "B:dev-env#903",
+   "stratum": "B",
+   "repo": "dev-env",
+   "host_issue": 903,
+   "comment_created_at": "2026-08-17T03:12:16Z",
+   "created_before": "2026-08-17T03:12:16Z",
+   "targets": [
+    903
+   ]
+  },
+  {
+   "id": "B:dev-env#945",
+   "stratum": "B",
+   "repo": "dev-env",
+   "host_issue": 945,
+   "comment_created_at": "2026-08-18T20:43:43Z",
+   "created_before": "2026-08-18T20:43:43Z",
+   "targets": [
+    945
+   ]
+  },
+  {
+   "id": "B:lifting-logbook#899",
+   "stratum": "B",
+   "repo": "lifting-logbook",
+   "host_issue": 899,
+   "comment_created_at": "2026-08-18T16:10:51Z",
+   "created_before": "2026-08-18T16:10:51Z",
+   "targets": [
+    899
+   ]
+  },
+  {
+   "id": "A:dev-env#1283",
+   "stratum": "A",
+   "repo": "dev-env",
+   "query_issue": 1283,
+   "created_before": "2026-11-06T18:26:37Z",
+   "targets": [
+    1142
+   ]
+  }
+ ],
+ "known_negative": [
+  [
+   "dev-env",
+   302,
+   474
+  ],
+  [
+   "dev-env",
+   350,
+   1087
+  ],
+  [
+   "dev-env",
+   694,
+   697
+  ],
+  [
+   "dev-env",
+   906,
+   976
+  ],
+  [
+   "dev-env",
+   615,
+   684
+  ],
+  [
+   "dev-env",
+   924,
+   956
+  ],
+  [
+   "dev-env",
+   952,
+   955
+  ],
+  [
+   "career-playbook",
+   832,
+   1160
+  ],
+  [
+   "career-playbook",
+   847,
+   1706
+  ],
+  [
+   "career-playbook",
+   847,
+   1693
+  ],
+  [
+   "career-playbook",
+   1597,
+   1601
+  ],
+  [
+   "career-playbook",
+   1064,
+   1068
+  ],
+  [
+   "career-playbook",
+   664,
+   1018
+  ],
+  [
+   "career-playbook",
+   1471,
+   1494
+  ],
+  [
+   "career-playbook",
+   1131,
+   1361
+  ],
+  [
+   "career-playbook",
+   1797,
+   1812
+  ],
+  [
+   "career-playbook",
+   1134,
+   1139
+  ],
+  [
+   "career-playbook",
+   904,
+   925
+  ],
+  [
+   "career-playbook",
+   656,
+   1708
+  ],
+  [
+   "lifting-logbook",
+   869,
+   871
+  ],
+  [
+   "lifting-logbook",
+   739,
+   740
+  ],
+  [
+   "lifting-logbook",
+   927,
+   928
+  ],
+  [
+   "cover-letter-runtime",
+   140,
+   184
+  ]
+ ],
+ "easy_negative": [
+  [
+   "dev-env",
+   129,
+   1213
+  ],
+  [
+   "dev-env",
+   210,
+   303
+  ],
+  [
+   "dev-env",
+   38,
+   498
+  ],
+  [
+   "dev-env",
+   669,
+   1158
+  ],
+  [
+   "dev-env",
+   586,
+   830
+  ],
+  [
+   "dev-env",
+   51,
+   1247
+  ],
+  [
+   "dev-env",
+   83,
+   1213
+  ],
+  [
+   "dev-env",
+   261,
+   456
+  ],
+  [
+   "dev-env",
+   311,
+   574
+  ],
+  [
+   "dev-env",
+   372,
+   642
+  ],
+  [
+   "dev-env",
+   303,
+   1106
+  ],
+  [
+   "dev-env",
+   8,
+   698
+  ],
+  [
+   "dev-env",
+   511,
+   999
+  ],
+  [
+   "dev-env",
+   31,
+   190
+  ],
+  [
+   "dev-env",
+   992,
+   1101
+  ],
+  [
+   "dev-env",
+   957,
+   1016
+  ],
+  [
+   "dev-env",
+   431,
+   489
+  ],
+  [
+   "dev-env",
+   177,
+   745
+  ],
+  [
+   "dev-env",
+   848,
+   1062
+  ],
+  [
+   "dev-env",
+   190,
+   867
+  ],
+  [
+   "dev-env",
+   351,
+   845
+  ],
+  [
+   "dev-env",
+   213,
+   1093
+  ],
+  [
+   "dev-env",
+   380,
+   591
+  ],
+  [
+   "dev-env",
+   801,
+   874
+  ],
+  [
+   "dev-env",
+   446,
+   900
+  ],
+  [
+   "dev-env",
+   489,
+   654
+  ],
+  [
+   "dev-env",
+   149,
+   449
+  ],
+  [
+   "dev-env",
+   96,
+   898
+  ],
+  [
+   "dev-env",
+   1074,
+   1166
+  ],
+  [
+   "dev-env",
+   142,
+   1233
+  ],
+  [
+   "dev-env",
+   315,
+   415
+  ],
+  [
+   "dev-env",
+   740,
+   1178
+  ],
+  [
+   "dev-env",
+   253,
+   860
+  ],
+  [
+   "dev-env",
+   605,
+   939
+  ],
+  [
+   "dev-env",
+   485,
+   1044
+  ],
+  [
+   "dev-env",
+   68,
+   821
+  ],
+  [
+   "dev-env",
+   120,
+   198
+  ],
+  [
+   "dev-env",
+   768,
+   907
+  ],
+  [
+   "dev-env",
+   82,
+   1130
+  ],
+  [
+   "dev-env",
+   163,
+   446
+  ],
+  [
+   "career-playbook",
+   1678,
+   2071
+  ],
+  [
+   "career-playbook",
+   806,
+   1158
+  ],
+  [
+   "career-playbook",
+   57,
+   1690
+  ],
+  [
+   "career-playbook",
+   1057,
+   1785
+  ],
+  [
+   "career-playbook",
+   1262,
+   1980
+  ],
+  [
+   "career-playbook",
+   1263,
+   1298
+  ],
+  [
+   "career-playbook",
+   1086,
+   1875
+  ],
+  [
+   "career-playbook",
+   98,
+   1453
+  ],
+  [
+   "career-playbook",
+   757,
+   1586
+  ],
+  [
+   "career-playbook",
+   392,
+   1771
+  ],
+  [
+   "career-playbook",
+   987,
+   2105
+  ],
+  [
+   "career-playbook",
+   1085,
+   1682
+  ],
+  [
+   "career-playbook",
+   1296,
+   2321
+  ],
+  [
+   "career-playbook",
+   1306,
+   1671
+  ],
+  [
+   "career-playbook",
+   121,
+   1845
+  ],
+  [
+   "career-playbook",
+   1395,
+   1606
+  ],
+  [
+   "career-playbook",
+   1346,
+   1833
+  ],
+  [
+   "career-playbook",
+   412,
+   2242
+  ],
+  [
+   "career-playbook",
+   920,
+   1330
+  ],
+  [
+   "career-playbook",
+   306,
+   1302
+  ],
+  [
+   "career-playbook",
+   137,
+   2215
+  ],
+  [
+   "career-playbook",
+   1085,
+   1315
+  ],
+  [
+   "career-playbook",
+   1422,
+   1626
+  ],
+  [
+   "career-playbook",
+   1660,
+   1941
+  ],
+  [
+   "career-playbook",
+   1695,
+   2374
+  ],
+  [
+   "career-playbook",
+   1574,
+   2246
+  ],
+  [
+   "career-playbook",
+   1449,
+   1460
+  ],
+  [
+   "career-playbook",
+   564,
+   910
+  ],
+  [
+   "career-playbook",
+   801,
+   2008
+  ],
+  [
+   "career-playbook",
+   1950,
+   2086
+  ],
+  [
+   "career-playbook",
+   1548,
+   1914
+  ],
+  [
+   "career-playbook",
+   1179,
+   1501
+  ],
+  [
+   "career-playbook",
+   652,
+   1167
+  ],
+  [
+   "career-playbook",
+   1842,
+   2250
+  ],
+  [
+   "career-playbook",
+   612,
+   1329
+  ],
+  [
+   "career-playbook",
+   360,
+   1991
+  ],
+  [
+   "career-playbook",
+   867,
+   977
+  ],
+  [
+   "career-playbook",
+   881,
+   2285
+  ],
+  [
+   "career-playbook",
+   2283,
+   2359
+  ],
+  [
+   "career-playbook",
+   47,
+   1866
+  ],
+  [
+   "lifting-logbook",
+   991,
+   1096
+  ],
+  [
+   "lifting-logbook",
+   365,
+   660
+  ],
+  [
+   "lifting-logbook",
+   95,
+   269
+  ],
+  [
+   "lifting-logbook",
+   19,
+   179
+  ],
+  [
+   "lifting-logbook",
+   757,
+   762
+  ],
+  [
+   "lifting-logbook",
+   625,
+   925
+  ],
+  [
+   "lifting-logbook",
+   296,
+   615
+  ],
+  [
+   "lifting-logbook",
+   706,
+   887
+  ],
+  [
+   "lifting-logbook",
+   956,
+   960
+  ],
+  [
+   "lifting-logbook",
+   97,
+   552
+  ],
+  [
+   "lifting-logbook",
+   844,
+   946
+  ],
+  [
+   "lifting-logbook",
+   302,
+   1071
+  ],
+  [
+   "lifting-logbook",
+   589,
+   983
+  ],
+  [
+   "lifting-logbook",
+   663,
+   850
+  ],
+  [
+   "lifting-logbook",
+   451,
+   936
+  ],
+  [
+   "lifting-logbook",
+   380,
+   842
+  ],
+  [
+   "lifting-logbook",
+   341,
+   924
+  ],
+  [
+   "lifting-logbook",
+   597,
+   1031
+  ],
+  [
+   "lifting-logbook",
+   585,
+   1055
+  ],
+  [
+   "lifting-logbook",
+   746,
+   941
+  ],
+  [
+   "lifting-logbook",
+   237,
+   692
+  ],
+  [
+   "lifting-logbook",
+   289,
+   752
+  ],
+  [
+   "lifting-logbook",
+   125,
+   650
+  ],
+  [
+   "lifting-logbook",
+   649,
+   735
+  ],
+  [
+   "lifting-logbook",
+   592,
+   673
+  ],
+  [
+   "lifting-logbook",
+   250,
+   595
+  ],
+  [
+   "lifting-logbook",
+   525,
+   1016
+  ],
+  [
+   "lifting-logbook",
+   326,
+   399
+  ],
+  [
+   "lifting-logbook",
+   178,
+   972
+  ],
+  [
+   "lifting-logbook",
+   633,
+   751
+  ],
+  [
+   "lifting-logbook",
+   300,
+   333
+  ],
+  [
+   "lifting-logbook",
+   225,
+   615
+  ],
+  [
+   "lifting-logbook",
+   11,
+   150
+  ],
+  [
+   "lifting-logbook",
+   466,
+   599
+  ],
+  [
+   "lifting-logbook",
+   174,
+   904
+  ],
+  [
+   "lifting-logbook",
+   746,
+   786
+  ],
+  [
+   "lifting-logbook",
+   365,
+   688
+  ],
+  [
+   "lifting-logbook",
+   304,
+   1162
+  ],
+  [
+   "lifting-logbook",
+   106,
+   1153
+  ],
+  [
+   "lifting-logbook",
+   535,
+   893
+  ]
+ ],
+ "auditor_near_dup": [
+  [
+   "dev-env",
+   424,
+   785
+  ],
+  [
+   "dev-env",
+   566,
+   571
+  ],
+  [
+   "dev-env",
+   594,
+   609
+  ],
+  [
+   "dev-env",
+   510,
+   514
+  ]
+ ],
+ "cross_repo": [
+  {
+   "a": [
+    "dev-env",
+    527
+   ],
+   "b": [
+    "lifting-logbook",
+    638
+   ]
+  },
+  {
+   "a": [
+    "dev-env",
+    876
+   ],
+   "b": [
+    "career-playbook",
+    1065
+   ]
+  }
+ ]
+}
