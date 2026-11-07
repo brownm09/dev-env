@@ -1,13 +1,15 @@
 # Acceptance-criteria evidence table — shared schema
 
 This file is the single definition of how acceptance criteria are read from an issue and how the
-per-criterion evidence for them is recorded. Two consumers rely on it, and neither may redefine
+per-criterion evidence for them is recorded. Three consumers rely on it, and none may redefine
 any part of it locally:
 
 - dev-env `/review` Step 2g (`claude/skills/review/SKILL.md`), which writes the table into the
   review comment.
 - The Switchyard Definition-of-Done gate ([switchyard#7](https://github.com/brownm09/switchyard/issues/7)),
   which reads the table from a PR body.
+- `claude/scripts/deferred-followup-sweep.py`, which reads the Evidence cell of `not verifiable` rows
+  from merged PRs' blocks. Its regexes must change with the block's format.
 
 Everything below is specified precisely enough that a plain-text parser can apply it.
 
@@ -125,7 +127,9 @@ link. If the issue can't be read, stop and report a tool error, as in §1.
 of a merged PR replays that review, so it judges the second test, and rule 9's open-or-merged
 state, as of the PR's merge: a later closure or a PR opened later doesn't count for or against the
 row. The first test still reads the issue as it stands now, comments after the merge included,
-because a missing name is what the finding asks the author to fix.
+because a missing name is what the finding asks the author to fix. A closure after the merge is
+never this gate's to catch; `claude/scripts/deferred-followup-sweep.py` reports some of them, and it
+never changes a row (ADR-153 → *Follow-ups closed after merge*).
 
 ### Deferral and admission rules
 

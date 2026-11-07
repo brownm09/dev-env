@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **112 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **113 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -104,10 +104,11 @@ invocation instead.
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 | `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo ...] [--journal-repo PATH]` | Read-only per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL; never mutates anything, a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry. Engine behind the `retro-chain-refill` skill. |
 
-### PR / merge workflow (19)
+### PR / merge workflow (20)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `deferred-followup-sweep.py` | `py -3 deferred-followup-sweep.py --pr <owner/repo#N> \| --repo <owner/repo> [--closed-since YYYY-MM-DD]` | Report-only: reads merged PRs' deferred acceptance criteria and reports a follow-up closed after the merge as not planned or a duplicate, or by a PR whose body says it doesn't close it. Run by `biweekly-retro` Step 3.5 (dev-env#1292, ADR-153). |
 | `pre-commit-branch-check.py` | PreToolUse (Bash), `git commit` | Shows the current branch as a checkpoint before commit, plus a drift warning against the last-recorded Bash state. |
 | `pre-pr-create-check.py` | PreToolUse (Bash), `gh pr create` | Emits the test/doc-reconciliation/baseline checklist plus branch + drift warning before PR creation. |
 | `pre-merge-message-check.py` | PreToolUse (Bash), `gh pr merge` | Blocks the merge if `merge-queue.md` has queued user feedback to act on first. |

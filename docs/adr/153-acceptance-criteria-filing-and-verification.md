@@ -279,7 +279,8 @@ Fresh corpus, by PR:
   it. PR 48 would block under a stricter reading of a partly tested criterion. PR 212 would pass if
   a near-match follow-up counted. Round 4 below settles these readings, and PR 13 becomes a miss.
 - **The rule can be too strict on a single row.** lifting-logbook PR 115 deferred criteria 6 and 7
-  to #106, and PR 132 later delivered them and closed #106. Both scorers still marked those rows
+  to #106, and PR 132 later closed #106 (corrected in *Follow-ups closed after merge* below: PR 132
+  only edited a proposal, and PR 134 shipped the screen). Both scorers still marked those rows
   `not met`, because #106 describes the destination screens rather than the click-through. The PR's
   verdict didn't depend on it, since rows 2 and 4 block anyway. On a PR with no other gap, this
   reading would be a false block, and it is the likeliest source of the next one
@@ -354,7 +355,7 @@ four guards didn't move, but those five weren't run.
 **Why the wording's core test stays.** The issue's trigger is a false block, and none was measured.
 The text gained a "When to judge" paragraph and a sentence on near-matches, for readings 1 and 3
 above, but "names this criterion's check or outcome" is unchanged. PR 115's rows 6 and 7 stay `not met` under every scorer who has read them, though
-PR 132 later delivered that work. On a PR with no other gap, that would block until someone added a
+#106 was later closed and PR 134 shipped its screen. On a PR with no other gap, that would block until someone added a
 comment to #106 naming the click-through, and that's what the finding asks for. A review can't see
 later delivery, so what it can check is whether anything tracks the work, and at merge nothing on
 #106 did. Loosening the test to pass PR 115 would also pass PR 212's near-match.
@@ -382,6 +383,99 @@ later delivery, so what it can check is whether anything tracks the work, and at
 known-good PRs, and 12 of 14 known-bad PRs caught (PR 13 and PR 613 missed). This supports keeping `not met` as Blocking, with
 the demotion rule still in force. It says little about follow-ups in other words, for which the
 corpus barely exists.
+
+## Follow-ups closed after merge (2026-11-06, dev-env#1292)
+
+Round 4 left a known miss: Step 2g runs before merge, so it can't see a follow-up that closes undone
+afterwards.
+
+**Decision: build a small report-only sweep, and run it from `biweekly-retro`.** It is
+`claude/scripts/deferred-followup-sweep.py`. It reads merged PRs' deferrals and reports a follow-up
+that closed after the merge in one of two ways: as not planned or a duplicate, or by a PR whose body
+says it doesn't close that issue. Everything else counts as "not judged". It never blocks and never
+writes to GitHub. A person reads each line and reopens the issue or records why the work was dropped.
+
+**Why build anything: the numbers.** Across 2,032 merged PRs in 7 repos, an exploratory extractor,
+wider than the shipped one, found 67 follow-up references closed after their deferring PR merged. All
+27 closures with an unusual shape were labelled, plus 15 of the other 40 picked at random. A separate agent labelled the 42 entries from diffs and code. One
+is a duplicate of another under a renamed repo, and 8 weren't real deferrals, which leaves 33:
+
+| # | Label | Count | Issues |
+|---|---|---|---|
+| 1 | Delivered | 26 | |
+| 2 | Undone, and nothing records it | 4 | switchyard#12, lifting-logbook#468, lifting-logbook#259, one in career-playbook |
+| 3 | Undone, with a recorded decision | 3 | dev-env#1266, dev-env#356, dev-env#1120 |
+
+So about 1 in 8 labelled deferrals was silently dropped. The 25 unlabelled closures may hold more.
+This isn't only history: among the 85 PRs carrying an evidence marker, all merged in the few days
+since the schema started, 8 deferred a criterion, to 7 follow-ups. One of those was dropped (#12), one
+was shelved on the record (#1266), and one was closed with evidence (#1277).
+
+**What the closures have in common.** Two of the four silent drops were accidents of GitHub's keyword
+parsing. Switchyard PR 21 says "It doesn't close #12", and lifting-logbook PR 510 says it does not
+close #468, yet GitHub closed both. A closing PR proves little either way. switchyard#12 and
+lifting-logbook#106 look the same to every mechanical signal except that wording: each closed as
+completed by a merged PR whose diff didn't do the work, with its boxes unticked. #106's work came
+from elsewhere. **This corrects round 3, round 4 and this issue's own text:** PR 132 didn't deliver
+#106. It is a docs-only change to a proposal, and its `Closes #106` closed the issue about 10 hours before
+PR 134 shipped the screen. The labeller confirmed the screen and its routes but checked the dashboard's
+click-through only indirectly, so #106 stays the known-good reference on that weaker footing.
+
+**Calibration, per ADR-144.** The check stays a diagnostic.
+
+- **Measured property:** how the follow-up closed, not whether the work exists.
+- **On the labelled corpus:**
+
+| # | Set | Reported | Rate |
+|---|---|---|---|
+| 1 | Undone, unrecorded (4) | 2 | Misses lifting-logbook#259 and the career-playbook issue, both closed by ordinary PRs |
+| 2 | Undone, recorded (3) | 2 | Misses dev-env#1120, closed by a docs PR |
+| 3 | Delivered (26) | 1 | lifting-logbook#480, closed as not planned as a duplicate of #768, and delivered under #768 |
+
+- **The worst known-good observation** is that #480 report, which costs a person one read.
+- **Across all 7 repos** (2,038 merged PRs when last run) it reports 5 follow-ups: #12, #468, #480,
+  #1266 and #356. It leaves 41 closures not judged.
+- **The negation pattern is in-sample.** It was written after reading #12 and #468, and no held-out
+  case exists. It requires the negation right before the keyword and this issue's number, and every
+  keyword naming the issue must be negated, table rows aside. So "doesn't block closing #388", and
+  "did not fix #12" followed by a `Closes #12` line, don't match. Two fixes came from these same
+  references: PR 21 also has a table row "fixed: #12 is amended", and PR 510 also says "**Not**
+  `Closes #468`".
+- **Extraction:** the script prints the number of deferrals it found and warns at zero, so an empty
+  extraction can't read as a clean run. It found 102, 9 of them from evidence tables, and printing that
+  split means an evidence path gone empty can't hide behind the prose path. The shipped extractor is
+  narrower than the one that built the corpus. It drops 6 of the 8 labelled non-deferrals, and also 8 of
+  the 26 delivered follow-ups and dev-env#1120, all of whose lines use other wording. All 4 silent drops
+  are still extracted, and the reported set didn't change. A silent drop worded like those 8 would be
+  missed.
+- **Read by anyone.** Evidence blocks are read from comments by any author, and three swept repos are
+  public. A forged block can only add a line a person reads, and a reference to nothing is counted as
+  unresolved instead of stopping the run, so neither can silence the report.
+- **The references** from this issue hold: switchyard PR 13 reports #12, and lifting-logbook PR 115
+  reports nothing and counts #106 as not judged. Unit fixtures pin both, because a live run of PR 13
+  would change if #12 is reopened.
+
+The labels quote private content, so they live in the shared notes for this work and the private
+journal rather than here.
+
+**Alternatives considered.**
+
+| # | Alternative | Why rejected |
+|---|---|---|
+| 1 | Do nothing, and record why | About 1 in 8 labelled deferrals dropped silently, and #12 happened within days of the schema. The sweep is about 300 lines and spends no model tokens |
+| 2 | A step when a follow-up issue closes (a hook on `gh issue close`) | It can't see #12 or #468: both closed through a merge keyword, with no such command. A workflow on GitHub's `issues.closed` event would see them, but needs deploying per repo and still couldn't judge the work |
+| 3 | Report any closure with unticked boxes | It can't separate #12 from #106, and 72 of 75 closed checklists were unticked when ADR-153 was written |
+| 4 | Report every docs-only closing PR | 2 undone among the 9 real deferrals closed that way. Too noisy without a person reading diffs |
+| 5 | An agent reads every closed follow-up in the sweep | It would catch more, as the labeller did, at about 5,000 subscription tokens per follow-up on each run. Possible later, if the retro's "not judged" count proves worth reading. It is also a judge that would need its own calibration |
+| 6 | Have `/review` read the closing PR's linked issues more strictly | It already should have: PR 21's `closingIssuesReferences` includes #12, and its review reported `no-issue`. The body was edited after that review, so what the reviewer saw is unknown. That covers only one path anyway |
+
+**What this doesn't fix.** It finds half of the silent drops it was measured on. The two accidents
+would be better prevented than detected, by flagging a negated closing keyword before merge, which is
+tracked in [dev-env#1300](https://github.com/brownm09/dev-env/issues/1300). Reporting doesn't reopen anything, and a person still has to act on the line.
+
+**Where it runs.** `biweekly-retro` isn't registered as a scheduled task or a cloud trigger on the
+machine this was written on, though its report branches exist through 2026-10-31. So the step takes
+effect only where that routine's live prompt reads this file (dev-env#1110 tracks the routine host).
 
 ## Consequences
 
