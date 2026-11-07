@@ -24,21 +24,20 @@ Stdin JSON shape (PostToolUse):
     "cwd": "..."
   }
 
-Exit 0  — not a merge command, an unconfirmed merge (no success marker and the
+Exit 0  — not a merge command, or an unconfirmed merge (no success marker and the
           live `gh pr view` fallback also found nothing — e.g. a queued
-          `--auto`, or a genuinely failed merge), or creds file absent; silent
-Exit 2  — snapshot emitted via stderr, OR a missing/unparseable token whose
-          on-demand refresh didn't produce one (advisory — dev-env#819), OR an
-          expired token whose on-demand refresh failed (advisory), OR the usage
-          API was unreachable after one retry (advisory — #302). Both a
-          missing/unparseable token and an expired one are first refreshed on
-          demand via the CLI (keep-token-warm.ps1); a still-valid "expiring"
-          token proceeds to fetch. Exception: when a CLI *subprocess* is itself
-          unauthenticated (the MSIX desktop-app configuration — OAuth lives in the
-          OS keychain, no readable .credentials.json exists, so both the refresh
-          and an interactive re-auth are futile), the missing-token branch detects
-          it via a `claude auth status` probe and emits an accurate advisory naming
-          dev-env#915 *without* the doomed ~35s refresh (ADR-124).
+          `--auto`, or a genuinely failed merge); silent
+Exit 2  — snapshot emitted via stderr, OR an advisory that says why it was skipped
+          and what fixes it: no readable credentials file (dev-env#1139), no usable
+          token in that file, an expired or rejected token, the usage API unreachable
+          after one retry (#302), or an unexpected error while building the snapshot.
+          A still-valid "expiring" token proceeds to fetch.
+
+This hook never refreshes the token. The refresh it used to run was a
+`claude --print` model call, which spent plan limit on a status readout, so a stale
+window costs one skipped snapshot instead (dev-env#1299, ADR-124 Amendment 2).
+`claude auth status` rewrote an expired token on one of two measured runs, so it
+isn't a route yet; dev-env#1327 tracks that.
 
 Merge-decision trace (dev-env#474 follow-up): dev-env#489/#496 both established
 live that gh's success marker does not reliably survive to `tool_response` on a
@@ -88,11 +87,8 @@ exception itself; and a non-dict top-level payload is guarded before it can
 reach `data.get("tool_name")`. See ADR-050 Amendment 26 (including its
 "Post-review fix" section) for the full detail.
 """
-import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
-import os
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -123,7 +119,6 @@ CONFIG_PATH = "C:/Users/brown/Git/dev-env/claude/usage-config.json"
 PROJECTS_ROOT = Path("C:/Users/brown/.claude/projects")
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
-KEEP_WARM_PS1 = "C:/Users/brown/.claude/scripts/keep-token-warm.ps1"
 MERGE_TRACE_PATH = "C:/Users/brown/.claude/scratch/usage-snapshot-merge-trace.log"
 MERGE_TRACE_MAX_LINES = 500
 
@@ -192,9 +187,8 @@ def resolve_merge(
     `should_confirm_via_gh` cost gate, then the live `gh pr view` fallback) so
     this is a pure refactor of that control flow, not a behavior change -- see
     test_resolve_merge_* below and test_merge_confirmed_* above (unchanged) for
-    the shared fixtures. `confirm_fn` is dependency-injected (mirroring
-    `attempt_token_refresh`'s I/O-fake pattern) so the live-network branch is
-    testable offline.
+    the shared fixtures. `confirm_fn` is dependency-injected so the live-network
+    branch is testable offline.
 
     Exists so `main()` can trace every branch of this decision as one explicit
     value instead of the decision being implicit in which of several
@@ -280,122 +274,16 @@ def get_access_token(creds: dict) -> tuple[str | None, int]:
         return None, 0
 
 
-# --- CLI auth probe (dev-env#915) ---
-#
-# Under the MSIX Claude desktop app the bundled CLI, run as a *subprocess* (this
-# hook's and keep-token-warm.ps1's context), is unauthenticated: OAuth lives in the
-# OS keychain and is injected in-process to child sessions, and no readable
-# .credentials.json is ever written. So a blank/missing token there can be neither
-# read nor refreshed (keep-token-warm.ps1 invokes that same unauthenticated CLI),
-# and "run claude interactively" cannot help. `claude auth status --json` reporting
-# loggedIn:false is the precise signature; on it we skip the ~35s refresh and emit
-# an accurate advisory instead. On any other install (npm CLI with a real token
-# file) the packaged .exe is absent, the probe returns None, and the legacy
-# refresh-then-advise path runs unchanged.
-
-# Where the Claude desktop app installs its bundled CLI, current location first.
-# Mirrors bin/claude and keep-token-warm.ps1's Resolve-ClaudeExe so all three
-# resolve the same binary (dev-env#1286).
-_CLAUDE_CODE_RELS = (
-    "Claude-Data/claude_pzs8sxrjxfjjc/claude-code",
-    "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code",
-)
-_VERSION_DIR_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
-
-
-def _newest_exe_under(base: Path) -> str | None:
-    """claude.exe from the newest version directory under *base* that holds one.
-
-    A version directory holds it directly or one level down in a hash directory.
-    Versions compare numerically on the version directory's name (2.1.170 beats
-    2.1.99), and a directory not named like a version is skipped, as in bin/claude.
-    """
-    try:
-        exes = list(base.glob("*/claude.exe")) + list(base.glob("*/*/claude.exe"))
-    except OSError:
-        return None
-
-    def _version_dir(p: Path) -> str:
-        return p.relative_to(base).parts[0]
-
-    exes = [p for p in exes if _VERSION_DIR_RE.fullmatch(_version_dir(p))]
-    if not exes:
-        return None
-    return str(max(exes, key=lambda p: tuple(int(x) for x in _version_dir(p).split("."))))
-
-
-def resolve_claude_exe() -> str | None:
-    """Path to the newest packaged claude.exe, or None if the desktop app's is absent.
-
-    Returns the real .exe (not the ~/bin PATH shim) so subprocess can exec it
-    directly without the .cmd/PATHEXT indirection. Deliberately no PATH fallback:
-    this probe exists only to detect the desktop-app dead-end (dev-env#915); on an
-    npm-CLI install the packaged .exe is absent and None routes the caller to the
-    legacy refresh path.
-    """
-    local = os.environ.get("LOCALAPPDATA", "")
-    if not local:
-        return None
-    for rel in _CLAUDE_CODE_RELS:
-        exe = _newest_exe_under(Path(local) / rel)
-        if exe:
-            return exe
-    return None
-
-
-def parse_auth_status(stdout: str) -> str | None:
-    """Classify `claude auth status --json` output (pure; offline-testable).
-
-    "in"   -> loggedIn is exactly True,
-    "out"  -> loggedIn is exactly False (the desktop-app dead-end signature),
-    None   -> unparseable, not an object, or loggedIn missing / non-boolean -- never
-              treat malformed output as a dead-end (that would wrongly skip a
-              snapshot the legacy refresh path might still recover).
-    """
-    try:
-        data = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    logged_in = data.get("loggedIn")
-    if logged_in is True:
-        return "in"
-    if logged_in is False:
-        return "out"
-    return None
-
-
-def cli_auth_status(timeout: int = 8, exe_fn=resolve_claude_exe, run_fn=None) -> str | None:
-    """Whether a CLI *subprocess* here can authenticate (dev-env#915).
-
-    "out" is the MSIX desktop-app signature (loggedIn:false as a subprocess) — the
-    file read and keep-token-warm.ps1's refresh are both permanently futile. "in"
-    means a refresh can plausibly help (npm-CLI world). None means unknown -> the
-    caller keeps its legacy behavior. exe_fn/run_fn are dependency-injected for
-    offline testing, mirroring attempt_token_refresh's fake-injection pattern.
-    """
-    exe = exe_fn()
-    if not exe:
-        return None
-    runner = run_fn or subprocess.run
-    try:
-        proc = runner(
-            [exe, "auth", "status", "--json"],
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    return parse_auth_status(getattr(proc, "stdout", "") or "")
-
-
 # --- usage API ---
 
-def fetch_usage(token: str) -> dict | None:
+# fetch_usage's return for an HTTP 401 or 403: the API answered, so a retry can't help.
+TOKEN_REJECTED = object()
+
+
+def fetch_usage(token: str) -> dict | object | None:
     # Imported here, not at the top: urllib.request costs about 85 ms and only a
     # confirmed merge reaches this, while the hook runs on every Bash call (dev-env#1173).
+    import http.client  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
@@ -410,7 +298,11 @@ def fetch_usage(token: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError):
+    except urllib.error.HTTPError as e:
+        return TOKEN_REJECTED if e.code in (401, 403) else None
+    except (OSError, http.client.HTTPException, ValueError):
+        # urllib wraps only request-phase errors in URLError (an OSError). A read
+        # timeout or dropped connection reaches here raw, and a bad body is a ValueError.
         return None
 
 
@@ -454,8 +346,8 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
     state is one of:
       "no_expiry" — no expiry recorded (expires_at_ms falsy); proceed silently.
       "ok"        — token valid with > 1h remaining; proceed silently.
-      "expiring"  — token valid but expires within 1 hour; advisory, do not proceed.
-      "expired"   — token already expired; advisory, do not proceed.
+      "expiring"  — token valid but expires within 1 hour; main() still uses it.
+      "expired"   — token already expired; main() skips the snapshot with this advisory.
 
     For "no_expiry"/"ok" the advisory is "". For "expiring"/"expired" the advisory
     is a one-line message intended for stderr. Mirrors the visibility of the
@@ -467,8 +359,9 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
         days_ago = (now_ms - expires_at_ms) / 86_400_000
         return "expired", (
             f"[usage-snapshot] Skipped: OAuth token in .credentials.json expired "
-            f"{days_ago:.1f} days ago. This client isn't refreshing that file — run "
-            f"`claude` interactively once to rewrite it."
+            f"{days_ago:.1f} days ago, and this hook makes no model call to refresh it "
+            f"(dev-env#1299). Run `claude` in a terminal, or `claude auth login`, to "
+            f"rewrite it; the next merge then shows the snapshot."
         )
     if (expires_at_ms - now_ms) < 3_600_000:
         return "expiring", (
@@ -476,76 +369,6 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
             "interactively to refresh before the next check."
         )
     return "ok", ""
-
-
-def snapshot_action(state: str) -> str:
-    """Map a token state to the snapshot action (pure; unit-testable offline).
-
-    "expired"                       -> "refresh"  (try an on-demand refresh, then re-check)
-    "ok" / "expiring" / "no_expiry" -> "fetch"    (token is still valid; use it)
-
-    An "expiring" token (<1h left) is still valid, so it now proceeds to the fetch
-    instead of being skipped — only a truly-expired token triggers a refresh.
-    """
-    return "refresh" if state == "expired" else "fetch"
-
-
-def refresh_token_now(timeout: int = 45) -> bool:
-    """Best-effort on-demand OAuth-token refresh via the CLI.
-
-    Delegates to keep-token-warm.ps1 (the same script the ClaudeKeepTokenWarm
-    scheduled task runs), which invokes the Claude CLI — the CLI owns the token
-    refresh and the credential-file write, so this carries none of the raw-OAuth
-    rotation risk that gated dev-env#356. The .ps1 gets a shorter internal timeout
-    so it kills its own claude child cleanly; this subprocess timeout is the outer
-    backstop, kept under Claude Code's ~60s hook budget.
-
-    Returns True if the refresh ran to completion. The caller confirms a token was
-    actually obtained by re-reading and re-classifying the credentials.
-    """
-    try:
-        subprocess.run(
-            [
-                "powershell", "-NoProfile", "-NonInteractive",
-                "-ExecutionPolicy", "Bypass", "-File", KEEP_WARM_PS1,
-                "-TimeoutSeconds", "35",
-            ],
-            timeout=timeout,
-            capture_output=True,
-        )
-        return True
-    except Exception:
-        return False
-
-
-def attempt_token_refresh(
-    creds: dict,
-    token: str | None,
-    expires_at_ms: int,
-    refresh_fn=refresh_token_now,
-    load_fn=load_credentials,
-    get_fn=get_access_token,
-) -> tuple[str | None, int, dict]:
-    """Best-effort on-demand refresh + re-read, shared by both token-recovery
-    branches in main() (a missing/unparseable token, and an expired one).
-
-    Returns the possibly-updated (token, expires_at_ms, creds). If refresh_fn()
-    itself reports failure, the inputs are returned unchanged — there is nothing
-    to re-read. If it reports success but a subsequent load_fn() can't produce a
-    creds dict (e.g. the file is briefly unreadable mid-write), creds falls back
-    to the caller's original value and the token is re-extracted from that
-    (effectively a no-op, matching prior behavior).
-
-    refresh_fn/load_fn/get_fn are dependency-injected (defaulting to the real
-    subprocess/file-I/O functions above) so the retry sequence itself is
-    testable offline — mirrors this repo's existing pattern for testing an
-    I/O-wrapping decision via an injected fake (e.g. post-tool-use.py's
-    fetch_live_required_field_options()).
-    """
-    if refresh_fn():
-        creds = load_fn() or creds
-        token, expires_at_ms = get_fn(creds)
-    return token, expires_at_ms, creds
 
 
 def status_label(util: float, target: int, margin: int) -> str:
@@ -855,73 +678,54 @@ def main() -> None:
         if not resolution["confirmed"]:
             sys.exit(0)
 
+    try:
+        _report_usage(data, cwd)
+    except Exception as exc:  # noqa: BLE001
+        # A confirmed merge is never silent (dev-env#1139). The type name only: a
+        # bad header value's message contains the token.
+        _hookout.emit_block(
+            f"[usage-snapshot] Skipped: the hook hit an unexpected {type(exc).__name__}, "
+            "likely from a usage API response it doesn't understand. The snapshot was "
+            "omitted for this merge."
+        )
+
+
+def _report_usage(data: dict, cwd: str) -> None:
+    # Every skip below is an advisory, never a refresh: a status readout must not
+    # make a model call (dev-env#1299). emit_block() exits 2.
     creds = load_credentials()
-    if not creds:
-        sys.exit(0)
+    if creds is None:
+        _hookout.emit_block(
+            f"[usage-snapshot] Skipped: no readable credentials file at {CREDS_PATH}. "
+            "Run `claude auth login` in a terminal to sign the CLI in; the next merge "
+            "then shows the snapshot."
+        )
 
     token, expires_at_ms = get_access_token(creds)
     if not token:
-        # Creds file exists but holds no usable token (missing/malformed oauth
-        # substructure) — surface it rather than failing silently (creds-file-absent
-        # is handled silently above).
-        #
-        # Before paying for a ~35s keep-warm refresh (and before advising an
-        # interactive re-auth), check whether a CLI *subprocess* can even
-        # authenticate here. Under the MSIX Claude desktop app it cannot: OAuth is in
-        # the OS keychain, no readable .credentials.json is ever written, so neither
-        # this read nor keep-token-warm.ps1's refresh can produce one and setup-token
-        # is 403 at the usage endpoint (dev-env#915, ADR-043/044/124). `claude auth
-        # status` reporting loggedIn:false is that exact signature — skip straight to
-        # an accurate advisory rather than a doomed refresh. emit_block() exits(2).
-        if cli_auth_status() == "out":
-            _hookout.emit_block(
-                "[usage-snapshot] Skipped: the Claude desktop app keeps OAuth in the "
-                "OS keychain, so no readable token file exists and a CLI refresh "
-                "cannot create one (dev-env#915). Post-merge usage snapshots are "
-                "unavailable in this configuration."
-            )
-        # Otherwise (npm-CLI world, or an unknown probe result): attempt an on-demand
-        # refresh, mirroring the expired-token branch below — the CLI's refresh path
-        # can repair a locally corrupted/missing token field, not just refresh an
-        # already-valid one (dev-env#819).
-        token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
-        if not token:
-            _hookout.emit_block(
-                "[usage-snapshot] Skipped: .credentials.json has no usable OAuth "
-                "token (missing or unparseable), and an on-demand refresh did not "
-                "produce one. Run `claude` interactively to rewrite it."
-            )
+        _hookout.emit_block(
+            "[usage-snapshot] Skipped: .credentials.json has no usable OAuth token "
+            "(missing, blank or malformed). Run `claude auth login` in a terminal to rewrite it; "
+            "the next merge then shows the snapshot."
+        )
 
-    # Only a truly-expired token blocks the snapshot. Claude Code refreshes lazily,
-    # so a scheduled keep-warm can't fully close the gap; instead, refresh on demand
-    # right here. A still-valid "expiring" token (<1h) proceeds to the fetch rather
-    # than being discarded.
-    #
-    # This can be the *second* attempt_token_refresh() call in this invocation (the
-    # branch above already tried once for a missing/malformed token) if that refresh
-    # left a token that's present but still expired -- refresh_token_now() reporting
-    # success only means the subprocess didn't throw, not that the CLI actually
-    # refreshed anything (confirmed live: dev-env#825). Deliberately not deduplicated:
-    # the trigger is narrow (a token that flips from unusable to present-but-expired
-    # between the two checks), each attempt is bounded by refresh_token_now()'s own
-    # ~45s subprocess timeout, and the hook's configured 90s settings.json timeout
-    # (dev-env CLAUDE.md Testing item 63) is an acceptable backstop for this rare case
-    # rather than adding cross-branch state to force a single attempt.
-    state, _ = classify_token(expires_at_ms, time.time() * 1000)
-    if snapshot_action(state) == "refresh":
-        token, expires_at_ms, creds = attempt_token_refresh(creds, token, expires_at_ms)
-        state, _ = classify_token(expires_at_ms, time.time() * 1000)
-        if state == "expired" or not token:
-            _hookout.emit_block(
-                "[usage-snapshot] OAuth token expired and on-demand refresh failed "
-                "(the refresh token may be dead) - run `claude` interactively to re-auth."
-            )
+    # Only a truly-expired token skips the snapshot. A still-valid "expiring" token
+    # (<1h) proceeds to the fetch rather than being discarded.
+    state, advisory = classify_token(expires_at_ms, time.time() * 1000)
+    if state == "expired":
+        _hookout.emit_block(advisory)
 
     util_data = fetch_usage(token)
     if not util_data:
         # Retry once — transient network blips often self-heal
         time.sleep(1)
         util_data = fetch_usage(token)
+    if util_data is TOKEN_REJECTED:
+        _hookout.emit_block(
+            "[usage-snapshot] Skipped: the usage API rejected the OAuth token (HTTP 401 "
+            "or 403). Run `claude auth login` in a terminal to rewrite it; the next "
+            "merge then shows the snapshot."
+        )
     if not util_data:
         _hookout.emit_block(
             "[usage-snapshot] Skipped: usage API unavailable (network error or "

@@ -14,7 +14,7 @@ truncated (gotcha #5). This gate enforces, for EVERY (event, matcher, hook) entr
      through the hook launcher (`pyw -3 <home>/.claude/hook-launch.py <script>`), which
      fails open when the script is missing (dev-env#1146, ADR-148);
   2. an explicit integer `timeout` (seconds) >= the script's budget floor:
-       usage-snapshot.py           -> 90  (does ~45s of internal subprocess work)
+       usage-snapshot.py           -> 90  (sized for a refresh removed by dev-env#1299; see ADR-044)
        a hook importing _winsubp    -> 30  (spawns git/gh subprocesses)
        pure-Python (no _winsubp)    -> 10
      `_winsubp` import is the objective subprocess signal (authoring rule 4: any
