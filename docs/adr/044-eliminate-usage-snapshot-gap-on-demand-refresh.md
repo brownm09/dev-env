@@ -151,3 +151,33 @@ helps in exactly the cases the `"expired"` branch already helps in.
 
 See [dev-env#819](https://github.com/brownm09/dev-env/issues/819) and
 [dev-env#825](https://github.com/brownm09/dev-env/issues/825).
+
+## Amendment (2026-11-06) — On-demand refresh removed; a status readout makes no model call (dev-env#1299)
+
+This reverses this ADR's Decision. The on-demand refresh meant a merge on an expired token could run
+`claude -p ok --model haiku`, a model call whose only purpose was to show a status readout. That cost
+appeared in no plan and no approval. This ADR weighed the refresh's latency but never its usage. The
+investigation in [dev-env#1294](https://github.com/brownm09/dev-env/issues/1294) found the path had
+become reachable on 2026-11-06, before it had fired.
+
+**Decision.** `refresh_token_now()`, `attempt_token_refresh()` and `snapshot_action()` are deleted. A
+missing or expired token now skips the snapshot with an advisory saying what fixes it. This ADR's other
+fix stands: a still-valid "expiring" token is used, not discarded.
+
+**Cost accepted.** A merge in a stale window shows the advisory instead of the snapshot. The next merge
+after anything rewrites the token, such as running `claude` in a terminal, shows it again. The merge
+itself is unaffected.
+
+**Alternative rejected: keep the refresh and check the token source first.** Confirming a run bills the
+subscription rather than the API would satisfy the
+[token-source rule](https://github.com/brownm09/dev-env/issues/1280), but the call would still spend
+plan limit on a readout. The check answers which budget pays, and the objection is to paying at all.
+
+**Open question.** Whether `claude auth status --json` refreshes an expired token without a model call
+would decide if a no-model refresh is possible. It can't be checked while the token is valid, so
+[dev-env#1299](https://github.com/brownm09/dev-env/issues/1299) records the result. The hook skips either
+way until something shows that route works.
+
+**Left as is.** The hook's 90-second budget in `hook-dispatch.py` was sized for the refresh. The fetch's
+retry and the merge confirmation now take far less, but a larger budget costs nothing unless the hook
+hangs, so it isn't changed here.

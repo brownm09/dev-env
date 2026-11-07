@@ -164,3 +164,27 @@ PR 1290 emitted a usage snapshot. So the Context above did not describe this mac
 changed, whether it holds outside a session, and what it means for the refresh's `claude -p` call are
 open in [dev-env#1294](https://github.com/brownm09/dev-env/issues/1294). The decision itself stands: an
 `out` result still skips the refresh.
+
+## Amendment 2 (2026-11-06, dev-env#1299) — the hook no longer refreshes, so the probe is gone
+
+The investigation in [dev-env#1294](https://github.com/brownm09/dev-env/issues/1294) answered what the
+amendment above left open. The dead-end held only while the CLI's config directory had no login: this
+ADR's "no sanctioned token source" stopped being true once `claude auth login` had been run there, and
+that command is the sanctioned source. With the login present and the resolvers fixed by
+[dev-env#1285](https://github.com/brownm09/dev-env/issues/1285) and
+[dev-env#1293](https://github.com/brownm09/dev-env/issues/1293), the next merge on an expired token
+would have reached `claude -p ok --model haiku` through `keep-token-warm.ps1`: a model call, spent only
+to show a status readout.
+
+[dev-env#1299](https://github.com/brownm09/dev-env/issues/1299) removes the refresh
+([ADR-044](044-eliminate-usage-snapshot-gap-on-demand-refresh.md) amendment), which leaves this ADR's
+probe with nothing to gate. `resolve_claude_exe()`, `parse_auth_status()` and `cli_auth_status()` are
+deleted, along with the advisory that said snapshots were "unavailable in this configuration". This
+ADR's underlying rule, that a guard message must say what is actually true, still applies, and the new
+advisories name the command that fixes the state.
+
+A missing or unreadable credentials file used to exit 0 silently, which this ADR's Rationale noted. It
+now gets the same visible advisory as a missing token, naming `claude auth login`
+([dev-env#1139](https://github.com/brownm09/dev-env/issues/1139), consolidated from
+[PR 1144](https://github.com/brownm09/dev-env/pull/1144), whose resolver fix
+[dev-env#1293](https://github.com/brownm09/dev-env/issues/1293) had already superseded).

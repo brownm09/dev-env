@@ -93,14 +93,17 @@ For a one-line navigational map of the test directory, see
    bash claude/scripts/tests/run-shellcheck.sh
    ```
 
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py` or
-   `Resolve-ClaudeExe` in `claude/scripts/keep-token-warm.ps1`. Both find the desktop app's binary the
-   same way, so both are pinned here against `LOCALAPPDATA` fixtures
-   ([dev-env#1286](https://github.com/brownm09/dev-env/issues/1286)): the `Claude-Data` location beats
-   the older `Packages` one, the newest version wins numerically at either depth, and a directory not
-   named like a version is skipped. The PowerShell cases parse the script and evaluate only that
-   function's text, because the script has no main guard and dot-sourcing it would run its
-   `claude -p ok` model call.
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`.
+   Runs the real `main()` on a confirmed merge against real temp credentials files
+   ([dev-env#1299](https://github.com/brownm09/dev-env/issues/1299),
+   [dev-env#1139](https://github.com/brownm09/dev-env/issues/1139)): an expired token, a missing file
+   and a file with no usable token each exit 2 with an advisory naming `claude auth login`, reach
+   neither the usage API nor any process spawn; `ok` and `expiring` tokens reach the usage API and emit
+   the snapshot, also with no spawn. Spawns are recorded at `subprocess.Popen`, which `subprocess.run`
+   goes through, and refused, so no test can start a real process. The known-bad reference is
+   `test_spawn_recorder_catches_a_reinstated_refresh`: the old refresh's call put back inside `main()`,
+   with its exception swallowed as the old code did, must be recorded. Without it the empty-list
+   assertions could pass vacuously.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
    `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
    token now yields a user-facing advisory rather than the silent skip it did before
@@ -129,7 +132,7 @@ For a one-line navigational map of the test directory, see
    `main()` and makes each branch's outcome (`"marker"`, `"rest_marker"`, `"not_merge_shape"`,
    `"help_only"`, `"no_confirm_needed"`, `"gh_view_confirmed"`, `"gh_view_unconfirmed"`) an explicit,
    traced return value — covering all seven `reason`s, including the two live-`gh pr view` outcomes via
-   an injected `confirm_fn` (mirroring `attempt_token_refresh`'s fake-injection style) so the network
+   an injected `confirm_fn` so the network
    call is never exercised, and that `no_confirm_needed` never pays that call at all. Added because two
    live reproductions after the original dev-env#474 fix landed (PR #954 on 2026-08-07, PR #988 on
    2026-08-16) both saw no snapshot appear with no way to tell which fallback branch actually ran; every
