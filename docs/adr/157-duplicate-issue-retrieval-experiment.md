@@ -77,6 +77,18 @@ Three constraints shaped the choice of tools:
 
 **Cost.** About $27.50 at list price against a $30 budget, on the subscription, so this estimates plan usage and isn't a charge. Query writing ran above estimate ($4.03 against at most $3.50), and the session stayed within its $10 to $15 estimate.
 
+## Amendment (2026-11-07): #1275 is shelved, untested
+
+The owner chose shelving over another run, which settles the choice the amendment above left open. [#1275](https://github.com/brownm09/dev-env/issues/1275) is [closed as not planned](https://github.com/brownm09/dev-env/issues/1275#issuecomment-6710135871).
+
+**This doesn't reject embedding search.** The verdict stays inconclusive, and the [`/experiment-audit` skill](../../claude/skills/experiment-audit/SKILL.md) records abandoning a question for cost as shelved and untested, not as refuted.
+
+**Why shelve now.** Settling this needs new inputs, and only 1 new duplicate has been declared since the first fetch. The two runs together used about $50 at list price, which estimates plan usage and isn't a charge.
+
+**Criterion 2 of #1282 is accepted as not met.** For 5 inputs, the target's text was another draft in the query writer's batch, and only a new run could change that.
+
+**What reopening would need.** Enough newly declared duplicates to serve as new inputs, and writers' batches that keep each target's text away from its writer. Decisions 2 to 4 still stand as conditions on any future helper. The other retrieval targets in [#1259](https://github.com/brownm09/dev-env/issues/1259) are separate questions, and this doesn't close them.
+
 ## References
 
 - [BAAI/bge-small-en-v1.5 model card](https://huggingface.co/BAAI/bge-small-en-v1.5)
