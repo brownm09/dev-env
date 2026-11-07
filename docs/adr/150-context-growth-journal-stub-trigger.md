@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-30
 **Status:** Accepted
-**Tags:** journal, stubs, update-trigger, hooks, UserPromptSubmit, turn-count-hook, context-size, compaction, crash-recovery, advisory, fail-open, hook-config, claude-facing, adr-062, adr-100, adr-129
+**Tags:** journal, stubs, update-trigger, hooks, UserPromptSubmit, turn-count-hook, context-size, compaction, crash-recovery, advisory, fail-open, hook-config, claude-facing, token-efficiency, adr-062, adr-100, adr-129
 
 ---
 
@@ -129,3 +129,60 @@ sessions. It would measure the size of `CLAUDE.md`, not the work done.
   `transcript_path` payload field, and exit-0 stdout added as context.
 - [ADR-062](062-journal-report-analysis-trigger.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md),
   [ADR-129](129-journal-shell-write-guard.md).
+
+## Amendment 1 (2026-11-06) — the size warning also keys on growth
+
+**Context.** The Context section above found that an absolute threshold measures the size of the
+loaded instructions, not the work done. `[session-size]` still used one: 40k of context, then every
+20k. It warned in every session, so it said nothing about a session that had really grown
+([dev-env#1217](https://github.com/brownm09/dev-env/issues/1217), part of
+[#1213](https://github.com/brownm09/dev-env/issues/1213)).
+
+**Decision.** `[session-size]` now fires on the cumulative growth figure Decision 2 defines: first at
+150k tokens of growth, then every further 100k. The warning states both the growth and the current
+size. Its text is ASCII now, replacing two em dashes that a cp1252 pipe garbled.
+
+**Measurement.** A replay of the warning at each real user prompt, over 282 main-session transcripts
+from the 14 days ending 2026-11-06 (3,505 prompts, all projects on this machine):
+
+| # | Candidate | Warnings | Sessions warned (of 282) | Most in one session | Share of prompts warned |
+|---|---|---|---|---|---|
+| 1 | Absolute 40k, then every 20k (before this change) | 1,018 | 282 | 25 | 29.0% |
+| 2 | Growth 40k, then every 20k | 1,496 | 277 | 50 | 42.7% |
+| 3 | Growth 60k, then every 30k | 1,261 | 273 | 38 | 36.0% |
+| 4 | Growth 100k, then every 50k | 954 | 253 | 27 | 27.2% |
+| 5 | Growth 150k, then every 100k (chosen) | 608 | 215 | 16 | 17.3% |
+
+Row 2 is why the numbers changed along with the measure. Cumulative growth keeps rising past a
+compaction, while an absolute level stops at the session's peak, so keeping 40k and 20k on growth
+would have warned about half as often again as before.
+
+**Where the constants come from.** Row 5 reuses the journal bands from Decision 3. It is the only row
+here that clearly fires less than today, and with auto-compaction at 400k
+([ADR-156](156-compact-early-and-default-subagents-to-sonnet.md)) a session starting near 137k gets a
+warning at about 290k and 390k, before its first compaction. This is a judgment read off a frequency
+replay. There is no labelled corpus of sessions that should or shouldn't be warned, so the threshold
+is uncalibrated in the sense of the Gate calibration dimension
+([ADR-144](144-gate-calibration-pass-3-dimension.md)). It may report and may not block, and it only
+ever reports: exit 0 on stdout. The constants aren't configurable, because nothing has asked for that.
+
+**Consequences.**
+
+- `[session-size]` and `[journal-stub]` often print on the same prompt, since their defaults match.
+  They ask for different things, a `/clear` or `/compact` decision and a stub update, so they stay
+  separate messages.
+- A warning still fires after a compaction when growth reaches the next threshold, though the current
+  size has dropped. The text says how much the session has added and where it is now, so the reader
+  can tell.
+- An in-flight session's `ctx-warn-<session_id>.txt` holds an absolute level from before this change.
+  It reads as a growth level, so that session stays quiet until its growth passes the stored number.
+  The cost is a missed advisory in a session already running, so the state file keeps its name.
+
+**Alternatives considered.**
+
+- **Growth with the old 40k and 20k.** Rejected: row 2 fires more than today.
+- **Growth with 100k and 50k.** Rejected: row 4 barely moves the share of prompts warned, 27.2% against
+  29.0%.
+- **Last turn minus first turn.** A compaction would silence the warning until the session climbed back
+  to its old peak, and it would be a second growth figure for the same pass to compute. Rejected for
+  the reasons Decision 2 gives.

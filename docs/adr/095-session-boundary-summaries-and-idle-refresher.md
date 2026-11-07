@@ -3,7 +3,7 @@
 **Date:** 2026-07-09
 **Status:** Accepted
 **Closes:** part of [dev-env#652](https://github.com/brownm09/dev-env/issues/652) (via [#653](https://github.com/brownm09/dev-env/issues/653))
-**Tags:** workflow, session-boundary, summaries, idle-refresher, hooks, UserPromptSubmit, claude-facing, context, adr-027, adr-046, adr-094
+**Tags:** workflow, session-boundary, summaries, idle-refresher, hooks, UserPromptSubmit, claude-facing, context, token-efficiency, prompt-cache, adr-027, adr-046, adr-094
 **Related:** [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-046](046-post-merge-followup-tiles.md), [ADR-094](094-tile-tables-and-issue-per-tile.md)
 
 ---
@@ -53,3 +53,31 @@ Two behavioral rules in global `claude/CLAUDE.md` (new **Session Summaries & Til
 - [ADR-038](038-durable-preferences-documented-in-repo.md) — durable preferences belong in the repo, not memory.
 - [ADR-046](046-post-merge-followup-tiles.md) — post-merge tile capture; [ADR-094](094-tile-tables-and-issue-per-tile.md) — the sibling tile-table / issue-per-tile decision.
 - `session-mode-prompt.py` — the `additionalContext` injection pattern the idle-refresher reuses.
+
+## Amendment 1 (2026-11-06) — the cue states what the return re-caches
+
+**Context.** Re-caching a session after an idle gap over 60 minutes was 7.9% of weighted spend in the
+[dev-env#1213](https://github.com/brownm09/dev-env/issues/1213) baseline, 421 times in 14 days, and the
+cue said nothing about it. The hook fires after submit, so it can't prevent that call's re-cache, but
+it can inform the next decision ([dev-env#1217](https://github.com/brownm09/dev-env/issues/1217)).
+
+**Decision.** The cue now gives the size of the context on the last main-thread assistant turn, tells
+Claude to state it in the refresher, and asks Claude to suggest `/clear` with a short hand-off if the
+user's new message starts a different task. If the size can't be read, only the size sentence is dropped.
+The hook's stream and exit code don't change: JSON on stdout, exit 0.
+
+**The wording says "most of that".** Over transcripts from the 14 days ending 2026-11-06, across 528 gaps
+over 60 minutes, the next call's cache write was a median 0.86 of the prior context, with a 10th
+percentile of 0.31 and 62.3% at 0.8 or above. Across 168 gaps of 30 to 55 minutes the median was 0.00, so
+the 60-minute default sits past the cache's lifetime and the size is a fair upper estimate, not an exact
+cost. Anthropic documents a default lifetime of 5 minutes and an optional 1 hour
+([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)). A lower
+`idle_refresher_minutes` override can fire inside the lifetime, where the statement overstates the cost.
+No project sets one today, so this is documented on the key rather than handled in code.
+
+**Alternatives considered.**
+
+- **Reporting the size from the next call's actual cache write.** Rejected: that call hasn't happened when
+  the hook fires, so the figure would arrive a turn late, after the refresher it belongs in.
+- **A warning before the re-cache.** Not possible from this hook: the prompt is already submitted, and
+  blocking a returning user's prompt to warn about cost isn't worth the interruption.

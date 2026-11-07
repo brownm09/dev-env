@@ -10,6 +10,13 @@ Tracking" section — Claude cannot observe elapsed idle time on its own, so a
 hook has to measure the wall-clock gap and inject the cue. See
 docs/adr/095-session-boundary-summaries-and-idle-refresher.md and dev-env#655.
 
+The cue also states the context size this return re-caches and suggests /clear
+with a hand-off if the task has changed (dev-env#1217). The hook fires after
+submit, so it cannot prevent this call's re-cache, only inform the next decision.
+The size comes from a second tail read, made only once the gap has fired. Past the
+default 60 minutes the cache has expired; a lower idle_refresher_minutes override
+can fire inside the cache's lifetime, where the statement overstates the cost.
+
 Output contract: stdout JSON `{"hookSpecificOutput": {"hookEventName":
 "UserPromptSubmit", "additionalContext": "..."}}` + exit 0 — the same
 additionalContext injection session-mode-prompt.py uses (ADR-027). The prompt
@@ -118,6 +125,30 @@ def last_activity_epoch(records_reverse):
     return None
 
 
+def last_context_tokens(records_reverse):
+    """Context size on the newest main-thread assistant turn, or None.
+
+    The size is input + cache read + cache write, skipping what turn-count-hook.py's
+    get_context_stats skips: sidechain records, and zero-usage or malformed usage.
+    *records_reverse* is most-recent-first, as for last_activity_epoch.
+    """
+    for rec in records_reverse:
+        if not isinstance(rec, dict) or rec.get("type") != "assistant" or rec.get("isSidechain"):
+            continue
+        msg = rec.get("message")
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        parts = [
+            usage.get("input_tokens", 0),
+            usage.get("cache_read_input_tokens", 0),
+            usage.get("cache_creation_input_tokens", 0),
+        ]
+        if all(isinstance(p, int) for p in parts) and sum(parts) > 0:
+            return sum(parts)
+    return None
+
+
 def compute_gap_seconds(now, last_activity):
     """Seconds elapsed since the last activity, or None when unknown."""
     if last_activity is None:
@@ -160,19 +191,38 @@ def humanize_gap(gap_seconds):
     return f"{minutes // 60} hours"
 
 
-def build_refresher_context(gap_seconds):
+def build_refresher_context(gap_seconds, context_tokens=None):
     """The additionalContext cue. ASCII-only (hyphens, "about" — never an
-    em-dash or a math sign) so it survives the cp1252 hook-stdout pipe."""
+    em-dash or a math sign) so it survives the cp1252 hook-stdout pipe.
+    *context_tokens* None (size unknown) drops only the size sentence."""
     span = humanize_gap(gap_seconds)
+    size = (
+        f"This session's context is about {context_tokens:,} tokens, and after a gap "
+        "this long most of that is written to the prompt cache again on this turn. "
+        "State that size in the refresher. "
+        if context_tokens
+        else ""
+    )
     return (
         f"[idle-refresher] The user is returning to this session after about "
         f"{span} away. Before addressing their new message, open your reply with "
         "a short refresher so they can re-orient: what we were working on, the "
         "current state (what is done and what is still in flight), and any "
         "pending to-dos or spawned tiles. Keep it to a few sentences - an "
-        "orientation, not a full report - then address their request. (Session "
-        "Summaries & Tile Tracking rule; ADR-095.)"
+        f"orientation, not a full report - then address their request. {size}If "
+        "their message starts a different task, suggest /clear with a short "
+        "hand-off so later turns stop carrying this context. (Session Summaries & "
+        "Tile Tracking rule; ADR-095.)"
     )
+
+
+def _context_tokens_from_path(path):
+    """last_context_tokens from a bounded tail read of *path*; None on any
+    failure, since the size is optional in the cue (fail-open)."""
+    try:
+        return last_context_tokens(_hookutil.iter_records_reverse(path))
+    except Exception:
+        return None
 
 
 def _last_activity_epoch_from_path(path):
@@ -228,7 +278,7 @@ def main():
         payload = {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": build_refresher_context(gap),
+                "additionalContext": build_refresher_context(gap, _context_tokens_from_path(path)),
             }
         }
         sys.stdout.write(json.dumps(payload))

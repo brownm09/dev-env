@@ -378,7 +378,7 @@ Default to Sonnet when uncertain. Never use Opus for tasks a Haiku prompt handle
 
 **Directory reads:** When reading from a directory with more than ~3 files, read `INDEX.md` or a top-level manifest first. Load individual files on demand, not by globbing the whole directory. Flag to the user before reading more than 5 files in a single pass.
 
-**Session length:** `turn-count-hook.py` warns at 8 prompts and every 4 after, and at 40k tokens of context and every 20k after. Consider `/clear` or `/compact` if the task has shifted. Override the prompt threshold per project with `"turn_threshold": N` in `.claude/hook-config.json`. [Detail](../docs/REFERENCE.md#detail-context-efficiency)
+**Session length:** `turn-count-hook.py` warns at 8 prompts and every 4 after, and at 150k tokens of context growth since the session's first turn and every 100k after. Consider `/clear` or `/compact` if the task has shifted. Override the prompt threshold per project with `"turn_threshold": N` in `.claude/hook-config.json`. [Detail](../docs/REFERENCE.md#detail-context-efficiency)
 
 **Token source:** Whenever you estimate or spend tokens, for any task in any session, say whether they come from the subscription or the API.
 
@@ -439,7 +439,7 @@ Every session boundary is a moment to orient the user. These are output rules; o
 
   **Status** is the issue's open/closed state plus a best-effort "started" note from `list_sessions`; there's no per-chip API. A lost chip is re-spawnable on request.
 
-- **Open with a refresher after a long idle gap.** When `idle-refresher.py` injects its cue (default 60 minutes; override with `idle_refresher_minutes` in `.claude/hook-config.json`), lead with a brief refresher of what we were working on, the current state, and pending to-dos and tiles.
+- **Open with a refresher after a long idle gap.** When `idle-refresher.py` injects its cue (default 60 minutes; override with `idle_refresher_minutes` in `.claude/hook-config.json`), lead with a brief refresher of what we were working on, the current state, and pending to-dos and tiles. State the context size the cue gives, and if the new message starts a different task, suggest `/clear` with a short hand-off.
 
 ---
 

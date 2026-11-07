@@ -27,6 +27,11 @@ plumbing and the live transcript read are intentionally not covered (they
 touch real stdin/disk and the repo avoids mocking those boundaries; the reads
 go through the already-tested _hookutil.iter_records_reverse).
 
+Since dev-env#1217 the cue states the context size the return re-caches and
+suggests /clear with a hand-off. last_context_tokens and the cue text are pinned
+below, and one subprocess test runs main() end to end, because "the size reaches
+the emitted text" and "the hook still exits 0" are that issue's criteria.
+
 Usage:
     py -3 claude/scripts/tests/test_idle_refresher.py
 
@@ -36,9 +41,14 @@ Exit 0 = all pass.
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from _heartbeat_isolation import isolate_heartbeat
+
+isolate_heartbeat()
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -218,11 +228,88 @@ def test_refresher_context_is_cp1252_safe() -> str:
     # em-dash) makes the write raise and the cue vanish through the exit-0 guard.
     # Pin the injected text ASCII/cp1252-encodable so that can't regress.
     for gap in (61 * 60, 3 * 3600):
-        msg = ir.build_refresher_context(gap)
-        msg.encode("cp1252")  # raises UnicodeEncodeError on a non-cp1252 char
-        assert msg.isascii(), f"cue must be ASCII, got non-ASCII: {msg!r}"
-        assert "refresher" in msg.lower(), "cue must actually mention a refresher"
+        for tokens in (None, 167_000):
+            msg = ir.build_refresher_context(gap, tokens)
+            msg.encode("cp1252")  # raises UnicodeEncodeError on a non-cp1252 char
+            assert msg.isascii(), f"cue must be ASCII, got non-ASCII: {msg!r}"
+            assert "refresher" in msg.lower(), "cue must actually mention a refresher"
     return "injected cue is ASCII / cp1252-encodable (won't vanish under cp1252 stdout)"
+
+
+def _assistant(tokens, timestamp="2026-07-09T10:00:00Z", **extra):
+    return {
+        "type": "assistant",
+        "timestamp": timestamp,
+        "message": {
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": tokens - 15,
+                "cache_creation_input_tokens": 5,
+            },
+        },
+        **extra,
+    }
+
+
+def test_last_context_tokens_main_thread() -> str:
+    synthetic = {"type": "assistant", "message": {"usage": {"input_tokens": 0, "cache_read_input_tokens": 0}}}
+    malformed = {"type": "assistant", "message": {"usage": {"input_tokens": "12"}}}
+    records_reverse = [
+        {"type": "user", "message": {"content": "new prompt"}},
+        synthetic,
+        malformed,
+        _assistant(20_000, isSidechain=True),
+        _assistant(167_000),
+        _assistant(150_000),
+    ]
+    got = ir.last_context_tokens(records_reverse)
+    assert got == 167_000, got
+    return "newest main-thread turn with real usage; prompt, synthetic, malformed, sidechain skipped"
+
+
+def test_last_context_tokens_none() -> str:
+    assert ir.last_context_tokens([]) is None, "empty"
+    assert ir.last_context_tokens([{"type": "assistant", "message": "x"}, "junk"]) is None, "no usage"
+    return "no assistant turn with usable usage -> None"
+
+
+def test_refresher_context_states_size() -> str:
+    msg = ir.build_refresher_context(2 * 3600, 167_000)
+    assert "167,000 tokens" in msg, msg
+    assert "/clear" in msg and "hand-off" in msg, msg
+    return "the cue names the re-cached size and suggests /clear with a hand-off"
+
+
+def test_refresher_context_without_size() -> str:
+    msg = ir.build_refresher_context(2 * 3600, None)
+    assert "tokens" not in msg, f"no size to state: {msg!r}"
+    assert "/clear" in msg and "refresher" in msg.lower(), msg
+    return "an unknown size drops only the size sentence"
+
+
+def _run_hook(stdin_text):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=stdin_text.encode("utf-8"), capture_output=True, timeout=60,
+    )
+
+
+def test_main_end_to_end() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        transcript = Path(d) / "t.jsonl"
+        transcript.write_text(json.dumps(_assistant(167_000)) + "\n", encoding="utf-8")
+        payload = {"prompt": "back again", "cwd": d, "transcript_path": str(transcript)}
+        fired = _run_hook(json.dumps(payload))
+        automated = _run_hook(json.dumps(dict(payload, prompt="<scheduled-task>run</scheduled-task>")))
+        garbage = _run_hook("{not json")
+    assert fired.returncode == 0, fired.returncode
+    assert fired.stderr == b"", fired.stderr
+    output = json.loads(fired.stdout.decode("utf-8"))["hookSpecificOutput"]
+    assert output["hookEventName"] == "UserPromptSubmit", output
+    assert "167,000 tokens" in output["additionalContext"], output
+    assert automated.returncode == 0 and automated.stdout == b"", automated.stdout
+    assert garbage.returncode == 0 and garbage.stdout == b"", garbage.stdout
+    return "the size reaches stdout JSON with exit 0; automated prompt and garbage stdin stay silent"
 
 
 def main() -> int:
@@ -242,6 +329,11 @@ def main() -> int:
         ("is_automated_prompt", test_is_automated_prompt),
         ("humanize_gap minutes/hours", test_humanize_gap),
         ("refresher cue is cp1252-safe", test_refresher_context_is_cp1252_safe),
+        ("last_context_tokens newest main-thread usage", test_last_context_tokens_main_thread),
+        ("last_context_tokens None without usage", test_last_context_tokens_none),
+        ("refresher cue states the size", test_refresher_context_states_size),
+        ("refresher cue without a size", test_refresher_context_without_size),
+        ("main() end to end", test_main_end_to_end),
     ]
     failed = 0
     for name, fn in tests:
