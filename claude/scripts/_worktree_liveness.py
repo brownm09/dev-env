@@ -43,6 +43,8 @@ unit-test offline. It is **policy-free** — each caller passes its own window c
 ⇒ a short window that keeps disk reclamation aggressive; ``session-start-sync.py`` uses a
 much shorter window still — see its own module docstring).
 """
+import argparse
+import math
 import os
 import time
 from pathlib import Path
@@ -174,28 +176,21 @@ def is_recent(age_seconds: "float | None", window_seconds: float) -> bool:
     return age_seconds is not None and age_seconds <= window_seconds
 
 
-def parse_liveness_window_seconds(argv: "list[str]", default: int) -> int:
-    """Parse ``--liveness-window-min N`` (minutes) from ``argv`` into seconds.
+def liveness_minutes_arg(value: str) -> int:
+    """``argparse`` ``type=`` for ``--liveness-window-min N``: minutes in, seconds out.
 
-    Returns ``default`` when the flag is absent. Raises ``ValueError`` on a missing,
-    non-numeric, or **negative** argument — a negative window would make ``is_recent()``
-    ``False`` for every real (positive-age) transcript, silently disabling the guard and
-    re-exposing the very bug this protects against. ``0`` is allowed (an explicit "protect
-    only a now/future transcript", i.e. effectively off). Pure helper: callers translate the
-    ``ValueError`` to ``sys.exit`` so the message is consistent across both scripts.
+    Rejects a non-numeric, non-finite or **negative** value — a negative window would make
+    ``is_recent()`` ``False`` for every real (positive-age) transcript, silently disabling the
+    guard and re-exposing the very bug this protects against. ``0`` is allowed (an explicit
+    "protect only a now/future transcript", i.e. effectively off).
     """
-    for i, arg in enumerate(argv):
-        if arg == "--liveness-window-min":
-            if i + 1 >= len(argv):
-                raise ValueError("--liveness-window-min requires an argument")
-            try:
-                minutes = float(argv[i + 1])
-            except ValueError:
-                raise ValueError("--liveness-window-min requires a numeric argument")
-            if minutes < 0:
-                raise ValueError("--liveness-window-min must be >= 0")
-            return int(minutes * 60)
-    return default
+    try:
+        minutes = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number of minutes") from None
+    if not math.isfinite(minutes) or minutes < 0:
+        raise argparse.ArgumentTypeError("must be a finite number >= 0")
+    return int(minutes * 60)
 
 
 def worktree_session_is_live(

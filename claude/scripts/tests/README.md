@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
 This directory holds the dev-env hook/script test suite: 106 `test_*.py` files, 12 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 120 files total, indexed per file below
+three shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`, `_throwaway_repo.py`) — 121 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -32,8 +32,8 @@ that adds a test file.
 ## Shared support modules
 
 Tests for internal `_foo.py` libraries that live in `claude/scripts/` and get imported by
-multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py` and
-`_heartbeat_isolation.py` are the exceptions: they live in *this* directory because they're
+multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py`,
+`_heartbeat_isolation.py` and `_throwaway_repo.py` are the exceptions: they live in *this* directory because they're
 test-support infrastructure, not production code.
 
 | Test file | Covers | Purpose |
@@ -64,6 +64,7 @@ test-support infrastructure, not production code.
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
 | — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 110 too). |
+| — | `_throwaway_repo.py` | Not itself a test. `ThrowawayRepo` builds a temp repo with a local bare origin and a merged worktree, so `test_prune_merged_worktrees.py` and `test_reclaim_worktree_disk.py` can run the real scripts with no network and no risk to a real repo. |
 | — | `_heartbeat_isolation.py` | Not itself a test. `isolate_heartbeat()` points `HOOK_HEARTBEAT_DIR_OVERRIDE` at a temp dir for the calling test process, so a test that runs a real hook never writes the production heartbeat ledger (dev-env#1163). |
 
 ## Structural / fleet-wide gates
