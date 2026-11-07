@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 106 `test_*.py` files, 12 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 120 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 107 `test_*.py` files, 12 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 121 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
@@ -39,6 +39,7 @@ test-support infrastructure, not production code.
 | Test file | Covers | Purpose |
 |---|---|---|
 | `test_bash_state.py` | `_bash_state.py` | Per-session repo/branch state file plus the drift-warning formatter shared by the four commit/PR-create/merge/every-Bash-call checkpoint hooks. |
+| `test_closing_negation.py` | `_closing_negation.py` | The negated closing keyword: the lines from switchyard PR 21 and lifting-logbook PR 510 name their issues, and ordinary wording doesn't match. |
 | `test_composed_output_scan.py` | `_composed_output_scan.py` | Fence- and code-span-aware detection of stray terminal output in composed journal markdown, behind `/journal-compose` Step 8b. |
 | `test_gh_issue_state.py` | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (URL validation, PR-vs-issue filtering, `state` case normalization, paged-lookup stop condition) extracted from `reconcile-pending-tiles.py` for reuse by `retro-chain-status.py`. |
 | `test_gh_project.py` | `_gh_project.py` | Shared `gh project item-add` wrapper (used by `post-tool-use.py` and `reconcile-project-board.py`'s orphan-add step) plus its best-effort item-ID cache — the zero-cost lookup path `get-project-item.sh` and `post-pr-merge-project.py` check first, falling back to a 1-point single-item query on a miss. |
