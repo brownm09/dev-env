@@ -4,6 +4,10 @@
 **Status:** Accepted
 **Tags:** hooks, post-tool-use, stop-hook, transcript, observability, reliability, background-task, spawn-task, github-project
 
+> **Amended 2026-11-07:** zero PostToolUse attachments doesn't prove hooks didn't run, and launch path
+> doesn't decide the inert state. The advisory's message changed to match; its detection didn't. See
+> [ADR-053's amendment](053-posttooluse-hooks-inert-in-background-sessions.md#amendment-2026-11-07--start_session-sessions-arent-inert-and-zero-attachments-doesnt-mean-inert).
+
 ---
 
 ## Context
