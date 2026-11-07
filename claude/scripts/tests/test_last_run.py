@@ -20,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _last_run import LastRun  # noqa: E402
+from _last_run import LastRun, commit, main as last_run_main, pending_path  # noqa: E402
 
 
 def _quiet_load(path) -> LastRun:
@@ -67,6 +67,7 @@ def test_round_trip_reports_only_differences() -> str:
         first = _quiet_load(path)
         first.record("r", "s", {"same": "1", "reworded": "old", "going": "1"})
         first.save()
+        assert commit(path) is None
 
         second = _quiet_load(path)
         assert not second.is_baseline
@@ -84,10 +85,12 @@ def test_unrecorded_sections_and_repos_are_kept() -> str:
         first.record("failed-tonight", "s", {"a": "1"})
         first.record("ok", "s", {"b": "1"})
         first.save()
+        assert commit(path) is None
 
         second = _quiet_load(path)
         second.record("ok", "s", {})
         second.save()
+        assert commit(path) is None
 
         third = _quiet_load(path)
         assert third.prior("failed-tonight", "s") == {"a": "1"}, "an unrecorded repo was lost"
@@ -112,9 +115,40 @@ def test_saved_file_is_plain_json_with_no_tmp_left() -> str:
         run = _quiet_load(path)
         run.record("r", "s", {"a": "1"})
         run.save()
+        assert not path.exists(), "save() must not touch the state before the commit"
+        assert [p.name for p in Path(tmp).iterdir()] == ["state.json.pending"]
+        assert commit(path) is None
         assert json.loads(path.read_text(encoding="utf-8")) == {"r": {"s": {"a": "1"}}}
         assert [p.name for p in Path(tmp).iterdir()] == ["state.json"]
-    return "the state file is readable JSON and the atomic swap leaves no temp file"
+    return "save() writes only the pending file; the commit makes it plain JSON state, no temp left"
+
+
+def test_uncommitted_run_is_reported_again() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "state.json"
+        base = _quiet_load(path)
+        base.record("r", "s", {"a": "1"})
+        base.save()
+        assert commit(path) is None
+        for _ in range(2):  # saved but never committed, twice
+            run = _quiet_load(path)
+            assert run.record("r", "s", {"a": "1", "b": "1"}) == (["b"], [])
+            run.save()
+    return "a run saved but not committed leaves the old state, so its news is reported again"
+
+
+def test_commit_cli() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "state.json"
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            assert last_run_main(["commit", str(path)]) == 1, "no pending file should fail"
+            assert last_run_main([]) == 2 and last_run_main(["push", str(path)]) == 2
+            pending_path(path).write_text("{}", encoding="utf-8")
+            assert last_run_main(["commit", str(path)]) == 0
+        assert path.read_text(encoding="utf-8") == "{}" and not pending_path(path).exists()
+        assert "could not commit" in err.getvalue() and "usage:" in err.getvalue(), err.getvalue()
+    return "commit exits 0 and promotes the file, 1 with no pending file, 2 on bad usage"
 
 
 def main() -> int:
@@ -125,6 +159,8 @@ def main() -> int:
         ("unrecorded repos are kept", test_unrecorded_sections_and_repos_are_kept),
         ("save failure warns, does not raise", test_save_failure_warns_and_does_not_raise),
         ("saved file is plain JSON, no temp left", test_saved_file_is_plain_json_with_no_tmp_left),
+        ("uncommitted run is reported again", test_uncommitted_run_is_reported_again),
+        ("commit CLI", test_commit_cli),
     ]
     failed = 0
     for name, fn in tests:

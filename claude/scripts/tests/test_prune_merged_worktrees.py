@@ -86,6 +86,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from _last_run import commit as commit_state, pending_path  # noqa: E402
+
 _MODULE_PATH = SCRIPTS_DIR / "prune-merged-worktrees.py"
 _spec = importlib.util.spec_from_file_location("prune_merged_worktrees", _MODULE_PATH)
 prune = importlib.util.module_from_spec(_spec)
@@ -736,11 +738,16 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
 # The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
 # network, because is_merged() skips its `gh` fallback for a commit with no branch name.
 
-def _scan(repo: ThrowawayRepo, state: Path, *flags: str):
+def _scan(repo: ThrowawayRepo, state: Path, *flags: str, commit: bool = True):
+    """One --scan-dir run, then the routine's commit step unless commit=False."""
     r = repo.run_script(_MODULE_PATH, "--scan-dir", str(repo.root), "--include-named",
                         "--state-file", str(state), *flags)
     if r.returncode != 0:
         raise AssertionError(f"scan: exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    if commit and "--dry-run" not in flags and "--full" not in flags:
+        error = commit_state(state)
+        if error:
+            raise AssertionError(error)
     return r.stdout
 
 
@@ -830,7 +837,7 @@ def test_scan_full_and_dry_run_leave_the_state_alone() -> str:
         old = _add_unmerged_worktree(repo, "old")
 
         _scan(repo, state, "--dry-run")
-        if state.exists():
+        if state.exists() or pending_path(state).exists():
             raise AssertionError("--dry-run wrote the state file")
         _scan(repo, state)
         before = state.read_bytes()
@@ -879,11 +886,62 @@ def test_single_repo_mode_keeps_the_full_report() -> str:
     return "--repo-path prints its full report every time and never touches the state"
 
 
+def test_scan_uncommitted_run_reports_again() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        new = _add_unmerged_worktree(repo, "new")
+        # The routine's push failed, so it never committed: the next run must say it again.
+        first = _scan(repo, state, commit=False)
+        second = _scan(repo, state)
+        for label, out in (("uncommitted", first), ("next", second)):
+            if f"skipped {new}" not in out or _result_field(out, "new_skipped") != "1":
+                raise AssertionError(f"{label} run should list the new worktree\n{out}")
+        if new in _scan(repo, state):
+            raise AssertionError("after a commit the worktree should no longer be listed")
+    return "a run that isn't committed is reported again next run, and is quiet once committed"
+
+
+def test_scan_unreadable_remote_is_a_finding() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        url = repo.origin.as_posix()
+        repo._git(repo.primary, "remote", "set-url", "origin", str(Path(tmp) / "elsewhere"))
+        broken = _scan(repo, state)
+        if f"SKIP {repo.primary}" not in broken or _result_field(broken, "new_remote_failed") != "1":
+            raise AssertionError(f"a remote that stops resolving should be reported\n{broken}")
+        if f"SKIP {repo.primary}" in _scan(repo, state):
+            raise AssertionError("the same remote failure was reported twice")
+        repo._git(repo.primary, "remote", "set-url", "origin", url)
+        fixed = _scan(repo, state)
+        if f"GitHub remote resolves again: {repo.primary}" not in fixed:
+            raise AssertionError(f"a fixed remote should be reported once\n{fixed}")
+    return "a GitHub remote that can't be read is reported once, and so is its recovery"
+
+
+def test_scan_unreadable_scan_dir_fails() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        not_a_dir = Path(tmp) / "file.txt"
+        not_a_dir.write_text("x", encoding="utf-8")
+        r = repo.run_script(_MODULE_PATH, "--scan-dir", str(not_a_dir),
+                            "--state-file", str(Path(tmp) / "state.json"))
+        if r.returncode != 1 or "RESULT:" not in r.stdout or "failed" not in r.stdout:
+            raise AssertionError(f"exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    return "a scan directory that can't be read exits 1 instead of reporting a clean night"
+
+
 def main() -> int:
     tests = [
         ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
         ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
         ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
+        ("--scan-dir uncommitted run reports again", test_scan_uncommitted_run_reports_again),
+        ("--scan-dir unreadable remote is a finding", test_scan_unreadable_remote_is_a_finding),
+        ("--scan-dir unreadable scan dir fails", test_scan_unreadable_scan_dir_fails),
         ("skip_findings ignores passing skips, keeps their record", test_skip_findings_ignores_passing_skips_but_keeps_their_record),
         ("--repo-path keeps the full report", test_single_repo_mode_keeps_the_full_report),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),

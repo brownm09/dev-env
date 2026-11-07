@@ -55,6 +55,8 @@ assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)  # safe: main() is guarded by __main__
 
+from _last_run import commit as commit_state, pending_path as mod_pending_path  # noqa: E402
+
 canonical_repo_root = mod.canonical_repo_root
 field_key = mod.field_key
 board_items_query = mod.board_items_query
@@ -603,17 +605,22 @@ def test_validated_config_non_dict_json() -> str:
 # --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
 # Runs the real main() with only the gh boundary, and the production item cache, patched out.
 
-def _scan_board(repo_root, state, issues, items, *flags, fetch_error=None) -> tuple[int, str]:
+def _scan_board(repo_root, state, issues, items, *flags, fetch_error=None,
+                add_result=("PVTI_added", ""), repos=None, commit=True) -> tuple[int, str]:
+    """One --scan-dir run, then the routine's commit step unless commit=False."""
     argv = ["reconcile-project-board.py", "--scan-dir", repo_root, "--state-file", str(state), *flags]
     out = io.StringIO()
-    with mock.patch.object(mod, "find_git_repos", return_value=[repo_root]), \
+    with mock.patch.object(mod, "find_git_repos", return_value=repos or [repo_root]), \
             mock.patch.object(mod, "fetch_open_issues", return_value=issues, side_effect=fetch_error), \
             mock.patch.object(mod, "fetch_board_items", return_value=items), \
-            mock.patch.object(mod, "add_to_project", return_value=("PVTI_added", "")), \
+            mock.patch.object(mod, "add_to_project", return_value=add_result), \
             mock.patch.object(mod, "_backfill_item_cache"), \
             mock.patch.object(sys, "argv", argv), \
             contextlib.redirect_stdout(out):
         rc = mod.main()
+    if commit and rc == 0 and "--dry-run" not in flags and "--full" not in flags:
+        error = commit_state(state)
+        assert error is None, error
     return rc, out.getvalue()
 
 
@@ -744,17 +751,7 @@ def test_scan_dir_add_failure_is_news_once() -> str:
         issues = [_issue(1)]
 
         def scan_with_add(result):
-            argv = ["x", "--scan-dir", tmp, "--state-file", str(state)]
-            out = io.StringIO()
-            with mock.patch.object(mod, "find_git_repos", return_value=[tmp]), \
-                    mock.patch.object(mod, "fetch_open_issues", return_value=issues), \
-                    mock.patch.object(mod, "fetch_board_items", return_value=[]), \
-                    mock.patch.object(mod, "add_to_project", return_value=result), \
-                    mock.patch.object(mod, "_backfill_item_cache"), \
-                    mock.patch.object(sys, "argv", argv), \
-                    contextlib.redirect_stdout(out):
-                mod.main()
-            return out.getvalue()
+            return _scan_board(tmp, state, issues, [], add_result=result)[1]
 
         first = scan_with_add((None, "blip"))
         assert "[ADD FAILED - re-run]" in first and "#1 missing" in first, first
@@ -767,6 +764,71 @@ def test_scan_dir_add_failure_is_news_once() -> str:
     return "a failed add is reported once; the add succeeding lists it again, with its commands"
 
 
+def test_scan_dir_uncommitted_run_reports_again() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+        # The routine's push failed, so it never committed: the next run must say it again.
+        _, first = _scan_board(tmp, state, issues, items, commit=False)
+        _, second = _scan_board(tmp, state, issues, items)
+        for out in (first, second):
+            assert "#4 missing" in out and "new_needs_attention=1 " in _result_line(out), out
+        _, third = _scan_board(tmp, state, issues, items)
+        assert "#4 missing" not in third, third
+    return "a run that isn't committed is reported again next run, and is quiet once committed"
+
+
+def test_scan_dir_scope_abort_saves_nothing() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        other = Path(tmp) / "other"
+        _write_config(tmp, CONFIG)
+        _write_config(other, dict(CONFIG, repo="brownm09/other"))
+        state = Path(tmp) / "state.json"
+        _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        issues = _FLAGGED_ISSUES + [_issue(4)]
+        items = _FLAGGED_ITEMS + [_item(4)]
+
+        def fetch(repo):
+            if repo == REPO:
+                return issues
+            raise mod.GhError("missing required scope 'read:project'")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc, aborted = _scan_board(tmp, state, issues, items, fetch_error=fetch,
+                                      repos=[tmp, str(other)])
+        assert rc == 1, aborted
+        assert not mod_pending_path(state).exists(), "a scope abort saved its findings"
+        _, next_run = _scan_board(tmp, state, issues, items)
+        assert "#4 missing" in next_run, f"the abort used up #4's news:\n{next_run}"
+    return "a scope abort saves nothing, so the repos it did reach are reported again"
+
+
+def test_scan_dir_failed_repo_recovery_is_reported() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        with contextlib.redirect_stderr(io.StringIO()):
+            _scan_board(tmp, state, [], [], fetch_error=mod.GhError("boom"))
+        _, back = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert f"gh works again for {REPO}" in back, back
+        assert "no_longer_repos_failed=1" in _result_line(back), back
+    return "a repo whose gh calls work again is named once"
+
+
+def test_scan_dir_ignores_non_numeric_state_keys() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_config(tmp, CONFIG)
+        state = Path(tmp) / "state.json"
+        state.write_text(json.dumps({REPO: {"needs_attention": {"abc": "Why"}}}), encoding="utf-8")
+        rc, out = _scan_board(tmp, state, _FLAGGED_ISSUES, _FLAGGED_ITEMS)
+        assert rc == 0 and "#1 missing" in out, out
+        assert "No longer flagged" not in out, out
+    return "a hand-edited non-numeric key is ignored, not a crash on every run"
+
+
 def main() -> int:
     tests = [
         ("--scan-dir repeat lists nothing, then only the new issue", test_scan_dir_second_run_lists_nothing_then_only_the_new_issue),
@@ -775,6 +837,10 @@ def main() -> int:
         ("--scan-dir --full and --dry-run leave the state alone", test_scan_dir_full_and_dry_run_leave_the_state_alone),
         ("--scan-dir failed repo keeps its findings", test_scan_dir_failed_repo_keeps_its_findings),
         ("--scan-dir add failure is news once", test_scan_dir_add_failure_is_news_once),
+        ("--scan-dir uncommitted run reports again", test_scan_dir_uncommitted_run_reports_again),
+        ("--scan-dir scope abort saves nothing", test_scan_dir_scope_abort_saves_nothing),
+        ("--scan-dir failed repo recovery is reported", test_scan_dir_failed_repo_recovery_is_reported),
+        ("--scan-dir ignores non-numeric state keys", test_scan_dir_ignores_non_numeric_state_keys),
         ("canonical_repo_root resolution", test_canonical_repo_root),
         ("field_key derivation", test_field_key),
         ("colliding_required_fields reserved-key guard", test_colliding_required_fields),

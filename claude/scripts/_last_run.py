@@ -8,15 +8,31 @@ A repo or section a run never records keeps its stored findings, so a repo that 
 answer doesn't read as "everything resolved" now and "everything new" tomorrow. A state file
 that is missing or unreadable makes the run a baseline: is_baseline is True and the caller
 prints its full report. Losing the file therefore costs one long report and nothing else.
+
+**Comparing and committing are separate steps.** save() writes `<state>.pending`, and only
+`commit` makes it the state the next run compares against. A routine commits after it has
+delivered the notification, so a failed push, a session that dies or a scope abort means the
+same findings are reported again, never that they are lost. A run by hand doesn't commit, so
+it never uses up the next routine run's news.
+
+    py -3 claude/scripts/_last_run.py commit <state-file>
+
+Exit 0 when the pending findings became the state; exit 1, with the reason, when there was no
+pending file or it couldn't be moved.
 """
 from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
 
 STATE_DIR = Path.home() / ".claude" / "scratch" / "last-run"
+
+
+def pending_path(path: str | Path) -> Path:
+    return Path(f"{path}.pending")
 
 
 def _load(path: Path) -> dict | None:
@@ -63,13 +79,44 @@ class LastRun:
         return changed, gone
 
     def save(self) -> None:
-        """Replace the state file atomically. A failed write warns and doesn't raise: the
-        run's work is done, and the only cost is reporting the same changes again next run."""
-        tmp = f"{self.path}.{os.getpid()}.tmp"
+        """Write this run's findings to the pending file, atomically. A failed write warns
+        and doesn't raise: nothing is lost, because the commit step then fails and the next
+        run reports the same changes again."""
+        target = pending_path(self.path)
+        tmp = f"{target}.{os.getpid()}.tmp"
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._current, f, indent=1, sort_keys=True)
-            os.replace(tmp, self.path)
+            os.replace(tmp, target)
         except OSError as exc:
-            print(f"[last-run] WARNING: could not write {self.path}: {exc}")
+            print(f"[last-run] WARNING: could not write {target}: {exc}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def commit(path: str | Path) -> str | None:
+    """Make the pending findings the state; None on success, else why it failed."""
+    try:
+        os.replace(pending_path(path), path)
+    except OSError as exc:
+        return f"could not commit {pending_path(path)} to {path}: {exc}"
+    return None
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2 or argv[0] != "commit":
+        print("usage: _last_run.py commit <state-file>", file=sys.stderr)
+        return 2
+    error = commit(argv[1])
+    if error:
+        print(f"[last-run] ERROR: {error}", file=sys.stderr)
+        return 1
+    print(f"[last-run] committed {argv[1]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

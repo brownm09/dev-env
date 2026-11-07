@@ -16,7 +16,7 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 
 > **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended scheduled run with no human present. Do **not** open with a greeting, a question, or any "how can I help" / "what would you like to work on" reply — your **first output must be a tool call** (Step 0). The live scheduled-task copy carries this same imperative at the very top *and* bottom of its prompt, because the failure it guards against (see the Autonomous-run reliability caveat below) happens *before* Step 0.5's canonical read-through is ever reached.
 
-**Objective:** For every git repo directly under `C:/Users/brown/Git`, remove all worktrees (both `claude/*` and hand-named branches, e.g. `feat/`/`fix/`/`docs/` — via `--include-named`) whose branches are fully merged into `origin/main` and have no uncommitted changes. Also remove any non-primary worktrees accidentally checked out on `main`. Report the pruned/skipped summary per repo and a combined total.
+**Objective:** For every git repo directly under `C:/Users/brown/Git`, remove all worktrees (both `claude/*` and hand-named branches, e.g. `feat/`/`fix/`/`docs/` — via `--include-named`) whose branches are fully merged into `origin/main` and have no uncommitted changes. Also remove any non-primary worktrees accidentally checked out on `main`. Report what was pruned, any skipped worktree or failure that is new since the last run, and the combined totals.
 
 **Steps:**
 0. Determine the current worktree's git root, then sync it to `origin/main`:
@@ -33,11 +33,16 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
    ```
    It lists only the skipped worktrees and fetch failures that are new or changed since its last run, and prints the full report when its state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see the whole list, add `--full`, which leaves the state file alone ([ADR-161](../../../docs/adr/161-maintenance-routines-report-what-changed.md)).
 2. Report what the script printed: what was pruned, each newly skipped worktree with its reason, and the totals. Don't reconstruct or re-list anything it left out as unchanged.
-3. Read the final `RESULT:` line (`repos_scanned=N pruned=P skipped=S fetch_failed=F dry_run=... new_skipped=K no_longer_skipped=L new_fetch_failed=J baseline=...`) and send a push notification **only for changed findings**: when `new_skipped` or `new_fetch_failed` is greater than 0, listing the worktrees or repos the script printed so the user can investigate. When both are 0, send no notification, however large `skipped` or `fetch_failed` are, because those totals repeat what was already reported.
+3. If the script exited non-zero or printed no `RESULT:` line (an unreadable scan directory, a crash, a timeout), send a push notification with its last lines, do **not** run step 4, and stop. Otherwise read the final `RESULT:` line (`repos_scanned=N pruned=P skipped=S fetch_failed=F dry_run=... new_skipped=K no_longer_skipped=L new_fetch_failed=J new_remote_failed=R baseline=...`) and send a push notification **only for changed findings**: when `new_skipped`, `new_fetch_failed` or `new_remote_failed` is greater than 0, listing only the newly skipped worktrees and the repos whose fetch or GitHub remote newly failed, as the script printed them. When all three are 0, send no notification, however large `skipped` or `fetch_failed` are, because those totals repeat what was already reported.
+4. Once the notification is sent, or none was needed, commit this run's findings so the next run compares against them:
+   ```bash
+   python "$WORKTREE_ROOT/claude/scripts/_last_run.py" commit C:/Users/brown/.claude/scratch/last-run/prune-merged-worktrees.json
+   ```
+   If the push failed, skip this step: the next run reports the same changes again.
 
 **Constraints:**
 - Script uses `git branch -d` (not `-D`) and `git worktree remove` (no `--force`) — safe by default
-- Repos with no GitHub remote are silently skipped
+- A repo whose GitHub remote can't be read is skipped, and reported when that first happens (`new_remote_failed`)
 - Never remove the current session's worktree, regardless of branch name
 - With `--include-named`, a hand-named branch is held to the exact same merged/dirty/liveness bar as a `claude/*` branch — no looser check is applied (ADR-078)
 - Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051)

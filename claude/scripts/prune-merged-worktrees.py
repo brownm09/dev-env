@@ -118,6 +118,7 @@ LIVENESS_WINDOW_SECONDS = 24 * 60 * 60
 DEFAULT_STATE_FILE = STATE_DIR / "prune-merged-worktrees.json"
 SKIPPED_SECTION = "skipped"
 FETCH_SECTION = "fetch"
+REMOTE_SECTION = "remote"
 
 SKIP_PRIMARY_OR_CURRENT = "primary or current worktree"
 SKIP_LIVE_SESSION = "active Claude session (recent transcript activity)"
@@ -349,6 +350,7 @@ def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_ru
             f" new_skipped={last_run.changed[SKIPPED_SECTION]}"
             f" no_longer_skipped={last_run.gone[SKIPPED_SECTION]}"
             f" new_fetch_failed={last_run.changed[FETCH_SECTION]}"
+            f" new_remote_failed={last_run.changed[REMOTE_SECTION]}"
             f" baseline={'true' if last_run.is_baseline else 'false'}"
         )
     return line
@@ -369,16 +371,20 @@ def prune_one(
     last_run: when given and not a baseline, print only what changed since the last run, with
     no per-repo header or summary, so a repo with nothing new prints nothing (dev-env#1307).
     Every line that can still print names a full path or the repo, so no header is needed. A
-    repo that returns early records nothing and keeps its stored findings.
+    repo whose GitHub remote can't be read is a finding of its own; one that returns early
+    after that keeps its stored findings.
     """
     verbose = last_run is None or last_run.is_baseline
 
     try:
         gh_repo = detect_gh_repo(repo)
     except RuntimeError as exc:
-        if verbose:
+        remote_new = last_run.record(repo, REMOTE_SECTION, {"origin": str(exc)})[0] if last_run else []
+        if verbose or remote_new:
             print(f"  SKIP {repo}: {exc}")
         return 0, 0, False
+    if last_run is not None and last_run.record(repo, REMOTE_SECTION, {})[1] and not verbose:
+        print(f"  GitHub remote resolves again: {repo}")
 
     # Read once per repo, not once per worktree — every not-yet-merged claude/* worktree in
     # this repo would otherwise re-read and re-validate the same config file (the repos this
@@ -404,7 +410,7 @@ def prune_one(
 
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
-        print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
+        print(f"  ERROR: git worktree list failed in {repo}: {result.stderr}", file=sys.stderr)
         return 0, 0, fetch_failed
 
     worktrees = parse_worktree_porcelain(result.stdout)
@@ -553,7 +559,7 @@ def prune_one(
         r = run(["git", "branch", "-d", branch], cwd=repo)
         if r.returncode != 0:
             # Worktree already gone; branch delete failure is non-fatal
-            print(f"  WARNING: branch delete failed for {branch}: {r.stderr.strip()}")
+            print(f"  WARNING: branch delete failed for {branch} in {repo}: {r.stderr.strip()}")
 
         pruned.append(path)
         print(f"  pruned: {path} ({branch})")
@@ -594,6 +600,11 @@ def main() -> None:
     if scan_dir:
         last_run = None if args.full else LastRun(args.state_file)
         repos = find_git_repos(scan_dir)
+        if repos is None:
+            # find_git_repos already printed the WARNING with the underlying OSError.
+            print(f"Scan of {scan_dir} failed - nothing was pruned")
+            print(scan_result(0, 0, 0, 0, dry_run, last_run))
+            sys.exit(1)
         if not repos:
             print(f"No git repos found under {scan_dir}")
             print(scan_result(0, 0, 0, 0, dry_run, last_run))
@@ -613,9 +624,9 @@ def main() -> None:
             if last_run is None or last_run.is_baseline:
                 summary += f": {', '.join(fetch_failed_repos)}"
         print(summary)
-        print(scan_result(len(repos), total_pruned, total_skipped, len(fetch_failed_repos), dry_run, last_run))
         if last_run is not None and not dry_run:
             last_run.save()
+        print(scan_result(len(repos), total_pruned, total_skipped, len(fetch_failed_repos), dry_run, last_run))
     else:
         repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
         prune_one(repo, dry_run, liveness_window_seconds, include_named)

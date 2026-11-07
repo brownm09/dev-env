@@ -496,6 +496,7 @@ def render_scan_summary(
             f" new_needs_attention={last_run.changed[ATTENTION_SECTION]}"
             f" no_longer_needs_attention={last_run.gone[ATTENTION_SECTION]}"
             f" new_repos_failed={last_run.changed[FAILED_SECTION]}"
+            f" no_longer_repos_failed={last_run.gone[FAILED_SECTION]}"
             f" baseline={'true' if last_run.is_baseline else 'false'}"
         )
     return line
@@ -681,9 +682,11 @@ def _reconcile_repo(config: dict, dry_run: bool, last_run: LastRun | None = None
     if last_run is not None:
         attention = needs_attention(orphans, preexisting_missing, required_names)
         changed, gone = last_run.record(repo, ATTENTION_SECTION, attention_findings(attention))
-        no_longer = sorted(int(k) for k in gone)
+        # Keys are issue numbers this script wrote; a non-numeric one (a hand edit) is
+        # ignored rather than crashing every run until the file is replaced.
+        no_longer = sorted(int(k) for k in gone if k.isdigit())
         if not last_run.is_baseline:
-            new_numbers = {int(k) for k in changed}
+            new_numbers = {int(k) for k in changed if k.isdigit()}
 
     print(
         render_report(
@@ -810,7 +813,8 @@ def _main_scan_dir(scan_dir: str, dry_run: bool, last_run: LastRun | None = None
         result = _reconcile_repo(config, dry_run, last_run)
         if last_run is not None and result["status"] != "scope-error":
             failed = {"gh": "failed"} if result["status"] == "gh-error" else {}
-            last_run.record(config.get("repo", ""), FAILED_SECTION, failed)
+            if last_run.record(config.get("repo", ""), FAILED_SECTION, failed)[1]:
+                print(f"[reconcile-board] gh works again for {config.get('repo', '')}")
         if result["status"] == "scope-error":
             print(
                 "[reconcile-board] gh is missing the 'project' scope. Run:\n"
@@ -843,6 +847,10 @@ def _main_scan_dir(scan_dir: str, dry_run: bool, last_run: LastRun | None = None
             scope_aborted = True
             break
 
+    # A scope abort saves nothing: the routine stops without committing, and the repos already
+    # reconciled tonight are reported again next run rather than marked as delivered.
+    if last_run is not None and not dry_run and not scope_aborted:
+        last_run.save()
     print()
     print(
         render_scan_summary(
@@ -851,8 +859,6 @@ def _main_scan_dir(scan_dir: str, dry_run: bool, last_run: LastRun | None = None
             dry_run=dry_run, last_run=last_run,
         )
     )
-    if last_run is not None and not dry_run:
-        last_run.save()
     return 1 if scope_aborted else 0
 
 
