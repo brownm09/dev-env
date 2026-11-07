@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude model prices and cost arithmetic, shared by the token scripts (dev-env#1122).
+"""Claude model prices, cost arithmetic and response counting, shared by the token scripts (dev-env#1122).
 
 Prices are USD per million tokens, from the "Model pricing" table of
 https://platform.claude.com/docs/en/about-claude/pricing.md, read 2026-11-05.
