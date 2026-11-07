@@ -20,10 +20,14 @@ Usage:
 
 Exit 0 = all pass.
 """
+import contextlib
 import importlib.util
+import io
 import sys
 import tempfile
 from pathlib import Path
+
+from _throwaway_repo import ThrowawayRepo
 
 # tests/ -> scripts/ -> claude/ -> repo root
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -186,8 +190,96 @@ def test_reclaim_worktree_deletes_only_reclaim_dirs() -> str:
     return "deleted node_modules/.turbo (incl. nested workspace); preserved source, package.json, .git"
 
 
+# --- Command-line handling (dev-env#1310). An unknown flag, or --help, used to run a live
+# reclaim. These run the real script against a throwaway repo.
+
+def _assert_repo_untouched(repo: ThrowawayRepo, label: str, result) -> None:
+    if not repo.node_modules.exists():
+        raise AssertionError(f"{label}: node_modules was deleted\n{result.stdout}")
+    if repo.fetch_head.exists():
+        raise AssertionError(f"{label}: git fetch ran before the arguments were checked")
+
+
+def test_cli_help_changes_nothing() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        for flag in ("--help", "-h"):
+            r = repo.run_script(MODULE_PATH, flag)
+            _assert_repo_untouched(repo, flag, r)
+            if r.returncode != 0:
+                raise AssertionError(f"{flag}: exit {r.returncode}, expected 0\n{r.stderr}")
+            for name in ("--dry-run", "--repo-path", "--scan-dir", "--min-free-gb",
+                         "--protect-cwd", "--liveness-window-min"):
+                if name not in r.stdout:
+                    raise AssertionError(f"{flag}: usage does not name {name}\n{r.stdout}")
+    return "--help and -h print usage, exit 0, leave node_modules and FETCH_HEAD alone"
+
+
+def test_cli_rejects_unknown_arguments() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        for arg in ("--bogus", "--dryrun", "stray"):
+            r = repo.run_script(MODULE_PATH, arg)
+            _assert_repo_untouched(repo, arg, r)
+            if r.returncode == 0:
+                raise AssertionError(f"{arg}: exit 0, expected non-zero\n{r.stdout}")
+    return "undefined flags and a stray argument exit non-zero before any git command"
+
+
+def test_cli_control_dry_run_keeps_and_plain_run_reclaims() -> str:
+    """Proves the two tests above can fail: this same worktree really is eligible."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        r = repo.run_script(MODULE_PATH, "--dry-run")
+        if r.returncode != 0 or "would reclaim" not in r.stdout or not repo.node_modules.exists():
+            raise AssertionError(f"--dry-run: exit {r.returncode}, should report and keep\n{r.stdout}\n{r.stderr}")
+        r = repo.run_script(MODULE_PATH)
+        if r.returncode != 0 or repo.node_modules.exists():
+            raise AssertionError(f"plain run: exit {r.returncode}, should reclaim\n{r.stdout}\n{r.stderr}")
+    return "--dry-run keeps node_modules; a plain run deletes it"
+
+
+def test_cli_parser_accepts_existing_callers() -> str:
+    # disk-space-check.py and worktree-npm-install.py
+    args = rwd._parse_args(["--scan-dir", "C:/Users/brown/Git", "--min-free-gb", "10", "--protect-cwd", "C:/wt"])
+    if not (args.scan_dir and args.min_free_gb == 10.0 and args.protect_cwd == "C:/wt"):
+        raise AssertionError(f"hook call misparsed: {args}")
+    # post-pr-merge-reclaim.py and claude/routines/reclaim-worktree-disk/SKILL.md
+    args = rwd._parse_args(["--scan-dir", "C:/Users/brown/Git"])
+    if not (args.scan_dir and args.min_free_gb is None and args.protect_cwd is None and not args.dry_run):
+        raise AssertionError(f"routine call misparsed: {args}")
+    return "hook and routine calls parse to the expected values"
+
+
+def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
+    # In-process only: a regression run for real, with no --repo-path, would hit dev-env.
+    with contextlib.redirect_stderr(io.StringIO()):
+        for argv in (["--dry"], ["--min-free-gb", "abc"]):
+            try:
+                rwd._parse_args(argv)
+            except SystemExit as exc:
+                if exc.code == 0:
+                    raise AssertionError(f"{argv} exited 0") from None
+            else:
+                raise AssertionError(f"{argv} was accepted")
+    for value in ("-5", "abc"):
+        try:
+            rwd._liveness_window_seconds(value)
+        except SystemExit:
+            continue
+        raise AssertionError(f"--liveness-window-min {value} was accepted")
+    if rwd._liveness_window_seconds(None) != rwd.LIVENESS_WINDOW_SECONDS:
+        raise AssertionError("absent --liveness-window-min did not give the default")
+    return "--dry and a non-numeric --min-free-gb rejected; bad windows exit; absent -> default"
+
+
 def main() -> int:
     tests = [
+        ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
+        ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
+        ("CLI control: --dry-run keeps, plain run reclaims", test_cli_control_dry_run_keeps_and_plain_run_reclaims),
+        ("CLI parser: existing callers still parse", test_cli_parser_accepts_existing_callers),
+        ("CLI parser: abbreviation and bad values rejected", test_cli_parser_rejects_abbreviation_and_bad_values),
         ("is_idle_eligible decision table", test_is_idle_eligible_decision_table),
         ("is_claude_managed_worktree path gate", test_is_claude_managed_worktree),
         ("find_reclaim_dirs discovers all + skips .git", test_find_reclaim_dirs_discovers_all_and_skips_git),

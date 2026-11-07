@@ -72,8 +72,10 @@ import sys
 import tempfile
 import types
 import unittest.mock
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+
+from _throwaway_repo import ThrowawayRepo
 
 # tests/ -> scripts/ -> claude/ -> repo root
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -638,8 +640,100 @@ def test_load_ephemeral_patterns_empty_list_behaves_as_absent() -> str:
     return "explicit empty list -> [] (identical outcome to the key being absent)"
 
 
+# --- Command-line handling (dev-env#1310). `--help` once ran a live prune, because the script
+# ignored any flag it did not recognize. These run the real script against a throwaway repo.
+
+def _assert_repo_untouched(repo: ThrowawayRepo, label: str, result) -> None:
+    if not repo.worktree.exists():
+        raise AssertionError(f"{label}: worktree was removed\n{result.stdout}")
+    if not repo.branch_exists():
+        raise AssertionError(f"{label}: branch was deleted\n{result.stdout}")
+    if repo.fetch_head.exists():
+        raise AssertionError(f"{label}: git fetch ran before the arguments were checked")
+
+
+def test_cli_help_changes_nothing() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        for flag in ("--help", "-h"):
+            r = repo.run_script(_MODULE_PATH, flag)
+            _assert_repo_untouched(repo, flag, r)
+            if r.returncode != 0:
+                raise AssertionError(f"{flag}: exit {r.returncode}, expected 0\n{r.stderr}")
+            for name in ("--dry-run", "--repo-path", "--scan-dir", "--liveness-window-min", "--include-named"):
+                if name not in r.stdout:
+                    raise AssertionError(f"{flag}: usage does not name {name}\n{r.stdout}")
+    return "--help and -h print usage, exit 0, leave worktree, branch and FETCH_HEAD alone"
+
+
+def test_cli_rejects_unknown_arguments() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        for arg in ("--bogus", "--dryrun", "stray"):
+            r = repo.run_script(_MODULE_PATH, arg)
+            _assert_repo_untouched(repo, arg, r)
+            if r.returncode == 0:
+                raise AssertionError(f"{arg}: exit 0, expected non-zero\n{r.stdout}")
+    return "undefined flags and a stray argument exit non-zero before any git command"
+
+
+def test_cli_control_dry_run_keeps_and_plain_run_prunes() -> str:
+    """Proves the two tests above can fail: this same repo really is prunable."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        if r.returncode != 0 or "would remove" not in r.stdout or not repo.worktree.exists():
+            raise AssertionError(f"--dry-run: exit {r.returncode}, should report and keep\n{r.stdout}\n{r.stderr}")
+        r = repo.run_script(_MODULE_PATH)
+        if r.returncode != 0 or repo.worktree.exists() or repo.branch_exists():
+            raise AssertionError(f"plain run: exit {r.returncode}, should prune\n{r.stdout}\n{r.stderr}")
+    return "--dry-run keeps the worktree; a plain run removes it and deletes its branch"
+
+
+def test_cli_parser_accepts_existing_callers() -> str:
+    # claude/routines/prune-stale-worktrees/SKILL.md
+    args = prune._parse_args(["--scan-dir", "C:/Users/brown/Git", "--include-named"])
+    if not (args.scan_dir and args.include_named and not args.dry_run):
+        raise AssertionError(f"routine call misparsed: {args}")
+    # docs/REFERENCE.md's manual forms, including both spellings of a value.
+    args = prune._parse_args(["--dry-run", "--repo-path", "C:/x", "--liveness-window-min", "30"])
+    if not (args.dry_run and args.repo_path == "C:/x" and args.liveness_window_min == "30"):
+        raise AssertionError(f"manual call misparsed: {args}")
+    if prune._parse_args(["--liveness-window-min=30"]).liveness_window_min != "30":
+        raise AssertionError("--liveness-window-min=30 misparsed")
+    return "routine call and manual forms parse to the expected values"
+
+
+def test_cli_parser_rejects_abbreviation_and_bad_liveness() -> str:
+    # In-process only: a regression run for real, with no --repo-path, would hit dev-env.
+    with redirect_stderr(io.StringIO()):
+        try:
+            prune._parse_args(["--dry"])
+        except SystemExit as exc:
+            if exc.code == 0:
+                raise AssertionError("--dry exited 0") from None
+        else:
+            raise AssertionError("--dry was accepted as an abbreviation of --dry-run")
+    for value in ("-5", "abc"):
+        try:
+            prune._liveness_window_seconds(value)
+        except SystemExit:
+            continue
+        raise AssertionError(f"--liveness-window-min {value} was accepted")
+    if prune._liveness_window_seconds(None) != prune.LIVENESS_WINDOW_SECONDS:
+        raise AssertionError("absent --liveness-window-min did not give the default")
+    if prune._liveness_window_seconds("30") != 1800:
+        raise AssertionError("--liveness-window-min 30 did not give 1800 seconds")
+    return "--dry rejected; negative and non-numeric windows exit; absent -> default; 30 -> 1800"
+
+
 def main() -> int:
     tests = [
+        ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
+        ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
+        ("CLI control: --dry-run keeps, plain run prunes", test_cli_control_dry_run_keeps_and_plain_run_prunes),
+        ("CLI parser: existing callers still parse", test_cli_parser_accepts_existing_callers),
+        ("CLI parser: abbreviation and bad liveness window rejected", test_cli_parser_rejects_abbreviation_and_bad_liveness),
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),
         ("--include-named set: named branch now pruned", test_named_branch_pruned_with_include_named),
         ("git worktree remove timeout: skip-and-continue, not abort", test_timeout_skips_worktree_and_continues),

@@ -33,7 +33,10 @@ Usage:
   python claude/scripts/reclaim-worktree-disk.py --scan-dir /path --min-free-gb 10
   python claude/scripts/reclaim-worktree-disk.py --scan-dir /path --protect-cwd /path/to/active/worktree
 
-  --repo-path     Target a specific repo's worktrees (defaults to the dev-env repo).
+  An undefined flag or stray argument exits 2 before any git command; --help prints usage
+  and exits 0 (dev-env#1310).
+
+  --repo-path    Target a specific repo's worktrees (defaults to the dev-env repo).
   --scan-dir      Discover and process all git repos directly under the given directory.
   --dry-run       Report what would be reclaimed without deleting anything.
   --min-free-gb N No-op unless free space on the target drive is below N GB. Lets a
@@ -47,6 +50,7 @@ Usage:
                   worktrees that --protect-cwd cannot reach. Defaults to 360 (6h). ADR-051.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import argparse
 import os
 import re
 import shutil
@@ -76,44 +80,35 @@ RECLAIM_DIR_NAMES = ("node_modules", ".turbo")
 LIVENESS_WINDOW_SECONDS = 6 * 60 * 60
 
 
-def _arg_value(flag: str) -> str | None:
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == flag:
-            if i + 1 < len(sys.argv):
-                return sys.argv[i + 1]
-            sys.exit(f"{flag} requires an argument")
-    return None
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the command line, exiting on --help or on anything undefined (dev-env#1310).
+
+    This must run before the first git command: this script deletes directories, so a flag it
+    does not understand has to stop it. Abbreviations are off so a shortened flag is an error
+    rather than a guess. The flag descriptions stay ASCII so --help can't fail on a console's
+    code page; the module docstring has the full detail.
+    """
+    parser = argparse.ArgumentParser(
+        description="Delete node_modules and .turbo from idle Claude worktrees.",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--dry-run", action="store_true", help="report what would be reclaimed, delete nothing")
+    parser.add_argument("--repo-path", metavar="PATH", help="target this repo (default: the dev-env repo)")
+    parser.add_argument("--scan-dir", metavar="DIR", help="target every git repo directly under DIR")
+    parser.add_argument("--min-free-gb", metavar="N", type=float,
+                        help="do nothing unless the target drive has under N GB free")
+    parser.add_argument("--protect-cwd", metavar="PATH",
+                        help="never strip this worktree (default: the current directory)")
+    parser.add_argument("--liveness-window-min", metavar="N",
+                        help="skip worktrees with a Claude transcript written in the last N minutes (default: 360)")
+    return parser.parse_args(argv)
 
 
-def _repo_from_args() -> str:
-    val = _arg_value("--repo-path")
-    return str(Path(val).resolve()) if val else _DEFAULT_REPO
-
-
-def _scan_dir_from_args() -> str | None:
-    val = _arg_value("--scan-dir")
-    return str(Path(val).resolve()) if val else None
-
-
-def _min_free_gb_from_args() -> float | None:
-    val = _arg_value("--min-free-gb")
-    if val is None:
-        return None
+def _liveness_window_seconds(minutes: str | None) -> int:
+    if minutes is None:
+        return LIVENESS_WINDOW_SECONDS
     try:
-        return float(val)
-    except ValueError:
-        sys.exit("--min-free-gb requires a numeric argument")
-
-
-def _protect_cwd_from_args() -> str:
-    val = _arg_value("--protect-cwd")
-    base = val if val else os.getcwd()
-    return str(Path(base).resolve())
-
-
-def _liveness_window_seconds_from_args() -> int:
-    try:
-        return parse_liveness_window_seconds(sys.argv[1:], LIVENESS_WINDOW_SECONDS)
+        return parse_liveness_window_seconds(["--liveness-window-min", minutes], LIVENESS_WINDOW_SECONDS)
     except ValueError as exc:
         sys.exit(str(exc))
 
@@ -340,18 +335,20 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
 
 
 def main() -> None:
-    dry_run = "--dry-run" in sys.argv
-    scan_dir = _scan_dir_from_args()
-    protect_cwd = _protect_cwd_from_args()
-    min_free = _min_free_gb_from_args()
-    liveness_window_seconds = _liveness_window_seconds_from_args()
+    args = _parse_args(sys.argv[1:])
+    dry_run = args.dry_run
+    scan_dir = str(Path(args.scan_dir).resolve()) if args.scan_dir else None
+    repo = str(Path(args.repo_path).resolve()) if args.repo_path else _DEFAULT_REPO
+    protect_cwd = str(Path(args.protect_cwd or os.getcwd()).resolve())
+    min_free = args.min_free_gb
+    liveness_window_seconds = _liveness_window_seconds(args.liveness_window_min)
 
     if dry_run:
         print("[dry-run] no changes will be made")
 
     # Threshold gate: when --min-free-gb is set, do nothing unless the drive is below it.
     if min_free is not None:
-        probe = scan_dir or _repo_from_args()
+        probe = scan_dir or repo
         current_free = free_gb(probe)
         if current_free >= min_free:
             print(f"Free space {current_free:.2f} GB >= threshold {min_free:.2f} GB — nothing to do.")
@@ -369,7 +366,7 @@ def main() -> None:
             grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
         print(f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}")
     else:
-        reclaim_one(_repo_from_args(), dry_run, protect_cwd, liveness_window_seconds)
+        reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
 
 
 if __name__ == "__main__":

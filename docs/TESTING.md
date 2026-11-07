@@ -890,7 +890,12 @@ For a one-line navigational map of the test directory, see
     flagging it skipped for manual retry — a deliberate divergence from the generic merged-worktree
     timeout path above, which skips only. The
     merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
-    `--dry-run` in the PR.
+    `--dry-run` in the PR, except by the command-line tests
+    ([dev-env#1310](https://github.com/brownm09/dev-env/issues/1310)), which run the real script
+    against a throwaway repo from `tests/_throwaway_repo.py` (local bare origin, no network): `--help`,
+    `-h`, an undefined flag and a stray argument leave the worktree, its branch and `FETCH_HEAD` alone,
+    and a control run proves that same repo really does get pruned. Abbreviated flags are tested
+    at parser level only, because a regression run with no `--repo-path` would hit the real dev-env repo.
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -1075,7 +1080,10 @@ For a one-line navigational map of the test directory, see
     preserving source files and `.git`). The git-dependent eligibility guards (dirty check, primary/cwd
     exclusion, merge detection) are exercised end-to-end by `--dry-run` in the PR, not here. This test
     file pre-dates this list — added here to close the gap where it existed but was never
-    cross-referenced ([ADR-037](adr/037-worktree-disk-reclamation.md)).
+    cross-referenced ([ADR-037](adr/037-worktree-disk-reclamation.md)). Its command-line tests
+    ([dev-env#1310](https://github.com/brownm09/dev-env/issues/1310)) use the same throwaway repo as
+    item 26: `--help`, `-h`, an undefined flag and a stray argument leave `node_modules` and
+    `FETCH_HEAD` alone, and a control run proves that same worktree really does get reclaimed.
 
     ```bash
     py -3 claude/scripts/tests/test_reclaim_worktree_disk.py
