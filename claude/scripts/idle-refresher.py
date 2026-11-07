@@ -48,13 +48,14 @@ guards against). Stateless by design: the gap is self-limiting (once the user
 is active, inter-prompt gaps fall below the threshold), so no per-session
 marker is needed to avoid re-firing.
 
-Reading the transcript: this hook only ever needs the single last assistant
-record, so it sources one via _hookutil.iter_records_reverse (a bounded tail
-read, chunked from the end of the file) instead of _hookutil.load_records (a
-full parse) -- a multi-MB transcript costs a couple of chunk reads here, not
-a full parse on every prompt submit (dev-env#679, ADR-090 Amendment 1).
-last_activity_epoch takes an already most-recent-first iterable for exactly
-this reason -- see its docstring.
+Reading the transcript: this hook only ever needs the newest records, so it
+sources them via _hookutil.iter_records_reverse (a bounded tail read, chunked
+from the end of the file) instead of _hookutil.load_records (a full parse) -- a
+multi-MB transcript normally costs a couple of chunk reads here, not a full parse
+on every prompt submit (dev-env#679, ADR-090 Amendment 1). Each read stops at its
+first match; one walks further only past records it skips, and the whole file only
+when none matches. last_activity_epoch takes an already most-recent-first iterable
+for exactly this reason -- see its docstring.
 """
 from __future__ import annotations
 
@@ -128,24 +129,17 @@ def last_activity_epoch(records_reverse):
 def last_context_tokens(records_reverse):
     """Context size on the newest main-thread assistant turn, or None.
 
-    The size is input + cache read + cache write, skipping what turn-count-hook.py's
-    get_context_stats skips: sidechain records, and zero-usage or malformed usage.
-    *records_reverse* is most-recent-first, as for last_activity_epoch.
+    *records_reverse* is most-recent-first, as for last_activity_epoch. A compaction
+    reached first means no turn has reported the size since it: the turn behind it
+    carries the larger context the compaction replaced, so the size is unknown
+    rather than that figure.
     """
     for rec in records_reverse:
-        if not isinstance(rec, dict) or rec.get("type") != "assistant" or rec.get("isSidechain"):
-            continue
-        msg = rec.get("message")
-        usage = msg.get("usage") if isinstance(msg, dict) else None
-        if not isinstance(usage, dict):
-            continue
-        parts = [
-            usage.get("input_tokens", 0),
-            usage.get("cache_read_input_tokens", 0),
-            usage.get("cache_creation_input_tokens", 0),
-        ]
-        if all(isinstance(p, int) for p in parts) and sum(parts) > 0:
-            return sum(parts)
+        if isinstance(rec, dict) and rec.get("subtype") == "compact_boundary":
+            return None
+        tokens = _hookutil.record_context_tokens(rec)
+        if tokens is not None:
+            return tokens
     return None
 
 
@@ -191,7 +185,7 @@ def humanize_gap(gap_seconds):
     return f"{minutes // 60} hours"
 
 
-def build_refresher_context(gap_seconds, context_tokens=None):
+def build_refresher_context(gap_seconds, context_tokens):
     """The additionalContext cue. ASCII-only (hyphens, "about" — never an
     em-dash or a math sign) so it survives the cp1252 hook-stdout pipe.
     *context_tokens* None (size unknown) drops only the size sentence."""

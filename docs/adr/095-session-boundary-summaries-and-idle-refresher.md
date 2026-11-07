@@ -64,13 +64,18 @@ it can inform the next decision ([dev-env#1217](https://github.com/brownm09/dev-
 **Decision.** The cue now gives the size of the context on the last main-thread assistant turn, tells
 Claude to state it in the refresher, and asks Claude to suggest `/clear` with a short hand-off if the
 user's new message starts a different task. If the size can't be read, only the size sentence is dropped.
-The hook's stream and exit code don't change: JSON on stdout, exit 0.
+The same happens when a compaction came before the gap with no turn since: the last turn's figure is the
+larger context the compaction replaced, overstated by a median 2.42x in the 25 of 242 such gaps a reviewer
+found in local transcripts, so the size counts as unknown. The hook's stream and exit code don't change:
+JSON on stdout, exit 0.
 
-**The wording says "most of that".** Over transcripts from the 14 days ending 2026-11-06, across 528 gaps
-over 60 minutes, the next call's cache write was a median 0.86 of the prior context, with a 10th
-percentile of 0.31 and 62.3% at 0.8 or above. Across 168 gaps of 30 to 55 minutes the median was 0.00, so
-the 60-minute default sits past the cache's lifetime and the size is a fair upper estimate, not an exact
-cost. Anthropic documents a default lifetime of 5 minutes and an optional 1 hour
+**The wording says "most of that".** Over the top-level transcripts modified in the 14 days before
+2026-11-06, across 528 gaps over 60 minutes between main-thread assistant turns, the next call's cache
+write was a median 0.86 of the prior context, with a 10th percentile of 0.31 and 62.3% at 0.8 or above.
+Across 168 gaps of 30 to 55 minutes the median was 0.00, so the 60-minute default sits past the cache's
+lifetime and the size is a fair upper estimate, not an exact cost. The script and its output are in the
+[replay report](https://github.com/brownm09/engineering-journal/blob/main/sessions/dev-env/reports/2026-11-07-context-nudge-replay.md).
+Anthropic documents a default lifetime of 5 minutes and an optional 1 hour
 ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)). A lower
 `idle_refresher_minutes` override can fire inside the lifetime, where the statement overstates the cost.
 No project sets one today, so this is documented on the key rather than handled in code.

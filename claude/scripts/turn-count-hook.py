@@ -130,9 +130,8 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
 
     Sidechain (subagent) records are skipped: their much smaller context would
     otherwise read as a drop and then a spurious rise back to the main thread's.
-    So are zero-usage records: Claude Code writes synthetic assistant turns
-    ("No response requested.", a usage-limit notice, an API error) with every
-    usage field 0, and counting one would add the whole context back as growth.
+    So are zero-usage records, since counting a synthetic turn would add the whole
+    context back as growth (_hookutil.record_context_tokens decides both).
     Returns None if the transcript cannot be read or has no assistant turns yet.
 
     transcript_path_str comes from the documented `transcript_path` field in the
@@ -156,27 +155,12 @@ def get_context_stats(transcript_path_str: str) -> tuple[int, int] | None:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(record, dict) or record.get("isSidechain"):
+                tokens = _hookutil.record_context_tokens(record)
+                if tokens is None:
                     continue
-                if record.get("type") == "assistant":
-                    msg = record.get("message", {})
-                    usage = msg.get("usage", {}) if isinstance(msg, dict) else {}
-                    if isinstance(usage, dict) and usage:
-                        parts = [
-                            usage.get("input_tokens", 0),
-                            usage.get("cache_read_input_tokens", 0),
-                            usage.get("cache_creation_input_tokens", 0),
-                        ]
-                        # One malformed record must not raise past this loop and
-                        # silence every warning for the rest of the session.
-                        if not all(isinstance(p, int) for p in parts):
-                            continue
-                        tokens = sum(parts)
-                        if tokens == 0:
-                            continue
-                        if current is not None and tokens > current:
-                            growth += tokens - current
-                        current = tokens
+                if current is not None and tokens > current:
+                    growth += tokens - current
+                current = tokens
     except OSError:
         return None
 
@@ -219,7 +203,7 @@ def check_context_tokens(tokens: int, growth: int, session_id: str) -> str | Non
     clause = " (catching up - context crossed prior boundaries)" if caught_up else ""
     return (
         f"[session-size] This session has added {growth:,} tokens of context since "
-        f"its first turn and is now at {tokens:,} "
+        f"its first turn, and its last turn carried {tokens:,} "
         f"(threshold: {next_threshold:,}{clause}). "
         f"Consider running /compact or /clear if the task scope has shifted - "
         f"accumulated context increases cost on every subsequent turn."
@@ -337,7 +321,7 @@ def check_prompt_count(session_id: str, cwd: str) -> str | None:
         return (
             f"[prompt-count] Session has {count} user prompts "
             f"(threshold: {threshold}). "
-            f"Note: prompt count is a weak signal — check context token size "
+            f"Note: prompt count is a weak signal - check context token size "
             f"for a more accurate read on session weight."
         )
     return None

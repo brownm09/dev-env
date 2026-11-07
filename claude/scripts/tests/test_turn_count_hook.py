@@ -204,6 +204,7 @@ def test_warn_multi_jump_fires_once() -> str:
         jump = LARGE_START + WARN + 2 * REPEAT + 5
         msg = t.warn([_assistant(LARGE_START), _assistant(jump)])
         assert msg is not None and "catching up" in msg, msg
+        assert msg.isascii(), f"catch-up clause must be ASCII: {msg!r}"
         state = (t.root / f"ctx-warn-{SID}.txt").read_text().strip()
         assert state == str(WARN + 2 * REPEAT), state
         assert t.warn([_assistant(jump + 9)]) is None, "must not fire again in the same step"
@@ -216,10 +217,19 @@ def test_warn_post_compaction_no_refire() -> str:
         assert t.warn([_assistant(LARGE_START), _assistant(LARGE_START + WARN)]) is not None
         # A compaction's drop is not growth, and climbing back past 317k absolute
         # adds only what it adds: the next warning is at 250k of growth.
-        assert t.warn([_assistant(180_000), _assistant(270_000)]) is None, "240k of growth"
-        msg = t.warn([_assistant(280_000)])
+        assert t.warn([_assistant(250_000), _assistant(325_000)]) is None, "325k absolute, 225k of growth"
+        msg = t.warn([_assistant(350_000)])
         assert msg is not None and f"{WARN + REPEAT:,}" in msg, msg
-    return "a post-compaction re-climb fires only when growth reaches the next threshold"
+    return "a post-compaction re-climb past the old absolute size fires only when growth reaches the next threshold"
+
+
+def test_prompt_count_text_is_ascii() -> str:
+    with _Tmp() as t:
+        msgs = [tch.check_prompt_count(SID, t.cwd) for _ in range(tch.PROMPT_THRESHOLD)]
+    msg = msgs[-1]
+    assert msg is not None and msg.startswith("[prompt-count]"), msgs
+    assert msg.isascii(), f"warning must be ASCII (cp1252-safe stdout): {msg!r}"
+    return "the prompt-count warning fires at its threshold and is ASCII"
 
 
 def test_warn_text_is_ascii() -> str:
@@ -453,6 +463,7 @@ def main() -> int:
         ("size warning: multi-threshold jump fires once", test_warn_multi_jump_fires_once),
         ("size warning: post-compaction re-climb", test_warn_post_compaction_no_refire),
         ("size warning: ASCII text", test_warn_text_is_ascii),
+        ("prompt-count warning: ASCII text", test_prompt_count_text_is_ascii),
         ("band: fires once per band", test_band_fires_once_per_band),
         ("band: multi-band jump fires once", test_band_multi_jump_fires_once),
         ("band: post-compaction re-climb", test_band_post_compaction_no_refire),

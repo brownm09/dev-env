@@ -939,8 +939,12 @@ For a one-line navigational map of the test directory, see
     re-concatenated on every chunk read) — the exact shape that bites `idle-refresher.py`'s live
     caller, since the record immediately before whatever it's scanning past is often the
     transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
-    directly under the user's control. Used by `idle-refresher.py`, which needs only the last
-    assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
+    directly under the user's control. Used by `idle-refresher.py`, which needs only the newest
+    records (the last assistant timestamp, and the last usable usage once the gap has fired) and
+    would otherwise pay a full parse on every prompt submit. `record_context_tokens`, the one
+    context-size definition `turn-count-hook.py` and `idle-refresher.py` share (dev-env#1217), is
+    pinned to a main-thread turn's input + cache read + cache write, and to `None` without raising
+    for a sidechain, zero or malformed usage, or a non-assistant or non-dict record.
     Also exercises `record_heartbeat(hook_name, heartbeat_dir=None)`
     ([ADR-106](adr/106-hook-heartbeat-liveness-ledger.md); dev-env#745, PR8 of #717): a real
     tmp-dir round trip pins that it writes a parseable, current Unix timestamp to
@@ -2258,8 +2262,9 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```
 
-51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Exercises the
-    pure helpers offline (no stdin, network, gh, or disk — fixture-only, matching item 47's precedent):
+51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Twenty-three
+    cases. Most exercise the pure helpers offline (no stdin, network, gh, or disk, matching item 47's
+    precedent), and the `main()` tests described at the end run a subprocess against a temp transcript:
     `parse_iso_to_epoch` (the transcript `Z` / `+00:00` / naive / microsecond timestamp forms agree, and
     bad/`None`/non-str input yields `None`); `last_activity_epoch` (anchors on the **last** assistant
     record's timestamp — deliberately not "the last record of any type," which would be the just-submitted
@@ -2285,9 +2290,12 @@ For a one-line navigational map of the test directory, see
     Since [dev-env#1217](https://github.com/brownm09/dev-env/issues/1217) the cue states the context size
     the return re-caches and suggests `/clear` with a hand-off. `last_context_tokens` is pinned to the
     newest main-thread turn with real usage (a prompt, a synthetic zero-usage turn, malformed usage and a
-    sidechain record are skipped), the cue keeps its `/clear` sentence and drops only the size sentence when
-    the size is unknown, and one subprocess test runs `main()` end to end: the size reaches the stdout JSON
-    with exit 0 and empty stderr, and an automated prompt and garbage stdin stay silent with exit 0.
+    sidechain record are skipped), and to `None` when a compaction comes first, since the turn behind it
+    carries the larger context it replaced. A read that raises also gives `None`. The cue keeps its
+    `/clear` sentence and drops only the size sentence when the size is unknown. End to end, the size
+    reaches the stdout JSON with exit 0 and empty stderr, the cue still fires without a size for a record
+    with no usage and for a compaction just before the gap, and an automated prompt and garbage stdin
+    stay silent with exit 0.
 
     ```bash
     py -3 claude/scripts/tests/test_idle_refresher.py
@@ -4762,7 +4770,7 @@ For a one-line navigational map of the test directory, see
     ([ADR-150](adr/150-context-growth-journal-stub-trigger.md), dev-env#1160).
 
     The hook nudges Claude to update the session's journal stub the first time cumulative context
-    growth reaches each band, and warns with `[session-size]` on the same growth figure. Twenty-two
+    growth reaches each band, and warns with `[session-size]` on the same growth figure. Twenty-three
     cases, all against fixture transcripts in a temp directory with the module's `SCRATCH` swapped out,
     so no case touches the real `~/.claude/scratch`:
 
@@ -4800,7 +4808,8 @@ For a one-line navigational map of the test directory, see
     - **End to end.** `main()` runs as a subprocess with a temporary home directory: two prompts in
       the same band produce one nudge, and garbage stdin still exits 0.
 
-    The `[prompt-count]` warning is not covered here beyond the unsafe-id case.
+    The `[prompt-count]` warning is covered only for firing at its threshold with ASCII text, and in
+    the unsafe-id case.
 
     ```bash
     py -3 claude/scripts/tests/test_turn_count_hook.py

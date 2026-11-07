@@ -140,10 +140,15 @@ loaded instructions, not the work done. `[session-size]` still used one: 40k of 
 
 **Decision.** `[session-size]` now fires on the cumulative growth figure Decision 2 defines: first at
 150k tokens of growth, then every further 100k. The warning states both the growth and the current
-size. Its text is ASCII now, replacing two em dashes that a cp1252 pipe garbled.
+size. Its text is ASCII now, replacing two em dashes that a cp1252 pipe garbled, and the
+`[prompt-count]` message on the same `print` gets the same fix.
 
-**Measurement.** A replay of the warning at each real user prompt, over 282 main-session transcripts
-from the 14 days ending 2026-11-06 (3,505 prompts, all projects on this machine):
+**Measurement.** A replay of the warning at each real user prompt, over the 282 transcripts with a
+prompt after an assistant turn, out of the 329 top-level `~/.claude/projects/*/*.jsonl` files modified
+in the 14 days before the run on 2026-11-06 (3,505 prompts, all projects on this machine). A later run
+sees a different set of files, so the counts won't reproduce exactly; a reviewer's replay over 150
+sessions gave the same ordering. The script and its output are in the
+[replay report](https://github.com/brownm09/engineering-journal/blob/main/sessions/dev-env/reports/2026-11-07-context-nudge-replay.md).
 
 | # | Candidate | Warnings | Sessions warned (of 282) | Most in one session | Share of prompts warned |
 |---|---|---|---|---|---|
@@ -172,11 +177,15 @@ ever reports: exit 0 on stdout. The constants aren't configurable, because nothi
   They ask for different things, a `/clear` or `/compact` decision and a stub update, so they stay
   separate messages.
 - A warning still fires after a compaction when growth reaches the next threshold, though the current
-  size has dropped. The text says how much the session has added and where it is now, so the reader
-  can tell.
+  size has dropped. The text gives what the session has added and what its last turn carried, so the
+  reader can tell. With no turn yet since the compaction, that last figure is the pre-compaction size
+  and the advice to `/compact` comes just after one: 6 of 286 growth warnings in a reviewer's replay.
+  The wording stays true in that case, so the hook doesn't track compactions for it.
 - An in-flight session's `ctx-warn-<session_id>.txt` holds an absolute level from before this change.
-  It reads as a growth level, so that session stays quiet until its growth passes the stored number.
-  The cost is a missed advisory in a session already running, so the state file keeps its name.
+  It reads as a growth level, so that session stays quiet until its growth reaches the stored number
+  plus 100k. A stored 380k means quiet until 480k, and a stored 40k fires at 140k, below the first
+  threshold. The cost is a missed or slightly early advisory in a session already running, so the state
+  file keeps its name.
 
 **Alternatives considered.**
 
