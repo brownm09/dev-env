@@ -16,10 +16,12 @@ This is the directory<->README analogue of `test_testing_index_parity.py` (Testi
 subprocess, network, or git. Auto-discovered by `run-hook-tests.py`, so it also gates CI
 on every PR. Each README + directory is parsed once in `setUpClass`, matching the sibling.
 
-Six checks per indexed directory:
+Five checks per indexed directory:
   1. every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`,
      subdirectories, and a documented per-directory exemption set) appears in some
-     table's FIRST column;
+     table's FIRST column; in `claude/scripts/tests/` a new test may instead carry its
+     own entry, a `Required when` line and a `Run:` line near its top (dev-env#1309), so
+     adding a test edits no shared file;
   2. every first-column filename exists on disk (catches a rename or delete that updates
      the file but not its row, leaving an orphan pointer);
   3. each exempt file both exists on disk and appears somewhere in the README -- so an
@@ -27,11 +29,7 @@ Six checks per indexed directory:
   4. each header count sentence occurs exactly once and equals the live directory count;
   5. every "### Section (N)" heading's N equals that section's first-column entry count,
      AND the number of such numbered headings matches the per-directory expectation (so a
-     heading reworded past the "(N)" form cannot silently drop out of gating);
-  6. where a header breaks its total into components (the tests README's "N test_*.py, N
-     bash gates, one module"), every indexable file matches a declared component or is an
-     exemption -- so a file of a new kind cannot make the components silently fail to sum
-     to the gated total.
+     heading reworded past the "(N)" form cannot silently drop out of gating).
 
 The gate is fail-closed throughout: a count sentence reworded past its regex fails check 4
 loudly (found 0), a duplicated count fails it too (found >1), and a numbered heading that
@@ -45,7 +43,6 @@ as a table row. Both READMEs currently contain zero code fences; ADR-122 records
 accepted scope gap rather than carrying a fence state machine for a condition that does not
 occur -- the same call ADR-116/ADR-121 made only after fence-blindness actually bit them.
 """
-import fnmatch
 import os
 import re
 import unittest
@@ -64,6 +61,9 @@ HEADING_RE = re.compile(r"^#{1,6} ")
 # README's own declared scope and keeps a stray non-script artifact from being demanded
 # a row; both directories currently contain nothing else anyway.
 INDEXABLE_EXTS = (".py", ".sh", ".ps1")
+# How far down a test's own entry may start: a docstring's or header comment's opening.
+OWN_ENTRY_LINES = 10
+REQUIRED_WHEN_RE = re.compile(r"^[#\s]*Required when\b", re.MULTILINE)
 
 
 def indexable_files(directory):
@@ -111,19 +111,22 @@ def section_entry_counts(readme_text):
     return result
 
 
-def _count(pattern, files):
-    return sum(1 for f in files if fnmatch.fnmatch(f, pattern))
+def has_own_entry(path):
+    """True if a test file's opening lines say when to run it and how to run this file."""
+    head = "\n".join(path.read_text(encoding="utf-8").splitlines()[:OWN_ENTRY_LINES])
+    run_re = re.compile(rf"^[#\s]*Run: .*{re.escape(path.name)}", re.MULTILINE)
+    return bool(REQUIRED_WHEN_RE.search(head) and run_re.search(head))
 
 
 class DirSpec:
     """One indexed directory, its README, its first-column exemptions, the header count
-    sentences to gate, the expected number of "(N)" section headings, and (optionally) the
-    glob components the header breaks its total into. Each count check is
+    sentences to gate, the expected number of "(N)" section headings, and whether a file
+    may carry its own entry instead of a row. Each count check is
     (label, regex, expected_fn) where expected_fn maps the live indexable-file set to the
     integer the header must state."""
 
     def __init__(self, label, directory, readme, exemptions, count_checks,
-                 numbered_sections, partition_patterns=None):
+                 numbered_sections, allows_own_entry=False):
         self.label = label
         self.directory = REPO_ROOT / directory
         self.readme = REPO_ROOT / readme
@@ -133,10 +136,7 @@ class DirSpec:
         # *count* of numbered headings is what makes check 5 fail closed: a heading
         # reworded past the "(N)" form drops the section count below this number.
         self.numbered_sections = numbered_sections
-        # Globs the header's component breakdown partitions the directory into, or None
-        # when the header states only a bare total. Every indexable file must match one
-        # (or be an exemption), so a new file kind cannot escape the component counts.
-        self.partition_patterns = partition_patterns
+        self.allows_own_entry = allows_own_entry
 
     def text(self):
         return self.readme.read_text(encoding="utf-8")
@@ -152,21 +152,11 @@ SPECS = [
         # cell) rather than as test files. Check 3 still requires each to appear somewhere in
         # the README.
         exemptions={"_hook_wiring.py", "_heartbeat_isolation.py", "_throwaway_repo.py"},
-        count_checks=[
-            ("test_*.py",
-             re.compile(r"(\d+) `test_\*\.py` files"),
-             lambda files: _count("test_*.py", files)),
-            ("bash-gate",
-             re.compile(r"(\d+) bash gates"),
-             lambda files: _count("*.sh", files)),
-            ("total-files",
-             re.compile(r"(\d+) files total"),
-             lambda files: len(files)),
-        ],
+        # No header counts here: every new test changed them, so any two test-adding PRs
+        # conflicted on that line (dev-env#1309).
+        count_checks=[],
         numbered_sections=0,  # this README's section headings carry no "(N)"
-        # The header reads "N test_*.py files, N bash gates, and two shared modules": every
-        # indexable file is a test, a bash gate, or an exempt module -- nothing else.
-        partition_patterns=("test_*.py", "*.sh"),
+        allows_own_entry=True,
     ),
     DirSpec(
         label="claude/scripts",
@@ -179,7 +169,6 @@ SPECS = [
              lambda files: len(files)),
         ],
         numbered_sections=5,  # five "### Title (N)" domain sections
-        partition_patterns=None,  # header states only a total, no component breakdown
     ),
 ]
 
@@ -206,12 +195,19 @@ class TestReadmeIndexParity(unittest.TestCase):
                 missing = sorted(
                     f for f in snap["files"]
                     if f not in snap["indexed"] and f not in spec.exemptions
+                    and not (spec.allows_own_entry and has_own_entry(spec.directory / f))
+                )
+                remedy = (
+                    f"put `Required when ...` and `Run: ...` lines in each file's first "
+                    f"{OWN_ENTRY_LINES} lines (dev-env#1309)"
+                    if spec.allows_own_entry else
+                    f"add a row for each in {spec.readme.name} in this same PR (the README "
+                    f"is not glob-discovered; dev-env#901)"
                 )
                 self.assertEqual(
                     missing, [],
                     f"{spec.label}: files present on disk but absent from every table's "
-                    f"first column -- add a row for each in {spec.readme.name} in this "
-                    f"same PR (the README is not glob-discovered; dev-env#901): {missing}",
+                    f"first column -- {remedy}: {missing}",
                 )
 
     def test_every_first_column_name_exists_on_disk(self):
@@ -281,28 +277,6 @@ class TestReadmeIndexParity(unittest.TestCase):
                         f"{spec.label}: heading {heading!r} declares {declared} but the "
                         f"section indexes {actual} files -- update the (N) in the heading",
                     )
-
-    def test_component_counts_partition_the_directory(self):
-        for spec in SPECS:
-            if not spec.partition_patterns:
-                continue
-            with self.subTest(dir=spec.label):
-                snap = self.snap[spec.label]
-                uncovered = sorted(
-                    f for f in snap["files"]
-                    if f not in spec.exemptions
-                    and not any(fnmatch.fnmatch(f, p) for p in spec.partition_patterns)
-                )
-                self.assertEqual(
-                    uncovered, [],
-                    f"{spec.label}: files matching none of the header's component "
-                    f"categories {spec.partition_patterns} and not exempt "
-                    f"{sorted(spec.exemptions)}: {uncovered} -- the header breaks its file "
-                    f"total into components, so a file of a new kind would make those "
-                    f"components silently fail to sum to the gated total. Add a component "
-                    f"category for it (here and in the header), or fold it into an "
-                    f"existing one",
-                )
 
 
 if __name__ == "__main__":

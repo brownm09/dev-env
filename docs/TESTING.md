@@ -2,11 +2,11 @@
 
 Moved verbatim from the root `CLAUDE.md` `## Testing` section (2026-07-17, ADR-114) so the
 always-loaded instruction file carries only the index. **Item numbers here match the index
-in [`CLAUDE.md` → `## Testing`](../CLAUDE.md) one-to-one** — keep the two in sync: a new
-test adds an item in both files in the same PR (numbering is append-only and
-collision-checked at merge time by `pre-merge-numbering-check.py`, ADR-074).
+in [`CLAUDE.md` → `## Testing`](../CLAUDE.md) one-to-one** — keep the two in sync. The list
+stops at item 117: a new test takes no number and adds nothing here, and its detail goes in
+the test file ([ADR-074 Amendment 1](adr/074-pre-merge-numbering-collision-check.md)).
 
-For a one-line navigational map of the test directory, see
+For a one-line navigational map of the older tests, see
 [`claude/scripts/tests/README.md`](../claude/scripts/tests/README.md). To run everything:
 `py -3 claude/scripts/run-hook-tests.py` (from the repo root).
 
@@ -1282,7 +1282,9 @@ For a one-line navigational map of the test directory, see
     blocks the merge (exit 2) with the reason on stderr and empty stdout. Unlike
     `pre-merge-message-check.py` (whose `main()` never shells out to git and has no such layer),
     this hook's git/subprocess orchestration is exercised directly rather than left as a
-    documented gap ([ADR-074](adr/074-pre-merge-numbering-collision-check.md); dev-env#516).
+    documented gap ([ADR-074](adr/074-pre-merge-numbering-collision-check.md); dev-env#516). The
+    block message tells a Testing-section collision not to renumber, since a new test takes no
+    number (dev-env#1309).
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_numbering_check.py
@@ -3313,7 +3315,7 @@ For a one-line navigational map of the test directory, see
     bash claude/scripts/tests/run-pylint-unreachable.sh
     ```
 
-76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
+76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 117, because a new test takes no number (`LAST_NUMBERED_ITEM`, dev-env#1309, ADR-074 Amendment 1). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
 
     ```bash
     py -3 claude/scripts/tests/test_testing_index_parity.py
@@ -3601,15 +3603,13 @@ For a one-line navigational map of the test directory, see
 
 84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` ([ADR-122](adr/122-directory-index-readme-parity-gate.md), dev-env#901). Pure offline file parse — no subprocess, network, or git. The directory<->README analogue of item 76 (`test_testing_index_parity.py`, which gates `CLAUDE.md` <-> `docs/TESTING.md`): here the two hand-maintained per-file indexes `claude/scripts/tests/README.md` (dev-env#822) and `claude/scripts/README.md` (dev-env#830) are checked against the directories they claim to index. Neither directory's tooling reads its README — `run-hook-tests.py` discovers tests by glob and Claude Code loads scripts by their `settings.json` wiring — so a file with no row still works and the index rots invisibly; by the time the gate was written both had drifted (missing rows, plus header counts that were stale and, in `claude/scripts/README.md`, self-contradicting: it stated both "79 files" and "76 files" for the same 82-file set).
 
-    Six checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and optional component globs), each README parsed once in `setUpClass` (matching the item-76 sibling):
+    Five checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and whether a file may carry its own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
 
-    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
+    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test may instead carry its own entry: a `Required when` line and a `Run:` line naming the file, in its first 10 lines (dev-env#1309).
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
     3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py` and `_heartbeat_isolation.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
-    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
+    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/`: top-level total; `claude/scripts/tests/` has no header counts since dev-env#1309, because every new test changed them). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
     5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
-    6. **Component completeness** — where a header breaks its total into components (the tests README's "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component glob or is an exemption, so a file of a new kind (e.g. a stray `.ps1`) can't make the components silently fail to sum to the gated total.
-
     Fail-closed by construction: a count sentence reworded past its regex fails check 4 (zero matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)` fails check 5's heading-count assertion — none pass on a count the gate can no longer see, the correct direction for a gate whose whole job is catching silent drift. This is why the two headers are worded so the numbers parse without depending on an em-dash. Verified during authoring that an injected unindexed test file trips checks 1 and 4 together (missing row + both stale counts, exit 1), that rewording a numbered heading drops the numbered-heading count 5→4 (check 5), and that a `.ps1` added to the tests dir is reported uncovered (check 6).
 
     ```bash

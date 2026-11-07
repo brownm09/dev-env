@@ -18,6 +18,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # Same shape pre-merge-numbering-check.py parses, extended to capture the bold title.
 ITEM_RE = re.compile(r"^(\d+)\.\s+\*\*(.+?)\*\*", re.MULTILINE)
+# The numbered list stops here (dev-env#1309, ADR-074 Amendment 1): other documents cite
+# these numbers, and appending to the list made every pair of test-adding PRs conflict.
+LAST_NUMBERED_ITEM = 117
 
 
 def extract_section(text, heading):
@@ -53,6 +56,16 @@ class TestTestingIndexParity(unittest.TestCase):
             nums = sorted(items)
             self.assertEqual(nums, list(range(1, len(nums) + 1)),
                              f"{name} numbering not contiguous from 1: {nums}")
+
+    def test_no_new_numbered_items(self):
+        for name, items in (("CLAUDE.md index", self.index),
+                            ("docs/TESTING.md", self.detail)):
+            new = sorted(n for n in items if n > LAST_NUMBERED_ITEM)
+            self.assertEqual(new, [],
+                             f"{name} has items past {LAST_NUMBERED_ITEM}: a new test takes no "
+                             "number. Remove the item from both files and the README row, and "
+                             "put `Required when ...` and `Run: ...` lines in the test file's "
+                             "first 10 lines instead (dev-env#1309)")
 
     def test_item_sets_match(self):
         only_index = sorted(set(self.index) - set(self.detail))

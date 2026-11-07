@@ -318,6 +318,14 @@ def test_format_block_message_names_file_and_number():
     assert "BLOCKED" in msg
 
 
+def test_format_block_message_tells_a_testing_collision_not_to_renumber():
+    testing = format_block_message({"CLAUDE.md Testing section": {118: ("a", "b")}})
+    assert "don't renumber" in testing
+    assert "Required when" in testing
+    adr = format_block_message({"docs/adr/INDEX.md ADR table": {160: ("a", "b")}})
+    assert "don't renumber" not in adr
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: end-to-end subprocess tests
 # ---------------------------------------------------------------------------

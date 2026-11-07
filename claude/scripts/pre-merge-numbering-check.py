@@ -78,6 +78,7 @@ import _hookutil
 
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
 _ADR_ROW_RE = re.compile(r'^\|\s*\[(\d+)\]\(')
+_TESTING_LABEL = "CLAUDE.md Testing section"
 
 
 def extract_section(text, heading):
@@ -194,6 +195,12 @@ def format_block_message(findings):
         "colliding item(s) above to the next free number in that file, commit, and "
         "re-run `gh pr merge`."
     )
+    if _TESTING_LABEL in findings:
+        lines.append(
+            "For a Testing item, don't renumber: a new test takes no number. Remove the item "
+            "from CLAUDE.md and docs/TESTING.md, and put `Required when ...` and `Run: ...` "
+            "lines in the test file's first 10 lines instead (dev-env#1309)."
+        )
     return "\n".join(lines)
 
 
@@ -201,7 +208,7 @@ def format_block_message(findings):
 # hot spots (dev-env#516). Defined after the extractors so it can reference
 # them directly.
 _CHECKED_FILES = (
-    ("CLAUDE.md", extract_testing_numbers, "CLAUDE.md Testing section"),
+    ("CLAUDE.md", extract_testing_numbers, _TESTING_LABEL),
     ("docs/adr/INDEX.md", extract_adr_numbers, "docs/adr/INDEX.md ADR table"),
 )
 
