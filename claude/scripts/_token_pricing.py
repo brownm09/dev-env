@@ -102,6 +102,43 @@ def has_tokens(usage: dict) -> bool:
     return any(usage.get(key) for key in _COUNT_KEYS)
 
 
+class ResponseTotals:
+    """A transcript's token totals, counting each API response once (dev-env#1223).
+
+    One response spans several records that repeat its usage, so a message id is one
+    response and its last record with tokens wins, because that one has the final output
+    count. A record with no id is a response of its own. The rule matches
+    token-report.py's read_transcript, and a test holds the two together.
+    """
+
+    def __init__(self) -> None:
+        self._usage_by_response: dict = {}
+        self.model = ""
+
+    def add(self, msg: dict) -> None:
+        """Add one assistant record's message. Its id is transcript data, so it may be any type."""
+        usage = flat_usage(msg.get("usage"))
+        if not usage or not has_tokens(usage) or msg.get("model") == SYNTHETIC_MODEL:
+            return
+        try:
+            self._usage_by_response[msg.get("id") or object()] = usage
+        except TypeError:  # an unhashable id, which read_transcript skips too
+            return
+        if msg.get("model"):
+            self.model = msg["model"]
+
+    @property
+    def turn_count(self) -> int:
+        return len(self._usage_by_response)
+
+    def totals(self) -> dict:
+        usages = self._usage_by_response.values()
+        return {
+            key: sum(usage[key] for usage in usages)
+            for key in (*_COUNT_KEYS, "cache_write_1h_input_tokens")
+        }
+
+
 def is_standard_rate(usage: dict) -> bool:
     """Return False for fast mode or US-only inference, which the table doesn't price."""
     return (

@@ -33,6 +33,10 @@ These tests exercise the pure helpers offline (no stdin, network, gh, or disk):
     copy — exercised only indirectly through these same tests, since it has no
     behavior of its own beyond what its two callers already prove.
 
+  * One API response counts once (dev-env#1223): a message id on several records
+    gives its last record with tokens, in _count_turns and aggregate_session, and
+    aggregate_session agrees with token-report.py's read_transcript on the same file.
+
 test_main_records_model_unpriced runs main() once per model case against a temp log
 (dev-env#1122). main()'s remaining I/O (the transcript-locate failure, the log rewrite,
 the `_hookout.emit_advisory` emission) is not covered — the emission channel itself is
@@ -71,10 +75,17 @@ SCRIPT = REPO_ROOT / "claude" / "scripts" / "token-tracker.py"
 # resolvable when exec_module runs the module body.
 sys.path.insert(0, str(SCRIPT.parent))
 
+from _token_pricing import SYNTHETIC_MODEL  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location("token_tracker", SCRIPT)
 assert _spec and _spec.loader, f"cannot load module spec from {SCRIPT}"
 tt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tt)  # safe: main() is guarded by __main__
+
+_spec = importlib.util.spec_from_file_location("token_report", SCRIPT.parent / "token-report.py")
+assert _spec and _spec.loader, "cannot load module spec for token-report.py"
+tr = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tr)  # safe: main() is guarded by __main__
 
 
 # --- format_locate_error() -----------------------------------------------------
@@ -354,7 +365,7 @@ def test_synthetic_last_record_keeps_the_real_model() -> str:
         path = Path(d) / "session-abc.jsonl"
         path.write_text(
             _assistant_line("claude-opus-5-5", {"input_tokens": 1})
-            + _assistant_line(tt.SYNTHETIC_MODEL, {"input_tokens": 0}),
+            + _assistant_line(SYNTHETIC_MODEL, {"input_tokens": 0}),
             encoding="utf-8",
         )
         assert tt.aggregate_session(path)["model"] == "claude-opus-5-5"
@@ -373,6 +384,125 @@ def test_odd_usage_shape_does_not_lose_the_record() -> str:
         data = tt.aggregate_session(path)
     assert data["tokens"]["input_tokens"] == 7, data["tokens"]
     return "a non-object cache_creation or a null count can't raise out of the Stop hook"
+
+
+# --- One API response counts once (dev-env#1223) ----------------------------------
+
+def _response_line(message_id, output, model="claude-opus-5-5") -> str:
+    usage = {
+        "input_tokens": 3,
+        "output_tokens": output,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": 20,
+        "cache_creation": {"ephemeral_1h_input_tokens": 20},
+    }
+    return json.dumps({
+        "type": "assistant",
+        "timestamp": "2026-11-01T09:00:00Z",
+        "message": {"id": message_id, "model": model, "usage": usage},
+    }) + "\n"
+
+
+# The usage of one response written by _response_line with output=40.
+ONE_RESPONSE = {
+    "input_tokens": 3,
+    "output_tokens": 40,
+    "cache_read_input_tokens": 100,
+    "cache_creation_input_tokens": 20,
+    "cache_write_1h_input_tokens": 20,
+}
+
+
+def test_repeated_message_id_counts_once() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _response_line("m1", 1) + _response_line("m1", 5) + _response_line("m1", 40),
+            encoding="utf-8",
+        )
+        totals, turn_count, _ = tt._count_turns(path)
+        data = tt.aggregate_session(path)
+    assert totals == ONE_RESPONSE, totals
+    assert turn_count == 1, turn_count
+    assert data["tokens"] == ONE_RESPONSE, data["tokens"]
+    assert data["turn_count"] == 1, data["turn_count"]
+    return "three records for one message id give the last record's usage and turn_count 1"
+
+
+def test_subagent_repeated_message_id_counts_once() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(_response_line("main", 40), encoding="utf-8")
+        agent = Path(d) / "session-abc" / "subagents" / "agent-1.jsonl"
+        agent.parent.mkdir(parents=True)
+        agent.write_text(_response_line("sub", 1) + _response_line("sub", 40), encoding="utf-8")
+        data = tt.aggregate_session(path)
+    assert data["tokens"] == {key: value * 2 for key, value in ONE_RESPONSE.items()}, data["tokens"]
+    assert data["turn_count"] == 1 and data["subagent_turn_count"] == 1, data
+    return "a subagent's repeated message id also counts once in the session total"
+
+
+def test_distinct_responses_each_count() -> str:
+    # Real transcripts interleave records, and some records carry no id at all.
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _response_line("m1", 1) + _response_line("m2", 40) + _response_line("m1", 40)
+            + _response_line(None, 40) + _response_line(None, 40),
+            encoding="utf-8",
+        )
+        totals, turn_count, _ = tt._count_turns(path)
+    assert turn_count == 4, turn_count
+    assert totals == {key: value * 4 for key, value in ONE_RESPONSE.items()}, totals
+    return "different ids each count, an interleaved id still counts once, and no-id records stay separate"
+
+
+def test_record_without_tokens_never_replaces_a_response() -> str:
+    empty = {"input_tokens": 0, "output_tokens": 0}
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _response_line("m1", 40)
+            + _assistant_line("claude-opus-5-5", empty).replace('"message": {', '"message": {"id": "m1", ')
+            + _assistant_line(SYNTHETIC_MODEL, empty).replace('"message": {', '"message": {"id": "s1", '),
+            encoding="utf-8",
+        )
+        totals, turn_count, model = tt._count_turns(path)
+    assert totals == ONE_RESPONSE, totals
+    assert turn_count == 1, turn_count
+    assert model == "claude-opus-5-5", model
+    return "a later record with no tokens keeps the earlier usage, and a synthetic notice is not a turn"
+
+
+def test_unhashable_message_id_does_not_lose_the_session() -> str:
+    # The id is transcript data, and an exception here would lose the session's record.
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(_response_line(["odd"], 1) + _response_line("m1", 40), encoding="utf-8")
+        data = tt.aggregate_session(path)
+    assert data["tokens"] == ONE_RESPONSE, data["tokens"]
+    assert data["turn_count"] == 1, data["turn_count"]
+    return "an unhashable message id skips that record, as read_transcript does, and the rest still counts"
+
+
+def test_aggregate_session_matches_read_transcript() -> str:
+    # Totals and call count must agree with --attribution's reader on the same file.
+    # The last m1 record is smaller than the one before it, so "largest wins" fails here.
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "session-abc.jsonl"
+        path.write_text(
+            _response_line("m1", 1) + _response_line("m2", 7) + _response_line("m1", 90)
+            + _response_line("m1", 40) + _response_line(None, 2) + _response_line(["odd"], 500)
+            + _assistant_line(SYNTHETIC_MODEL, {"input_tokens": 0}).replace('"message": {', '"message": {"id": "s1", '),
+            encoding="utf-8",
+        )
+        data = tt.aggregate_session(path)
+        calls = tr.read_transcript(path)["calls"]
+    expected = {key: sum(call["usage"][key] for call in calls) for key in data["tokens"]}
+    assert expected["output_tokens"] == 49, expected
+    assert data["tokens"] == expected, (data["tokens"], expected)
+    assert data["turn_count"] == len(calls) == 3, (data["turn_count"], len(calls))
+    return "aggregate_session and read_transcript agree on a mixed transcript, including the last-record rule"
 
 
 def test_main_records_model_unpriced() -> str:
@@ -422,6 +552,12 @@ def main() -> int:
         ("aggregate_session: nested hourly writes priced", test_aggregate_session_prices_nested_hourly_writes),
         ("synthetic last record keeps the real model", test_synthetic_last_record_keeps_the_real_model),
         ("odd usage shape keeps the record", test_odd_usage_shape_does_not_lose_the_record),
+        ("repeated message id counts once", test_repeated_message_id_counts_once),
+        ("subagent repeated message id counts once", test_subagent_repeated_message_id_counts_once),
+        ("distinct responses each count", test_distinct_responses_each_count),
+        ("record without tokens never replaces a response", test_record_without_tokens_never_replaces_a_response),
+        ("unhashable message id keeps the session", test_unhashable_message_id_does_not_lose_the_session),
+        ("aggregate_session matches read_transcript", test_aggregate_session_matches_read_transcript),
         ("main records model_unpriced", test_main_records_model_unpriced),
     ]
     failed = 0

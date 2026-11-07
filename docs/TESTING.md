@@ -2946,7 +2946,12 @@ For a one-line navigational map of the older tests, see
     `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
     (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper
     convention); the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract
-    gate).
+    gate). `_count_turns` and `aggregate_session` count each API response once through
+    `_token_pricing.ResponseTotals` (dev-env#1223): three records of one message id give the last record's
+    usage and one turn, in a main file and a subagent; a later record with no tokens or a synthetic model
+    changes nothing; records with no id stay separate; and an unhashable id skips that record instead of
+    losing the session. A mixed fixture holds `aggregate_session` to `token-report.py`'s `read_transcript`,
+    and its last record for one id is smaller than the one before, so a "largest wins" rule would fail.
 
     ```bash
     py -3 claude/scripts/tests/test_token_tracker.py
@@ -5188,8 +5193,9 @@ For a one-line navigational map of the older tests, see
      rows, and `backfill-tokens.py`'s `process_transcript` records `model_unpriced`. The empty-extraction
      check asserts tables rendered before it checks their `#` columns. Deliberately not covered: whether
      the bands, `CHARS_PER_TOKEN` and `PREFIX_LOST_RATIO` are the right values. They only sort spend into
-     rows, and no check acts on them. Each message-id rule here stops at `--attribution`:
-     `token-tracker.py`, `backfill-tokens.py` and `read_subagents` still sum every record (dev-env#1223).
+     rows, and no check acts on them. `_count_turns_from_jsonl` and `read_subagents` count a repeated
+     message id once through `_token_pricing.ResponseTotals`, each checked with three records of growing
+     output (dev-env#1223). Item 65 holds that class and `read_transcript` to the same rule.
 
      ```bash
      py -3 claude/scripts/tests/test_token_attribution.py

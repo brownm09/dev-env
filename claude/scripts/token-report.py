@@ -24,6 +24,7 @@ from pathlib import Path
 from _hookio import split_top_level
 from _token_pricing import (
     SYNTHETIC_MODEL,
+    ResponseTotals,
     compute_cost,
     cost_buckets,
     flat_usage,
@@ -152,11 +153,7 @@ def read_subagents(transcript_path_str: str) -> list[dict]:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        totals = {"input_tokens": 0, "output_tokens": 0,
-                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-                  "cache_write_1h_input_tokens": 0}
-        turns = 0
-        model = ""
+        responses = ResponseTotals()
         try:
             with open(sa_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -168,24 +165,18 @@ def read_subagents(transcript_path_str: str) -> list[dict]:
                     except json.JSONDecodeError:
                         continue
                     if record.get("type") == "assistant":
-                        msg = record.get("message", {})
-                        usage = flat_usage(msg.get("usage", {}))
-                        if usage:
-                            for key in totals:
-                                totals[key] += usage.get(key, 0)
-                            turns += 1
-                            if msg.get("model") and msg["model"] != SYNTHETIC_MODEL:
-                                model = msg["model"]
+                        responses.add(record.get("message", {}))
         except OSError:
             continue
 
-        prices = get_pricing(model)
+        totals = responses.totals()
+        prices = get_pricing(responses.model)
         cost = compute_cost(totals, prices)
         results.append({
             "name": sa_path.stem,
             "agent_type": meta.get("agentType", "unknown"),
             "description": meta.get("description", ""),
-            "turns": turns,
+            "turns": responses.turn_count,
             "tokens": totals,
             "cost": cost,
             "unpriced": prices is None,
