@@ -1,6 +1,6 @@
 # dev-env Reference
 
-Full descriptions of every skill, hook, routine, and utility script managed by this repo.
+Full descriptions of every skill, hook, routine, and utility script managed by this repo, and the reasoning behind each global rule ([Instruction Detail](#instruction-detail)).
 For a compact overview see the [README](../README.md).
 
 ---
@@ -1842,7 +1842,7 @@ amendment collapsing the five parallel structures into the `_TriggerSpec` table)
 
 ## Instruction Detail
 
-The reasoning, incidents and edge cases behind the rules in [`claude/CLAUDE.md`](../claude/CLAUDE.md). Moved here verbatim from that file by [dev-env#1216](https://github.com/brownm09/dev-env/issues/1216) so they don't load in every session; [ADR-159](adr/159-instruction-files-hold-rules-not-stories.md) has the reasoning. `claude/CLAUDE.md` holds the current rule, so where the two differ, it wins. Headings inside each section are demoted from the original.
+The reasoning, incidents and edge cases behind the rules in [`claude/CLAUDE.md`](../claude/CLAUDE.md). Moved here verbatim from that file by [dev-env#1216](https://github.com/brownm09/dev-env/issues/1216) so they don't load in every session; [ADR-159](adr/159-instruction-files-hold-rules-not-stories.md) has the reasoning. `claude/CLAUDE.md` holds the current rule, so where the two differ, it wins, and where a runbook under [Git Workflow Runbooks](#git-workflow-runbooks) covers the same case, follow the runbook. Position words such as "above" and "below" refer to the old file's order. Headings inside each section are demoted from the original.
 
 ### Detail: Memory and issue pairing
 
@@ -2183,6 +2183,8 @@ A direct *or transitive* caret dependency can publish a new in-range version whi
 
 **Session length:** A `UserPromptSubmit` hook warns at turn 50 (and every 25 turns thereafter). When warned, consider running `/clear` or `/compact` if the task scope has shifted — accumulated context inflates cost toward the end of long sessions. The default threshold can be overridden per-project: add `"turn_threshold": N` to `.claude/hook-config.json`.
 
+*Corrected 2026-11-06: `turn-count-hook.py` warns at 8 prompts and every 4 after, and at 40k tokens and every 20k after.*
+
 ### Detail: Gate calibration
 
 8. **Gate calibration** — when the plan introduces or tightens an automated check that classifies inputs the plan does not enumerate (a hook, CI guard, validator, linter rule, LLM judge, or any threshold/ratio/count applied to a population), state: the **measured property** it keys on, not the shape the author expects to see; the **calibration corpus** — known-good *and* known-bad references, with counts and the check's measured hit rate on each (the known-bad reference is also what proves the check does not pass *vacuously*); **where each constant came from** — the corpus member *and its class*, since a bare "calibrated: yes" hides a threshold read off the wrong class; and the **margin** to the worst known-good observation, *that observation named* — naming it is what makes a baseline sourced from the wrong class collide visibly with the corpus listing, where a bare ratio would not. **An uncalibrated check is a diagnostic: it may report, but it may not block, fail, or take a destructive action.** Same calibration law as `## Experimental Rigor`, applied to standing gates rather than experiments — worksheet form is `/experiment-audit` Step D4, references live in the project `## Experiments` registry where one exists, and a gate carries none of the tier / pre-registration / blinding / verdict machinery. A fixture-pinned unit test is out of scope: it enumerates its own inputs. **A check whose input is *extracted* — a section scan, a regex, a glob, a parse that degrades to `[]` rather than raising — additionally owes an assertion that the extraction is non-empty, separate from the comparison itself**, because a comparison against nothing succeeds and reports a confident passing count; ADR-116's own gate is the worked example (`test_runbook_section_exists` / `test_runbook_has_runnable_lines`, whose failure message reads *"a vacuous pass, not a clean one"*), and running this dimension backwards over the existing inventory found the two live instances in [ADR-145](adr/145-scope-discipline-self-referential-churn.md) §3. Plans introducing or tightening no such check: `N/A — no gate introduced or tightened` (see [ADR-144](adr/144-gate-calibration-pass-3-dimension.md)).
@@ -2190,6 +2192,8 @@ A direct *or transitive* caret dependency can publish a new in-range version whi
 ### Detail: Session summaries
 
 Every session boundary — a completed task, a pause for input, or a return after a long gap — is a moment to orient the user. Four behaviors, all global. They are Claude-facing *output* rules, not mechanics; a targeted `Stop` hook — landing in [#656](https://github.com/brownm09/dev-env/issues/656), and dormant until it merges — reminds only when tiles were spawned but no table was emitted (the one mechanically verifiable half). See [ADR-095](adr/095-session-boundary-summaries-and-idle-refresher.md), [ADR-094](adr/094-tile-tables-and-issue-per-tile.md), and [ADR-128](adr/128-session-end-feedback-retro-table.md).
+
+*Corrected 2026-11-06: the tile-table check has landed; [#656](https://github.com/brownm09/dev-env/issues/656) is closed and `stop-tile-enumeration-gate.py` is wired.*
 
 - **Close each substantive stop with a summary.** When a stop follows real work or leaves something for the user, end the turn with three parts: **Completed** — what got done; **Context / ask** — what's being asked of the user now, if anything (decisions needed, what to review or test, each with its exact path/URL per *User-Actionable References*); **Remaining** — outstanding to-dos. Tile the *genuine out-of-scope follow-ups* among them — using the *Capture follow-ups as tiles* definition of what counts as genuine, and deduplicating against tiles/issues already created earlier in this session so a multi-stop session never re-files the same follow-up; merely list (don't tile) the immediate next steps of the task in progress — but once that remaining work must move to a *different* session (a blocked/orphaned worktree, a required restart, a session boundary), it is a cross-session follow-up: tile the self-contained hand-off per *Capture follow-ups as tiles*, never a paste-it-yourself chat brief ([ADR-113](adr/113-cross-session-handoff-tiles.md)). **Skip the summary on trivial exchanges** — a greeting, a one-line acknowledgment, a single clarifying question — where it would be pure noise (the same judgment the session-mode preamble uses).
 
@@ -2200,6 +2204,8 @@ Every session boundary — a completed task, a pause for input, or a return afte
   **Status, honestly:** the live chip is the one-click "start the session" control and the issue is the durable anchor; there is no per-chip "was it started" API, so **Status** is the issue's open/closed state plus a *best-effort* "started" note from `list_sessions` (title/branch/PR match). A dismissed or lost chip is re-spawnable on request; the issue persists regardless.
 
 - **Open with a refresher after a long idle gap.** When you return to a session after an extended idle period (default ~60 min; the `idle-refresher.py` `UserPromptSubmit` hook measures the gap and injects the cue — Claude cannot measure elapsed idle time on its own — so until that hook lands in [#655](https://github.com/brownm09/dev-env/issues/655), no cue fires and this rule is dormant, not wrong), lead your reply with a brief refresher — what we were working on, the current state, and any pending to-dos/tiles — before addressing the new prompt. The threshold is per-project–overridable via `idle_refresher_minutes` in `.claude/hook-config.json`.
+
+*Corrected 2026-11-06: `idle-refresher.py` has landed and is wired; [#655](https://github.com/brownm09/dev-env/issues/655) is closed.*
 
 ### Detail: Error diligence
 

@@ -16,19 +16,18 @@ The transcripts store each request's system blocks, tools and messages, so the s
 
 | # | Source, dev-env session on 2026-11-06 | Bytes | Tokens, estimated |
 |---|---|---|---|
-| 1 | `claude/CLAUDE.md` at 177,620 bytes | 177,620 | 70,000 |
-| 2 | Project `CLAUDE.md` and memory index | 48,600 | 19,000 |
-| 3 | Tool definitions (54 tools) | 137,000 | 45,000 |
-| 4 | Skill listing, deferred tool names, agent listing, hook context, environment | 38,400 | 13,000 |
-| 5 | System prompt | 34,400 | 11,000 |
+| 1 | Instruction block: `claude/CLAUDE.md`, project `CLAUDE.md` and memory index | 226,200 | 89,000 |
+| 2 | Tool definitions (54 tools) | 137,000 | 45,000 |
+| 3 | Skill listing, deferred tool names, agent listing, hook context, environment | 38,400 | 13,000 |
+| 4 | System prompt | 34,400 | 11,000 |
 
 The file also grew about 15k bytes between the issue being filed and this work landing, to 181,551 bytes. Most of its length was the story of each rule: the incident that prompted it, what was ruled out, how it was verified. Those stories matter when someone doubts or overrides a rule, and an agent following the rule rarely needs them.
 
 ## Decision
 
 1. **`claude/CLAUDE.md` holds the rule; `docs/REFERENCE.md` → Instruction Detail holds the story.** Long rules were shortened in place, keeping their names, because hooks, skills and other files point at them by name. The old text moved there verbatim. A rule's commands, flags and thresholds stay in the file when an agent needs them at that moment.
-2. **Cap the file with a test.** `test_claude_md_size.py` fails above 96,500 bytes, about 5% over the 91,796 bytes left after this trim. A later change that needs more room moves a story out or raises the ceiling with a reason in the PR.
-3. **Check its links in the same test,** because rules now depend on them. Every local link must resolve, including anchors into `docs/REFERENCE.md`.
+2. **Cap the file with a test.** `test_claude_md_size.py` fails above 96,500 bytes, about 5% over the 91,862 bytes left after this trim. A later change that needs more room moves a story out or raises the ceiling with a reason in the PR.
+3. **Check its links in the same test,** because rules now depend on them. Every local link must resolve, including anchors into `docs/REFERENCE.md`, and every Instruction Detail section must have a link pointing to it.
 4. **Fix what was already wrong in passing.** The file said the turn warning fires at 50 and 25 and that two hooks hadn't landed. They had.
 
 Gate calibration, per [ADR-144](144-gate-calibration-pass-3-dimension.md): the measured property is the file's byte count with line endings normalized. Known-bad: 166,696 and 181,551 bytes, the file before this trim, both rejected. Known-good: the trimmed file, the worst and only known-good observation, about 5% under the ceiling. It reads the file directly, and a separate assertion rejects an implausibly small read, so it can't pass on nothing.
@@ -44,8 +43,8 @@ Gate calibration, per [ADR-144](144-gate-calibration-pass-3-dimension.md): the m
 ## Consequences
 
 - **An agent has less context when a rule is unclear.** It has to follow the link. Rules that matter at an exact moment keep their commands so it usually doesn't have to, and a rule that gets misapplied can win its detail back.
-- **Each session starts about 35k tokens smaller,** at the fitted rate: 89,755 bytes at 0.395. That's direct arithmetic on the request, not a measured change in spend. Spend per merged PR is too noisy to show a change this size ([ADR-156](156-compact-early-and-default-subagents-to-sonnet.md)), so no saving is claimed beyond it.
-- **`docs/REFERENCE.md` is about a third larger.** It doesn't load by default, so this has no per-session cost.
+- **Each session starts about 35k tokens smaller,** at the fitted rate: 89,689 bytes at 0.395. That's direct arithmetic on the request, not a measured change in spend. Spend per merged PR is too noisy to show a change this size ([ADR-156](156-compact-early-and-default-subagents-to-sonnet.md)), so no saving is claimed beyond it.
+- **`docs/REFERENCE.md` is about 38% larger.** It doesn't load by default, so this has no per-session cost.
 - **Open PRs that edit moved lines will conflict once.** Their rule edits should go in as a short line, with any story in Instruction Detail.
 - **The rest of the start is untouched.** Tool definitions and the project `CLAUDE.md` are separate decisions, tracked in follow-up issues.
 - **Rollback:** revert the PR. The test and the file go together.

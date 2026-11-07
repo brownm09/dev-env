@@ -9,7 +9,7 @@ guidelines, and journal conventions are defined there and apply to every project
 | Doc | Purpose |
 |---|---|
 | [README.md](README.md) | Quick-reference tables for skills, hooks, and routines |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, and ADR links |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, ADR links, and the reasoning behind each global rule (Instruction Detail) |
 | [docs/TESTING.md](docs/TESTING.md) | Per-item behavioral detail for the `## Testing` index (what each test pins, scope gaps, incident history) |
 | [docs/adr/](docs/adr/) | Design decisions behind rules in `claude/CLAUDE.md` |
 

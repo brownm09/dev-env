@@ -4,6 +4,7 @@ are checked because rules now lean on them for their detail (dev-env#1216, ADR-1
 
 Run: py -3 claude/scripts/tests/test_claude_md_size.py
 """
+import functools
 import os
 import re
 import sys
@@ -13,7 +14,7 @@ CLAUDE_MD = os.path.join(REPO, "claude", "CLAUDE.md")
 REFERENCE = os.path.join(REPO, "docs", "REFERENCE.md")
 
 # About 5% above the size after the #1216 trim. The margin is measured against that file:
-# 91,796 bytes.
+# 91,862 bytes.
 CEILING_BYTES = 96_500
 
 # The file before the trim: the size #1216 was filed against, and the size when it landed.
@@ -24,7 +25,8 @@ HOW_TO_FIX = (
     "Detail. Raise CEILING_BYTES only with a reason in the PR body (ADR-159)."
 )
 
-LINK = re.compile(r"\]\((?!https?:)([^)#\s]*)(?:#([^)\s]*))?\)")
+# A link's target, optional anchor, and optional quoted title.
+LINK = re.compile(r"\]\((?!https?:)([^)#\s]*)(?:#([^)\s]*))?(?:\s+\"[^\"]*\")?\)")
 
 
 def size_of(path):
@@ -33,8 +35,8 @@ def size_of(path):
         return len(f.read().replace(b"\r\n", b"\n"))
 
 
-def over_ceiling(size, ceiling=CEILING_BYTES):
-    return size > ceiling
+def over_ceiling(size):
+    return size > CEILING_BYTES
 
 
 def strip_fences(text):
@@ -60,23 +62,43 @@ def anchor_of(heading):
 
 
 def anchors_in(text):
-    return {anchor_of(m.group(1)) for m in re.finditer(r"^#{1,6} (.+)$", strip_fences(text), re.M)}
+    """Every heading's anchor. GitHub appends -1, -2 to repeats of the same one."""
+    seen, anchors = {}, set()
+    for m in re.finditer(r"^#{1,6} (.+)$", strip_fences(text), re.M):
+        anchor = anchor_of(m.group(1))
+        count = seen.get(anchor, 0)
+        seen[anchor] = count + 1
+        anchors.add(f"{anchor}-{count}" if count else anchor)
+    return anchors
 
 
-def broken_links(text, base_dir, read=None):
+@functools.lru_cache(maxsize=None)
+def anchors_in_file(path):
+    with open(path, encoding="utf-8") as f:
+        return anchors_in(f.read())
+
+
+def exists_with_exact_case(path):
+    """os.path.exists ignores case on Windows, and a link with the wrong case breaks on GitHub."""
+    return os.path.exists(path) and os.path.basename(path) in os.listdir(os.path.dirname(path))
+
+
+def broken_links(text, base_dir):
     """Local links in text whose file is missing, or whose anchor isn't a heading in that file."""
-    read = read or (lambda p: open(p, encoding="utf-8").read())
     broken, found = [], 0
     for m in LINK.finditer(strip_code(text)):
         target, anchor = m.group(1), m.group(2)
-        if target and "/" not in target and "." not in target:
-            continue  # a placeholder in a template, like the tile table's [#N](url)
+        if target == "url":
+            continue  # the placeholder in the tile table's template row, [#N](url)
         found += 1
-        path = os.path.normpath(os.path.join(base_dir, target)) if target else None
-        if path and not os.path.exists(path):
-            broken.append(target)
+        if not target:
+            if anchor and anchor not in anchors_in(text):
+                broken.append(f"#{anchor}")
             continue
-        if anchor and path and path.endswith(".md") and not os.path.isdir(path) and anchor not in anchors_in(read(path)):
+        path = os.path.normpath(os.path.join(base_dir, target))
+        if not exists_with_exact_case(path):
+            broken.append(target)
+        elif anchor and path.endswith(".md") and anchor not in anchors_in_file(path):
             broken.append(f"{target}#{anchor}")
     return found, broken
 
@@ -106,8 +128,7 @@ def test_every_local_link_resolves():
 def test_detail_links_exist_and_reach_the_detail_section():
     with open(CLAUDE_MD, encoding="utf-8") as f:
         text = f.read()
-    with open(REFERENCE, encoding="utf-8") as f:
-        anchors = anchors_in(f.read())
+    anchors = anchors_in_file(REFERENCE)
     details = re.findall(r"\(\.\./docs/REFERENCE\.md#(detail-[\w-]+)\)", text)
     assert len(details) > 20, f"only {len(details)} detail links found; the extraction is broken"
     assert "instruction-detail" in anchors
@@ -115,17 +136,34 @@ def test_detail_links_exist_and_reach_the_detail_section():
     assert not missing, f"detail headings missing from docs/REFERENCE.md: {missing}"
 
 
+def test_every_detail_heading_is_linked():
+    with open(CLAUDE_MD, encoding="utf-8") as f:
+        text = f.read()
+    headings = {a for a in anchors_in_file(REFERENCE) if a.startswith("detail-")}
+    assert len(headings) > 20, f"only {len(headings)} detail headings found; the extraction is broken"
+    unlinked = sorted(h for h in headings if f"#{h})" not in text)
+    assert not unlinked, f"detail sections nothing in claude/CLAUDE.md points to: {unlinked}"
+
+
 def test_the_link_check_catches_a_broken_link():
-    fake = {"x.md": "## Real heading\n"}
     base = os.path.dirname(CLAUDE_MD)
-    good = "[a](CLAUDE.md) [b](../docs/REFERENCE.md#instruction-detail)"
-    found, broken = broken_links(good, base)
-    assert (found, broken) == (2, []), broken
-    _, broken = broken_links("[a](no-such-file.md)", base)
-    assert broken == ["no-such-file.md"]
-    _, broken = broken_links("[a](../docs/REFERENCE.md#no-such-heading)", base)
-    assert broken == ["../docs/REFERENCE.md#no-such-heading"]
-    assert anchors_in(fake["x.md"]) == {"real-heading"}
+    good = '[a](CLAUDE.md) [b](../docs/REFERENCE.md#instruction-detail) [c](CLAUDE.md "a title")'
+    assert broken_links(good, base) == (3, [])
+    assert broken_links("[a](no-such-file.md)", base)[1] == ["no-such-file.md"]
+    assert broken_links('[a](no-such-file.md "a title")', base)[1] == ["no-such-file.md"]
+    assert broken_links("[a](README)", base)[1] == ["README"]
+    assert broken_links("[a](claude.MD)", base)[1] == ["claude.MD"]
+    assert broken_links("[a](../docs/REFERENCE.md#no-such-heading)", base)[1] == ["../docs/REFERENCE.md#no-such-heading"]
+
+
+def test_same_file_anchors_are_checked():
+    base = os.path.dirname(CLAUDE_MD)
+    assert broken_links("## Real\n[a](#real)\n", base) == (1, [])
+    assert broken_links("## Real\n[a](#nope)\n", base) == (1, ["#nope"])
+
+
+def test_the_template_placeholder_is_skipped():
+    assert broken_links("[#N](url)", os.path.dirname(CLAUDE_MD)) == (0, [])
 
 
 def test_code_is_not_read_as_links_or_headings():
@@ -138,6 +176,7 @@ def test_anchor_matches_github_form():
     assert anchor_of("Disk-Full (ENOSPC) Recovery") == "disk-full-enospc-recovery"
     assert anchor_of("Detail: CI not firing") == "detail-ci-not-firing"
     assert anchor_of("Tile shards (`sessions/<project>/tiles/<issue-number>.json`)") == "tile-shards-sessionsprojecttilesissue-numberjson"
+    assert anchors_in("## Same\n## Same\n") == {"same", "same-1"}
 
 
 def main():
