@@ -728,20 +728,22 @@ def main() -> int:
         return run_one(sys.argv[1])
 
     tests = sorted(k for k, v in globals().items() if k.startswith("test_") and callable(v))
+    failed = 0
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         templates = Path(tmp)
         build_templates()
         with ThreadPoolExecutor(WORKERS) as pool:
-            results = list(pool.map(
+            for result in pool.map(
                 lambda name: subprocess.run([sys.executable, __file__, name, tmp], capture_output=True),
                 tests,
-            ))
-    for result in results:
-        # Bytes as the child wrote them, so a character this console can't encode can't crash this.
-        sys.stdout.buffer.write(result.stdout + result.stderr)
-    sys.stdout.flush()
-    # A child's exit code, not its output, decides: one that crashed printed no FAIL line.
-    failed = sum(result.returncode != 0 for result in results)
+            ):
+                # Bytes as the child wrote them, so a character this console can't encode can't
+                # crash this. Written as each finishes, so a run killed at the runner's limit
+                # still shows which tests passed.
+                sys.stdout.buffer.write(result.stdout + result.stderr)
+                sys.stdout.buffer.flush()
+                # A child's exit code, not its output, decides: one that crashed printed no FAIL line.
+                failed += result.returncode != 0
     print()
     print(f"Tests: {len(tests) - failed} passed, 0 skipped, {failed} failed")
     return 1 if failed else 0
