@@ -480,8 +480,9 @@ effect only where that routine's live prompt reads this file (dev-env#1110 track
 ## Negated closing keywords (2026-11-06, dev-env#1300)
 
 GitHub [honors a closing keyword](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)
-wherever it appears, so "It doesn't close #12" closes #12. The sweep reports that after the merge.
-This warns before it.
+wherever it appears, so "It doesn't close #12" closes #12. The sweep reports that long after the
+merge. This warns as the merge runs. It can't stop the closure, since the hook exits 0 and the merge
+goes ahead, so it tells the reader to reopen the issue if it should stay open.
 
 **Decision: warn from `pre-merge-findings-gate.py`, and don't block yet.** The negation moved to
 `claude/scripts/_closing_negation.py`, which the gate and the sweep both import. The gate is the last
@@ -521,7 +522,9 @@ this hook.
 
 **What this misses.** An accidental closure with no negation. The wider search found dev-env PR 800
 linking #2 through "proposed fix #2", and cover-letter-runtime PR 89 linking #83 through a sentence
-about another PR's fix. Matching those would mean warning on every closing keyword.
+about another PR's fix. Matching those would mean warning on every closing keyword. It also misses a
+negated keyword in a table row. GitHub links rows, but the check skips them because a row like "fixed:
+#12 is amended" records a review finding. The corpus has no negated keyword in a row.
 
 **Alternatives considered.**
 

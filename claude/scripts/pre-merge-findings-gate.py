@@ -261,8 +261,8 @@ def main() -> None:
     if accidental:
         print(json.dumps({"systemMessage": (
             f"[merge-gate] The PR body says it doesn't close {', '.join(accidental)}, but GitHub honors a closing "
-            f"keyword wherever it appears, so merging will close it. Reword the sentence (for "
-            f"example \"Refs #N, which stays open\") unless the issue should close."
+            f"keyword wherever it appears, and this merge is going ahead, so it will close. If the issue "
+            f"should stay open, reopen it after the merge."
         )}))
 
     # Last comment carrying the /review machine marker wins (handles re-reviews).

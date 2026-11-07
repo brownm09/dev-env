@@ -94,6 +94,7 @@ STDIN=$(printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"."}' "$(p
 OUT=$(printf '%s' "$STDIN" | MERGE_GATE_TEST_JSON="$J" $PY "$HOOK" 2>/dev/null); RC=$?
 [ "$RC" = "0" ] && ok "exit 0" || bad "expected 0, got $RC"
 case "$OUT" in *systemMessage*"#12"*) ok "warning names #12" ;; *) bad "no warning naming #12: $OUT" ;; esac
+case "$OUT" in *"reopen it after the merge"*) ok "warning says to reopen, since the merge still runs" ;; *) bad "no reopen instruction: $OUT" ;; esac
 rm -f "$J"
 J=$(canned "Closes #12" "$NO_MARK")
 OUT=$(printf '%s' "$STDIN" | MERGE_GATE_TEST_JSON="$J" $PY "$HOOK" 2>/dev/null)

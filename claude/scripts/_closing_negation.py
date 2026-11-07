@@ -55,7 +55,8 @@ def says_it_does_not_close(pr_body, number, repo):
 
 def accidental_closes(pr_body, repo):
     """Return references, such as "#12" or "o/r#12", that merging would close although the body says
-    it won't: every mention GitHub would link is negated."""
+    it won't: every mention GitHub would link is negated. Table rows are the exception: GitHub links
+    them, but closing_mentions skips them, so a negated keyword in a row isn't reported."""
     negated_by_ref = {}
     targets = {}
     for target, number, negated in closing_mentions(_UNLINKED.sub(" ", pr_body or ""), repo):
