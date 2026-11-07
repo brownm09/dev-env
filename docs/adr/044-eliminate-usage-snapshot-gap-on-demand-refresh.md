@@ -173,12 +173,16 @@ subscription rather than the API would satisfy the
 [token-source rule](https://github.com/brownm09/dev-env/issues/1280), but the call would still spend
 plan limit on a readout. The check answers which budget pays, and the objection is to paying at all.
 
-**Measured.** #1299 left open whether `claude auth status --json` refreshes an expired token. Run once
-at 06:30:36 local on 2026-11-07 with the token expired, it moved `expiresAt` from 1794051019496
-(06:30:19) to 1794079838328 (14:30:38), and the credentials file's mtime from 22:30:19 the previous day
-to 06:30:38. So it refreshes, though whether it spends any plan limit wasn't measured. The hook still
-skips, and the advisory now names that command.
-[dev-env#1327](https://github.com/brownm09/dev-env/issues/1327) decides whether the hook should run it.
+**Measured, and not settled.** #1299 left open whether `claude auth status --json` refreshes an expired
+token. Two runs on 2026-11-07 disagree. At 06:30:36, 17 seconds after expiry, the file was rewritten
+during the command (`expiresAt` 1794051019496 to 1794079838328, mtime 06:30:38). At 14:30:44, 6 seconds
+after the next expiry, the command exited 0 with `loggedIn` true and left the file unchanged. So the
+hook skips, and [dev-env#1327](https://github.com/brownm09/dev-env/issues/1327) tracks the question.
+
+**The path this amendment removes fired that day.** The file was next rewritten at 14:33:19, 6 seconds
+after the old hook, still live on `main`, saw a confirmed merge of win11-init-tools PR 115 on an expired
+token. The old hook's only refresh was `claude -p ok --model haiku`, so that was very likely the first
+such call, though the call itself wasn't observed.
 
 **Left as is.** The hook's 90-second budget in `hook-dispatch.py` was sized for the refresh. The fetch's
 retry and the merge confirmation now take far less, but a larger budget costs nothing unless the hook

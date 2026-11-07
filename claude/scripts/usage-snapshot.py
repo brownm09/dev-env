@@ -36,8 +36,8 @@ Exit 2  — snapshot emitted via stderr, OR an advisory that says why it was ski
 This hook never refreshes the token. The refresh it used to run was a
 `claude --print` model call, which spent plan limit on a status readout, so a stale
 window costs one skipped snapshot instead (dev-env#1299, ADR-124 Amendment 2).
-`claude auth status` was measured refreshing an expired token; dev-env#1327 tracks
-whether this hook should use it.
+`claude auth status` rewrote an expired token on one of two measured runs, so it
+isn't a route yet; dev-env#1327 tracks that.
 
 Merge-decision trace (dev-env#474 follow-up): dev-env#489/#496 both established
 live that gh's success marker does not reliably survive to `tool_response` on a
@@ -360,8 +360,8 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
         return "expired", (
             f"[usage-snapshot] Skipped: OAuth token in .credentials.json expired "
             f"{days_ago:.1f} days ago, and this hook makes no model call to refresh it "
-            f"(dev-env#1299). Run `claude auth status` in a terminal to refresh it, or "
-            f"`claude auth login` if that fails; the next merge then shows the snapshot."
+            f"(dev-env#1299). Run `claude` in a terminal, or `claude auth login`, to "
+            f"rewrite it; the next merge then shows the snapshot."
         )
     if (expires_at_ms - now_ms) < 3_600_000:
         return "expiring", (
