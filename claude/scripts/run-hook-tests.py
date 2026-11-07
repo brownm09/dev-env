@@ -16,8 +16,9 @@ This is the engine behind ``.github/workflows/hook-tests.yml`` (windows-latest,
     py -3 claude/scripts/run-hook-tests.py --timeout 600
 
 Discovery is glob-based on purpose: a new ``test_*.py`` or a new ``*.sh`` in
-either dedicated test directory is picked up automatically, so the runner never
-drifts from the ``## Testing`` list the way a hand-maintained command list would.
+either dedicated test directory is picked up automatically, so the runner covers
+tests that no hand-maintained list names, including every test added since the
+``## Testing`` list stopped growing (dev-env#1309).
 Python tests are named ``test_*.py`` (so the shared ``_hook_wiring.py`` helper is
 never mistaken for a test); a leading underscore also excludes any future shared
 ``.sh`` helper.

@@ -479,7 +479,7 @@ _TILE_OK = {
     "url": "https://github.com/brownm09/dev-env/issues/870",
     "title": "Tile persistence PR3",
     "tldr": "enforce the shard write",
-    "prompt": "the full self-contained spawn_task prompt",
+    "prompt": "the full self-contained tile prompt",
     "cwd": "C:/Users/brown/Git/dev-env",
     "spawned": "2026-07-22",
 }

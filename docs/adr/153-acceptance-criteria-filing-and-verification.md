@@ -477,6 +477,64 @@ tracked in [dev-env#1300](https://github.com/brownm09/dev-env/issues/1300). Repo
 machine this was written on, though its report branches exist through 2026-10-31. So the step takes
 effect only where that routine's live prompt reads this file (dev-env#1110 tracks the routine host).
 
+## Negated closing keywords (2026-11-06, dev-env#1300)
+
+GitHub [honors a closing keyword](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)
+wherever it appears, so "It doesn't close #12" closes #12. The sweep reports that long after the
+merge. This warns as the merge runs. It can't stop the closure, since the hook exits 0 and the merge
+goes ahead, so it tells the reader to reopen the issue if it should stay open.
+
+**Decision: warn from `pre-merge-findings-gate.py`, and don't block yet.** The negation moved to
+`claude/scripts/_closing_negation.py`, which the gate and the sweep both import. The gate is the last
+read of the body before merge, so it covers switchyard PR 21's body, which was edited after review,
+and it adds no `gh` call. The warning doesn't cover a merge through the REST fallback, which skips
+this hook.
+
+**Calibration, per ADR-144.**
+
+- **Measured property:** the wording says the PR doesn't close the issue, in a form GitHub reads as
+  closing it. GitHub's `closingIssuesReferences` confirmed that second half for every match.
+- **Corpus:** all 2,035 merged PRs in the 7 repos #1292 swept. #1292 didn't list them. They are
+  dev-env, lifting-logbook, career-playbook, cover-letter-runtime, switchyard, win11-init-tools and
+  tech-leadership-reference, inferred because these total 2,035 against its 2,032 about an hour earlier.
+- **Known-bad:** 4 matches, all true. Each PR closed the issue it said it didn't:
+
+| # | PR | Issue it closed | Label |
+|---|---|---|---|
+| 1 | switchyard PR 21 | #12 | true |
+| 2 | lifting-logbook PR 510 | #468 | true |
+| 3 | career-playbook PR 651 | #646 | true |
+| 4 | career-playbook PR 1743 | #1095 | true |
+
+- **Known-good:** the other 2,031 PRs produced no match. That is weak evidence, since they weren't read
+  one by one. Three near misses show the margin, and each is one form away from a false warning:
+  - lifting-logbook PR 478 mentions a keyword in a code span, which GitHub didn't link.
+  - career-playbook PR 1173 has emphasis closing after the keyword's colon, which GitHub didn't link, so
+    that issue is still open. Across the corpus that form went unlinked in 2 of 2 cases.
+  - career-playbook PR 1533 has a negated mention in a code span and a real closing keyword for the same
+    issue. An earlier pattern matched it, and a first label called it true because GitHub linked it. It
+    was false: that PR meant to close the issue. Requiring every mention to be negated fixed it.
+- **Where the pattern came from:** the first form matched rows 1, 2 and 4. A wider search of the same
+  corpus found row 3, and emphasis was added. The #1292 session then rewrote the negation for its own
+  review findings, and its form matched the same rows. Only row 4 was found by a pattern not written from
+  it, and there's no held-out set, which is why this still doesn't block.
+- **Extraction:** the check reads one body, and the fixtures assert a non-empty result on rows 1 and 2.
+
+**What this misses.** An accidental closure with no negation. The wider search found dev-env PR 800
+linking #2 through "proposed fix #2", and cover-letter-runtime PR 89 linking #83 through a sentence
+about another PR's fix. Matching those would mean warning on every closing keyword. It also misses a
+negated keyword in a table row. GitHub links rows, but the check skips them because a row like "fixed:
+#12 is amended" records a review finding. The corpus has no negated keyword in a row.
+
+**Alternatives considered.**
+
+| # | Alternative | Why rejected |
+|---|---|---|
+| 1 | Check in `pre-pr-create-check.py` | It reads the command, not the PR, and it would miss a body edited later, as switchyard PR 21's was |
+| 2 | A separate hook on `gh pr merge` | A second `gh pr view` per merge for a body the gate already fetches |
+| 3 | Block now | Only one match came from a pattern not written from it |
+| 4 | Report only the linked issues that also have negated wording, using `closingIssuesReferences` | Every match is already linked, so it adds a field to the query and changes no result. If a new unlinked form causes a false warning, this is the fix to reach for |
+
 ## Consequences
 
 - Every `/review` comment carries one evidence block per linked issue: a table, or a plain

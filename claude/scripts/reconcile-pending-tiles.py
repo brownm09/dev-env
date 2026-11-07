@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: re-surface pending tile shards whose chips did not survive.
 
-A `spawn_task` tile is the one-click control for starting a follow-up session, and it is
-ephemeral: chip IDs are not persisted across an app restart, and no non-destructive API
-reports whether a chip was clicked. ADR-118 makes the *payload* durable by persisting each
+A tile (a `start_session` proposal card) is the one-click control for starting a follow-up session, and it is
+ephemeral: a card expires after 7 days, and no non-destructive API reports whether one
+was clicked. ADR-118 makes the *payload* durable by persisting each
 tile as a shard `sessions/<project>/tiles/<issue-number>.json`, keyed by the paired GitHub
 issue that ADR-094 already requires. PR1 (dev-env#868) landed the shard format, the
 `_journal_shards` generalisation, and the `claude/CLAUDE.md` write rule — so shards have
@@ -13,7 +13,7 @@ Once per session (per-session sentinel in scratch/, matching `reconcile-open-prs
 walks every project's `tiles/` directory, reconciles each shard against live GitHub issue
 state, unlinks the shards whose issue is CLOSED, and emits a compact **index** of what is
 still pending. It surfaces the index, not the payloads: Claude reads a shard for the full
-`spawn_task` prompt only when it actually re-spawns one, which keeps turn-1 context small
+tile prompt only when it actually re-spawns one, which keeps turn-1 context small
 even when many tiles are pending.
 
 Three things this hook does deliberately differently from its `reconcile-open-prs.py`
@@ -476,7 +476,7 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
 
     if pending:
         parts.append(
-            f"Pending tiles ({len(pending)}) -- spawn_task chips do not survive an app restart; "
+            f"Pending tiles ({len(pending)}) -- tile cards don't last (they expire after 7 days); "
             "these shards are the durable payload (ADR-118)."
         )
         parts.extend(tile_index_line(tile) for tile in pending[:max_shown])
@@ -487,10 +487,12 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
                 "the rest are in the same sessions/<project>/tiles/ directories."
             )
         parts.append(
-            "Before re-spawning any of these, check list_sessions for a session whose title or "
+            "Before re-proposing any of these, check list_sessions for a session whose title or "
             "branch already matches: a tile whose work has started keeps its issue open, so it "
-            "still appears here. Read a shard only when you actually re-spawn one -- the full "
-            "spawn_task payload (title/tldr/prompt/cwd) is inside it."
+            "still appears here. Read a shard only when you actually re-propose one -- the full "
+            "tile payload (title/tldr/prompt/cwd) is inside it. Send title, prompt and tldr (as "
+            "background) but not cwd, since a card can't carry a folder and starts in this "
+            "project: when the shard's cwd is another repo, put that path at the top of the prompt."
         )
 
     if removed:

@@ -188,6 +188,68 @@ stale-draft / unmerged-branch advisories stay exit 0.) See
   over-coupling concern). `_first_line` stays duplicated (a command-segment helper with per-hook
   intent, not a transcript reader).
 
+## Amendment (2026-11-06, dev-env#1298): read how a `start_session` call ended
+
+The desktop app replaced `spawn_task` with `mcp__ccd_session__start_session`, and this gate
+recognized a tile only by the old name. It blocked sessions that had tiled correctly, and it never
+reminded sessions that proposed tiles about their table or shard. `spawn_task` is still read, as a
+card, for transcripts recorded before the change.
+
+**Decision.** The new tool has modes the old one didn't, so the gate classifies each call by how it
+ended, and only a proposal card is a tile:
+
+- **`own_initiative`, proposed:** a card. It satisfies the merge and issue floors (triggers 1, 2 and
+  5) and owes a table and a shard (3 and 3b).
+- **Started** (`user_asked` or `proposal_id`): it satisfies the floors and owes neither, because the
+  table and shard guard a card that can be lost, and a started session has no card to lose.
+- **Nothing came of it** (a refusal, or any `offer`): it counts as nothing. An offer only asks. One
+  answered "New session" tells the session to call again with `proposal_id`, and that call is what
+  counts, which all 13 recorded accepted offers did.
+
+A card is followed after it's proposed, because `proposal_id` and `dismiss_task` both name it by the
+`task_id` in the proposal's result. A `proposal_id` start turns it into a started session. A
+`dismiss_task` that withdrew it, or found it expired, leaves nothing. A `dismiss_task` that failed,
+or said "Nothing was changed", leaves it counted: that wording means the card started or came back
+to this session, and doesn't say which.
+
+The table is in `docs/REFERENCE.md` → Detail: Tiles, and `_START_SESSION_DECISIONS` and
+`_CARD_LIFE_DECISIONS` in the test file pin each row through the triggers.
+
+**Alternatives rejected.**
+
+- *Count any `start_session` call as a tile, the way `spawn_task` was counted.* An offer answered
+  "Do it here" would satisfy the merge floor with nothing queued, and a refused proposal would too.
+  A session the user started in plain words would be blocked for a shard no one needs.
+- *Key on the `initiation` argument alone.* It can't see a refusal, and 6 of the 20 refused
+  `own_initiative` calls recorded carry no error flag ("Nothing was proposed").
+- *Require the words the app uses for success ("Proposed ...").* If the app rewords it, the gate is
+  blind to real tiles again, which is this bug. So a call counts unless it was refused.
+- *Match "New session" in an offer's result.* It adds a second dependency on the app's wording and
+  decides nothing, because the `proposal_id` call that follows already counts.
+
+**Calibration** (Pass 3, Gate calibration). The gate was replayed, old against new, over all 159
+transcripts recording a `start_session` call on this machine, at 2026-11-07.
+
+- **Measured property:** the result's error flag, its opening words `Nothing was`, the `task_id` in a
+  proposal's result, and the words `Nothing was changed` in a dismissal's. Each comes from those
+  recorded results.
+- **Classifier, against each result's own wording:** 245 "Proposed" results read as cards, 32
+  "Started session" results read as started, and 30 refusals and all 14 offers read as nothing. No
+  misreads. Of the recorded dismissals, 25 say "withdrawn", 2 say "expired" and 4 say "Nothing was
+  changed".
+- **Blocks removed:** the old gate wrongly blocked 9 times across these transcripts (merge floor 1,
+  issue floor 6, unchained merge 2). An unchained session that merged PR #2200 and then proposed a
+  tile exits 2 on the old gate and 0 on the new.
+- **Reminders restored:** the table now fires on 43 of the 159 and the shard on 15. The old gate
+  fired on none of them. Each fires once per session, by the existing per-trigger sentinel.
+- **Margin:** no recorded result sits near the boundary, since refusals and proposals open with
+  different words. The failure if the app rewords a refusal isn't small: the call reads as a card, so
+  the merge and issue floors go quiet for the rest of the session with nothing queued, and the table
+  and shard reminders fire about a card that doesn't exist. The check stays negative anyway, because
+  a positive one would bring back this bug whenever the app rewords a proposal. If the app rewords
+  the `task_id` in a proposal, the card can't be retired and keeps counting. If it rewords "Nothing
+  was changed", a card that may have started reads as withdrawn, and its floors fire once.
+
 ## References
 
 - [ADR-046](046-post-merge-followup-tiles.md) — the rule being enforced (2026-07-05 addendum: merged-state

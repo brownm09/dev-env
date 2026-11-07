@@ -1,0 +1,722 @@
+{
+ "summary": {
+  "cases": 37,
+  "inputs": [
+   "A:career-playbook#1247",
+   "A:career-playbook#1505",
+   "A:career-playbook#1523",
+   "A:career-playbook#1596",
+   "A:career-playbook#1731",
+   "A:career-playbook#1768",
+   "A:career-playbook#1769",
+   "A:career-playbook#2000",
+   "A:career-playbook#2014",
+   "A:career-playbook#709",
+   "A:dev-env#899",
+   "A:dev-env#918",
+   "B:career-playbook#1659",
+   "B:dev-env#1029"
+  ],
+  "same_list_on_rerun": 37,
+  "target_found_on_rerun": 0,
+  "target_found_without_date_limit": 0,
+  "cases_with_a_term_missing_target": 30,
+  "distinct_terms_checked": 87,
+  "distinct_terms_finding_target": 72
+ },
+ "rows": [
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1247",
+   "slot": 0,
+   "target": 1064,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    8
+   ],
+   "text_length": 2031
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1505",
+   "slot": 0,
+   "target": 1500,
+   "terms": 6,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    352
+   ],
+   "text_length": 4535
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1523",
+   "slot": 1,
+   "target": 1520,
+   "terms": 7,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 2,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    487,
+    492
+   ],
+   "text_length": 3246
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1596",
+   "slot": 1,
+   "target": 1502,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    264
+   ],
+   "text_length": 4192
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1731",
+   "slot": 2,
+   "target": 1428,
+   "terms": 2,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 2,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    752,
+    12
+   ],
+   "text_length": 2393
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1768",
+   "slot": 2,
+   "target": 1767,
+   "terms": 3,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    2074
+   ],
+   "text_length": 6233
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1769",
+   "slot": 0,
+   "target": 1745,
+   "terms": 4,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    503
+   ],
+   "text_length": 2474
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#1769",
+   "slot": 1,
+   "target": 1745,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    0
+   ],
+   "text_length": 2474
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#2000",
+   "slot": 0,
+   "target": 1997,
+   "terms": 3,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    0
+   ],
+   "text_length": 1016
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#2014",
+   "slot": 2,
+   "target": 1997,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    0
+   ],
+   "text_length": 1016
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#2014",
+   "slot": 2,
+   "target": 2000,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    14
+   ],
+   "text_length": 1180
+  },
+  {
+   "generation": "g1",
+   "input": "A:career-playbook#709",
+   "slot": 2,
+   "target": 699,
+   "terms": 2,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    55
+   ],
+   "text_length": 1640
+  },
+  {
+   "generation": "g1",
+   "input": "A:dev-env#918",
+   "slot": 1,
+   "target": 734,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    64
+   ],
+   "text_length": 1902
+  },
+  {
+   "generation": "g1",
+   "input": "B:dev-env#1029",
+   "slot": 1,
+   "target": 1029,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 2562
+  },
+  {
+   "generation": "g2",
+   "input": "A:career-playbook#1505",
+   "slot": 0,
+   "target": 1500,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    352
+   ],
+   "text_length": 4535
+  },
+  {
+   "generation": "g2",
+   "input": "A:career-playbook#1523",
+   "slot": 1,
+   "target": 1520,
+   "terms": 6,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    492
+   ],
+   "text_length": 3246
+  },
+  {
+   "generation": "g2",
+   "input": "A:career-playbook#1768",
+   "slot": 2,
+   "target": 1767,
+   "terms": 2,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    2074
+   ],
+   "text_length": 6233
+  },
+  {
+   "generation": "g2",
+   "input": "A:career-playbook#1769",
+   "slot": 0,
+   "target": 1745,
+   "terms": 6,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    503
+   ],
+   "text_length": 2474
+  },
+  {
+   "generation": "g2",
+   "input": "A:career-playbook#2014",
+   "slot": 2,
+   "target": 2000,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    495
+   ],
+   "text_length": 1180
+  },
+  {
+   "generation": "g2",
+   "input": "A:dev-env#918",
+   "slot": 1,
+   "target": 734,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    64
+   ],
+   "text_length": 1902
+  },
+  {
+   "generation": "g2",
+   "input": "B:career-playbook#1659",
+   "slot": 0,
+   "target": 1659,
+   "terms": 6,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 3387
+  },
+  {
+   "generation": "g2",
+   "input": "B:dev-env#1029",
+   "slot": 1,
+   "target": 1029,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 2562
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1247",
+   "slot": 1,
+   "target": 1064,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    8
+   ],
+   "text_length": 2031
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1505",
+   "slot": 0,
+   "target": 1500,
+   "terms": 6,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    352
+   ],
+   "text_length": 4535
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1505",
+   "slot": 1,
+   "target": 1500,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    352
+   ],
+   "text_length": 4535
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1523",
+   "slot": 1,
+   "target": 1520,
+   "terms": 7,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 2,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    487,
+    492
+   ],
+   "text_length": 3246
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1523",
+   "slot": 2,
+   "target": 1520,
+   "terms": 3,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    492
+   ],
+   "text_length": 3246
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1731",
+   "slot": 2,
+   "target": 1428,
+   "terms": 3,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 2,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    752,
+    12
+   ],
+   "text_length": 2393
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#1769",
+   "slot": 0,
+   "target": 1745,
+   "terms": 6,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    503
+   ],
+   "text_length": 2474
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#2000",
+   "slot": 0,
+   "target": 1997,
+   "terms": 3,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    0
+   ],
+   "text_length": 1016
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#2000",
+   "slot": 2,
+   "target": 1997,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 1016
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#2014",
+   "slot": 2,
+   "target": 2000,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [
+    495
+   ],
+   "text_length": 1180
+  },
+  {
+   "generation": "g3",
+   "input": "A:career-playbook#709",
+   "slot": 1,
+   "target": 699,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    55
+   ],
+   "text_length": 1640
+  },
+  {
+   "generation": "g3",
+   "input": "A:dev-env#899",
+   "slot": 2,
+   "target": 856,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 533
+  },
+  {
+   "generation": "g3",
+   "input": "A:dev-env#918",
+   "slot": 1,
+   "target": 734,
+   "terms": 5,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 1,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 1,
+   "failing_term_offsets": [
+    64
+   ],
+   "text_length": 1902
+  },
+  {
+   "generation": "g3",
+   "input": "B:dev-env#1029",
+   "slot": 1,
+   "target": 1029,
+   "terms": 4,
+   "was_empty": true,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": true,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 2562
+  },
+  {
+   "generation": "g3",
+   "input": "B:dev-env#1029",
+   "slot": 2,
+   "target": 1029,
+   "terms": 6,
+   "was_empty": false,
+   "target_found_on_rerun": false,
+   "empty_on_rerun": false,
+   "same_list_on_rerun": true,
+   "target_found_without_date_limit": false,
+   "terms_not_finding_target": 0,
+   "failing_terms_with_punctuation": 0,
+   "failing_terms_in_title": 0,
+   "failing_term_offsets": [],
+   "text_length": 2562
+  }
+ ]
+}

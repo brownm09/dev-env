@@ -1,44 +1,49 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 104 `test_*.py` files, 12 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 118 files total, indexed per file below
-([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
-row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
+This directory holds the dev-env hook/script test suite: `test_*.py` files, bash gates, and shared
+test-support modules such as `_hook_wiring.py`. The tables below index each file that existed up to
+`## Testing` item 118 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). A newer test
+has no row: its own first lines say when to run it and how
+([dev-env#1309](https://github.com/brownm09/dev-env/issues/1309)). `test_readme_index_parity.py`
+(Testing item 84) requires every file to have one or the other, and refuses a new row.
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
 that `run-hook-tests.py` (below) also discovers and runs — e.g. `test-pre-push-lockfile.sh` lives
 there, not here. It's out of scope for this index (tracked separately in
 [dev-env#314](https://github.com/brownm09/dev-env/issues/314)); if a full suite run shows a file
-you can't find a row for below, that's why.
+you can't find a row for below, that's why, or it's a newer test with its own entry.
 
-**This file is a navigational map, not the authoritative behavioral description.** For exhaustive
-per-file detail — what each test pins, what's deliberately out of scope, incident history — see
-[`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file pair, sharing
-the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing`) and the
-linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
+**This file is a navigational map, not the authoritative behavioral description.** For per-file
+detail on tests up to item 118 — what each test pins, what's deliberately out of scope, incident
+history — see [`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file
+pair, sharing the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) →
+`## Testing`) and the linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md). A newer test
+holds its own detail in its docstring or header comment.
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~10-file subset with invocation strings and longer descriptions; this file
-covers all of them, one line each.
+covers each test up to item 118, one line each.
 
 **Running tests.** Every `test_*.py` runs as `py -3 claude/scripts/tests/<file>` from the repo
 root; every `*.sh` runs as `bash claude/scripts/tests/<file>`. To run everything at once:
 `py -3 claude/scripts/run-hook-tests.py` (add `--list` to see what would run without running it).
 Discovery is glob-based (`test_*.py` / `*.sh`, `_`-prefixed files excluded) — a new test file is
-picked up automatically by the runner. **This README is not.** Add a row below in the same PR
-that adds a test file.
+picked up automatically by the runner. To find the tests for a script, from the repo root:
+`git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
+test, because a test may cover a script without naming it.
 
 ---
 
 ## Shared support modules
 
 Tests for internal `_foo.py` libraries that live in `claude/scripts/` and get imported by
-multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py` and
-`_heartbeat_isolation.py` are the exceptions: they live in *this* directory because they're
+multiple hooks, rather than being wired as a hook themselves. `_hook_wiring.py`,
+`_heartbeat_isolation.py` and `_throwaway_repo.py` are the exceptions: they live in *this* directory because they're
 test-support infrastructure, not production code.
 
 | Test file | Covers | Purpose |
 |---|---|---|
 | `test_bash_state.py` | `_bash_state.py` | Per-session repo/branch state file plus the drift-warning formatter shared by the four commit/PR-create/merge/every-Bash-call checkpoint hooks. |
+| `test_closing_negation.py` | `_closing_negation.py` | The negated closing keyword: the lines from switchyard PR 21 and lifting-logbook PR 510 name their issues, and ordinary wording doesn't match. |
 | `test_composed_output_scan.py` | `_composed_output_scan.py` | Fence- and code-span-aware detection of stray terminal output in composed journal markdown, behind `/journal-compose` Step 8b. |
 | `test_gh_issue_state.py` | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (URL validation, PR-vs-issue filtering, `state` case normalization, paged-lookup stop condition) extracted from `reconcile-pending-tiles.py` for reuse by `retro-chain-status.py`. |
 | `test_gh_project.py` | `_gh_project.py` | Shared `gh project item-add` wrapper (used by `post-tool-use.py` and `reconcile-project-board.py`'s orphan-add step) plus its best-effort item-ID cache — the zero-cost lookup path `get-project-item.sh` and `post-pr-merge-project.py` check first, falling back to a 1-point single-item query on a miss. |
@@ -63,6 +68,7 @@ test-support infrastructure, not production code.
 | `test_worktree_recovery.py` | `_worktree_recovery.py` | Orphaned-worktree recovery recipe: renders it (destructive step kept out of the numbered sequence), pins `docs/REFERENCE.md`'s runbook to it by equality over runnable lines, and blocks the dev-env#751-disproven `worktree add --force`/`-f` form from every live surface. |
 | `test_worktree_topology.py` | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions shared by prune, sync, and the journal-canonical guard. |
 | — | `_hook_wiring.py` | Not itself a test. Parses `claude/settings.shared.json` into wired hooks/events/timeouts once, shared by the four structural gates below and imported by `dev-env-doctor.py` (so a change here re-runs item 110 too). |
+| — | `_throwaway_repo.py` | Not itself a test. `ThrowawayRepo` builds a temp repo with a local bare origin and a merged worktree, so `test_prune_merged_worktrees.py` and `test_reclaim_worktree_disk.py` can run the real scripts with no network and no risk to a real repo. |
 | — | `_heartbeat_isolation.py` | Not itself a test. `isolate_heartbeat()` points `HOOK_HEARTBEAT_DIR_OVERRIDE` at a temp dir for the calling test process, so a test that runs a real hook never writes the production heartbeat ledger (dev-env#1163). |
 
 ## Structural / fleet-wide gates
@@ -81,8 +87,8 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_sibling_hooks_hardened_io.py` | 12 of the 13 dev-env#1031/#1033 sibling hooks | AST gate against the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain (dev-env#1028's crash class) plus malformed-payload smoke tests driving each hook's `main()` end-to-end; `pre-tool-use-worktree-path-check.py`'s own coverage lives in `test_worktree_path_check.py` instead. |
 | `test_settings_hook_wiring.py` | `claude/settings.shared.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
-| `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
-| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row (and every row a real file), and that header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
+| `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), no numbered line past 118, and no number used twice. |
+| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row or, for a new test, its own entry (and every row a real file), and that `claude/scripts/README.md`'s header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
 | `check-remote-read-hygiene.sh` | all `claude/**` | Lints for a `git show <ref>:<path>` paired with `2>/dev/null` — the MSYS path-mangling false-absent class where git's swallowed `fatal:` reads as "file absent" (dev-env#602/#877, ADR-120). |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
 | `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
@@ -161,7 +167,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
-| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts. |
+| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts, stating the context size re-cached and suggesting `/clear` with a hand-off. |
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
@@ -176,7 +182,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
 | `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
-| `test_turn_count_hook.py` | `turn-count-hook.py` | Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
+| `test_turn_count_hook.py` | `turn-count-hook.py` | The `[session-size]` warning on growth (silent at a large start). Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
 | `test_token_attribution.py` | `_token_pricing.py`, `token-report.py` | Model prices, unknown models reported as unpriced, and `--attribution` dollars pinned against a hand-computed transcript, with no transcript text in the output. |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
@@ -192,6 +198,7 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 | `test-claude-wrappers.sh` | `bin/claude`, `bin/claude.cmd` | Runs both wrappers against fixture install directories: which binary each starts for each layout (current and older location, flat and hash directories, numeric version sort), the error and exit 1 when none exists, and arguments, exit code, stdin and environment passing through unchanged (dev-env#1142). |
 | `test-get-project-item.sh` | `get-project-item.sh` | Execution smoke test (not just `bash -n`) resolving an issue number to a project item ID. |
 | `test-journal-compose-replay.sh` | `journal-compose-replay.sh` | Drives `/journal-compose` Step 10.5's conflict-recovery replay against throwaway fixture repos: uncontested paths replay wholesale, contested ones 3-way merge or stop with exit 2. |
+| `test_issue_dup_eval.py` | `experiments/2026-11-issue-dup-retrieval/` | Calibrates the duplicate-issue retrieval experiment's scorer against known-good and known-bad rankers, proves the outcome map can reach every verdict, and checks committed files for private text (ADR-157). |
 | `test-merge-stale-pr.sh` | `merge-stale-pr.sh` | Drives the stale-journal-PR remediation script against throwaway fixture repos with `gh` stubbed. |
 | `test-setup-link-loop.sh` | `setup.sh` | Drives the extracted `link_claude_windows`/`link_claude_unix` functions against a throwaway `$HOME`, then the rest for real: real items backed up, links pointing outside dev-env recorded, a backup never overwritten; `--restore` putting items, links, `settings.json` and `core.hooksPath` (unset included) back, converging, and refusing a directory setup didn't write; `win_cmd`, the symlink probe, the cmd-special-character and HOME guards, and the dispatch guard; every link fixture asserted to exist first, and a case this machine can't run counted as skipped, never passed. |
 | `test_dev_env_doctor.py` | `dev-env-doctor.py` | The install health check's pure decision helpers, fixture-only apart from one real dangling junction: link lists pinned against `setup.sh`, dangling links and missing hook scripts FAIL, zero commands or no readable script path FAIL rather than passing vacuously, gh sign-in decided offline, compile warnings on every Python version, the journal-draft and `core.hooksPath` matrices, and a crashing check reported as a FAIL. |
@@ -203,11 +210,19 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 1. Name it `test_*.py` (pure Python, offline-testable where possible) or `*.sh` (a bash gate or a
    behavioral driver against a real hook via stdin/subprocess) and drop it in this directory —
    `run-hook-tests.py` discovers it automatically, no wiring needed.
-2. Add a one-line module docstring (Python) or header comment (bash) stating what it covers —
-   several rows above were written straight from these.
-3. Add a row to the relevant table above (or a new subsection, if it's a genuinely new category).
-4. Add the numbered index line to the root `CLAUDE.md` → `## Testing` **and** the matching
-   detail item to [`docs/TESTING.md`](../../../docs/TESTING.md) — same number, same PR. Both are
-   required (ADR-114): the numbering gate parses the index and "Test before PR" defers to it;
-   incident/ADR context beyond one line belongs in the detail item, not here. The
-   `test_testing_index_parity.py` gate fails the suite if the two files' item sets diverge.
+2. Open the module docstring (Python) or header comment (bash) with what it covers, followed by
+   its index entry, within the file's first 10 lines. Each line starts its own line, the first names
+   what it covers so `git grep` can find it, and the second names this file on that same line:
+
+       Required when changing `claude/scripts/foo.py`.
+       Run: py -3 claude/scripts/tests/test_foo.py
+
+   What the test pins, scope gaps and incident history go below that, in the same docstring or
+   comment. `test_testing_index_merge.py` is an example.
+3. Add nothing to this README, the root `CLAUDE.md` or [`docs/TESTING.md`](../../../docs/TESTING.md).
+   Editing those is what made every pair of test-adding PRs conflict
+   ([ADR-074 Amendment 1](../../../docs/adr/074-pre-merge-numbering-collision-check.md)).
+   `test_testing_index_parity.py` refuses a new numbered item, and
+   `test_readme_index_parity.py` refuses a new row, or a test with neither a row nor an entry. A
+   shared support module isn't a test: it needs a row in this README's second column and an
+   exemption in that gate.

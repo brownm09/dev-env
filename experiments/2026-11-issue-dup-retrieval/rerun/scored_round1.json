@@ -1,0 +1,847 @@
+{
+ "summary": {
+  "n_inputs": 43,
+  "n_families": 38,
+  "recall_at_10": {
+   "pooled": {
+    "vector": 0.9069767441860465,
+    "keyword": 0.6976744186046512
+   },
+   "stratum_A": {
+    "vector": 0.9666666666666667,
+    "keyword": 0.7333333333333333,
+    "keyword_default_scope": 0.7666666666666667
+   },
+   "stratum_B": {
+    "vector": 0.7692307692307693,
+    "keyword": 0.6153846153846154
+   }
+  },
+  "gap_pooled": 0.20930232558139528,
+  "family_sign_test": {
+   "wins": 9,
+   "losses": 1,
+   "p_one_sided": 0.0107421875
+  },
+  "gap_stratum_B": 0.15384615384615385,
+  "gap_default_scope_A": 0.19999999999999996,
+  "verdict": "supported",
+  "reason": "pooled gain clears the bar, the sign test, the stratum B guard and the scope check",
+  "recall_curve": {
+   "1": {
+    "vector": 0.744,
+    "keyword": 0.558
+   },
+   "3": {
+    "vector": 0.86,
+    "keyword": 0.698
+   },
+   "5": {
+    "vector": 0.86,
+    "keyword": 0.698
+   },
+   "10": {
+    "vector": 0.907,
+    "keyword": 0.698
+   },
+   "20": {
+    "vector": 0.953,
+    "keyword": 0.698
+   },
+   "30": {
+    "vector": 0.953,
+    "keyword": 0.698
+   }
+  },
+  "keyword_any_returned_recall": 0.6976744186046512,
+  "keyword_median_results_returned": 2,
+  "input_wins_losses": {
+   "vector_only": 10,
+   "keyword_only": 1,
+   "both": 29,
+   "neither": 3
+  },
+  "pair_auc": {
+   "duplicate_vs_known_negative": 0.9154589371980676,
+   "duplicate_vs_easy_negative": 0.9979166666666667
+  },
+  "pair_score_medians": {
+   "duplicate": 0.92925,
+   "known_negative": 0.8292,
+   "easy_negative": 0.6789499999999999,
+   "auditor_near_dup": 0.8363499999999999
+  },
+  "cross_repo": [
+   {
+    "query": [
+     "lifting-logbook",
+     638
+    ],
+    "target": [
+     "dev-env",
+     527
+    ],
+    "rank_in_merged_pool": 2,
+    "pool": 916
+   },
+   {
+    "query": [
+     "career-playbook",
+     1065
+    ],
+    "target": [
+     "dev-env",
+     876
+    ],
+    "rank_in_merged_pool": 9,
+    "pool": 1571
+   }
+  ],
+  "auditor_near_dup_scores": [
+   [
+    "dev-env",
+    424,
+    785,
+    0.8466
+   ],
+   [
+    "dev-env",
+    566,
+    571,
+    0.8664
+   ],
+   [
+    "dev-env",
+    594,
+    609,
+    0.8261
+   ],
+   [
+    "dev-env",
+    510,
+    514,
+    0.8077
+   ]
+  ]
+ },
+ "rows": [
+  {
+   "id": "A:career-playbook#1114",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1111)",
+   "v_rank": 6,
+   "v_hit": true,
+   "k_ranks": [
+    4,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 3,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:career-playbook#1247",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1064)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    3,
+    2,
+    2
+   ],
+   "k_hit": true,
+   "k_total_returned": 3,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1505",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1500)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1523",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1520)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1590",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1575)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1594",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1575)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1596",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1502)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    1
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:career-playbook#1608",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1575)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 4,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1702",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1466)",
+   "v_rank": 2,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    1,
+    2
+   ],
+   "k_hit": true,
+   "k_total_returned": 6,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1731",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1428)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1768",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1767)",
+   "v_rank": 20,
+   "v_hit": false,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#1769",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1745)",
+   "v_rank": 2,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 9,
+   "k_any30": false,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#2000",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1997)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    1,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:career-playbook#2014",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1997)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:career-playbook#268",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 267)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#709",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 699)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:career-playbook#930",
+   "stratum": "A",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 928)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:dev-env#495",
+   "stratum": "A",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 488)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 5,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:dev-env#627",
+   "stratum": "A",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 610)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    1,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 2,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:dev-env#862",
+   "stratum": "A",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 844)",
+   "v_rank": 3,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 5,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:dev-env#899",
+   "stratum": "A",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 856)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:dev-env#918",
+   "stratum": "A",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 734)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 3,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#1080",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 996)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false,
+   "k_default_hit": false
+  },
+  {
+   "id": "A:lifting-logbook#276",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 275)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#612",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 483)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 5,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#638",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 627)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#768",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 480)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    2,
+    2
+   ],
+   "k_hit": true,
+   "k_total_returned": 8,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#798",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 789)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#803",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 789)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "A:lifting-logbook#854",
+   "stratum": "A",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 852)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    2,
+    2
+   ],
+   "k_hit": true,
+   "k_total_returned": 3,
+   "k_any30": true,
+   "k_default_hit": true
+  },
+  {
+   "id": "B:career-playbook#1471",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1471)",
+   "v_rank": 32,
+   "v_hit": false,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false
+  },
+  {
+   "id": "B:career-playbook#1575",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1575)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    2,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 2,
+   "k_any30": true
+  },
+  {
+   "id": "B:career-playbook#1659",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1659)",
+   "v_rank": 3,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    2,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 7,
+   "k_any30": true
+  },
+  {
+   "id": "B:career-playbook#1681",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 1681)",
+   "v_rank": 18,
+   "v_hit": false,
+   "k_ranks": [
+    5,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 3,
+   "k_any30": false
+  },
+  {
+   "id": "B:career-playbook#724",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 724)",
+   "v_rank": null,
+   "v_hit": false,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false
+  },
+  {
+   "id": "B:career-playbook#839",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 839)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true
+  },
+  {
+   "id": "B:career-playbook#842",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 842)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true
+  },
+  {
+   "id": "B:career-playbook#916",
+   "stratum": "B",
+   "repo": "career-playbook",
+   "cluster": "('career-playbook', 916)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true
+  },
+  {
+   "id": "B:dev-env#1029",
+   "stratum": "B",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 1029)",
+   "v_rank": 6,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 1,
+   "k_any30": false
+  },
+  {
+   "id": "B:dev-env#1086",
+   "stratum": "B",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 1086)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    2,
+    null,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 1,
+   "k_any30": true
+  },
+  {
+   "id": "B:dev-env#903",
+   "stratum": "B",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 903)",
+   "v_rank": 2,
+   "v_hit": true,
+   "k_ranks": [
+    1,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 3,
+   "k_any30": true
+  },
+  {
+   "id": "B:dev-env#945",
+   "stratum": "B",
+   "repo": "dev-env",
+   "cluster": "('dev-env', 945)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    1,
+    1
+   ],
+   "k_hit": true,
+   "k_total_returned": 4,
+   "k_any30": true
+  },
+  {
+   "id": "B:lifting-logbook#899",
+   "stratum": "B",
+   "repo": "lifting-logbook",
+   "cluster": "('lifting-logbook', 899)",
+   "v_rank": 1,
+   "v_hit": true,
+   "k_ranks": [
+    null,
+    null,
+    null
+   ],
+   "k_hit": false,
+   "k_total_returned": 0,
+   "k_any30": false
+  }
+ ]
+}

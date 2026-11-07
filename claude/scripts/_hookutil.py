@@ -17,11 +17,15 @@ in the consuming scripts before this module:
   returns (command, output, cwd) 3-tuples (the advisory scopes by cwd; the gate
   ignores it) (ADR-090, ADR-050 Amendment 30).
 - **Bounded tail reader** (`iter_records_reverse`) — used by idle-refresher.py,
-  which only needs the last assistant record's timestamp and would otherwise pay
+  which needs only the newest records (the last assistant timestamp on every
+  prompt, and the last usable usage once the gap has fired) and would otherwise pay
   a full parse of a potentially multi-MB transcript on every prompt submit. Reads
   the file from the end in bounded chunks instead of the whole thing; a caller
   that stops consuming the generator early never touches the unread remainder
   (dev-env#679, ADR-090 Amendment 1).
+- **Context size of one record** (`record_context_tokens`) — the one definition
+  turn-count-hook.py and idle-refresher.py share, so their figures can't diverge
+  (dev-env#1217).
 - **Hook heartbeat** (`record_heartbeat`) — called by every wired hook's `main()`
   as its first statement, so a hook that is registered in settings.json but has
   silently stopped firing (the #377 / #355 failure class -- post-tool-use.py dead
@@ -663,6 +667,31 @@ def _record_from_line(raw: bytes):
     except json.JSONDecodeError:
         return None
     return rec if isinstance(rec, dict) else None
+
+
+def record_context_tokens(record) -> int | None:
+    """Context size on one main-thread assistant record, or None for anything else.
+
+    The size is input + cache read + cache write. None covers sidechain (subagent)
+    records, whose much smaller context isn't the session's; zero usage, which
+    Claude Code writes on synthetic turns ("No response requested.", a usage-limit
+    notice, an API error); and a non-integer usage field, which must not raise past
+    a caller's loop and silence its warnings.
+    """
+    if not isinstance(record, dict) or record.get("type") != "assistant" or record.get("isSidechain"):
+        return None
+    message = record.get("message")
+    usage = message.get("usage") if isinstance(message, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    parts = [
+        usage.get("input_tokens", 0),
+        usage.get("cache_read_input_tokens", 0),
+        usage.get("cache_creation_input_tokens", 0),
+    ]
+    if not all(isinstance(p, int) for p in parts):
+        return None
+    return sum(parts) or None
 
 
 def iter_records_reverse(transcript_path: Path, chunk_size: int = DEFAULT_REVERSE_CHUNK_SIZE):

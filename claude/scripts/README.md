@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **111 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **112 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -40,6 +40,7 @@ the one place all 22 are listed together. Each has its own test file in
 |---|---|---|
 | `_auto_resume.py` | Auto-resume for desktop sessions cut off mid-turn: the opt-in config (`~/.claude/auto-resume.json`, fail closed), transcript-tail classification, the app's session files, the attempt cap and the JSONL log. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) | `session-start-auto-resume.py`, `auto-resume-launcher.py` |
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
+| `_closing_negation.py` | The one definition of a closing keyword a PR body negates ("doesn't close #12"), which GitHub honors anyway (`closing_mentions`, `says_it_does_not_close`, `accidental_closes`, dev-env#1300). | `pre-merge-findings-gate.py`, `deferred-followup-sweep.py` |
 | `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
 | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (`repo_from_issue_url`, `issue_number_from_url`, `issue_states_from_rows`, `should_stop_paging`, `is_closed`, `check_issue_state`) extracted from `reconcile-pending-tiles.py`: strict URL validation, PR-vs-issue row filtering, and `state` case normalization. | `reconcile-pending-tiles.py`, `retro-chain-status.py` |
 | `_gh_project.py` | `gh project item-add` subprocess wrapper (`add_to_project`), UTF-8-safe, plus a best-effort project-scoped item-ID cache (`write_item_cache_entry`/`write_item_cache_entries`/`lookup_cached_item_id`/`evict_item_cache_entry`, dev-env#1057, ADR-141) that lets a later lookup skip its live query. | `post-tool-use.py`, `reconcile-project-board.py`, `get-project-item.sh`, `post-pr-merge-project.py` |
@@ -119,7 +120,7 @@ invocation instead.
 | `pre-tool-use-canonical-mutate-guard.py` | PreToolUse (Bash/PowerShell) | Blocks git-mutating commands (checkout, commit, merge, reset, `gh pr merge --delete-branch`, …) run against a canonical (non-worktree) checkout. |
 | `pre-bash-drift-check.py` | PreToolUse (Bash), every call | A fourth, elapsed-time-gated cwd/branch drift checkpoint alongside the three above, covering non-commit/merge Bash calls. |
 | `pr-merge-reminder.py` | PostToolUse (Bash/PowerShell), `gh pr create`/`merge`/`git push` | Reminds Claude to write a journal stub (and the open-PR shard, for creates), scoped to the actual target repo. |
-| `post-merge-tile-checkpoint.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Blocking reminder to spawn follow-up tiles via `spawn_task` immediately after a merge. |
+| `post-merge-tile-checkpoint.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Blocking reminder to spawn follow-up tiles via `start_session` immediately after a merge. |
 | `post-pr-merge-pull.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Fast-forwards local `main`; parks a worktree left squatting `main` by `--delete-branch`. |
 | `post-pr-merge-reclaim.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Spawns detached `node_modules`/`.turbo` reclamation from now-idle merged worktrees. |
 | `post-tool-use-cwd-track.py` | PostToolUse (Bash/PowerShell), every call | Records `{repo_root, branch, cwd}` to a per-session state file, feeding the four drift checks above. |
@@ -165,8 +166,8 @@ invocation instead.
 | `dev-env-sync.py` | UserPromptSubmit | Fast-forward pulls dev-env to `origin/main`; auto-returns a clean canonical to `main` or warns; escalates a persistent pull failure. |
 | `session-start-sync.py` | SessionStart (`startup`/`resume`) | Generalizes `dev-env-sync.py`'s fetch/ff-only-or-warn mechanic to any repo a session starts in (any dev-env checkout, canonical or worktree, stays covered by `dev-env-sync.py`); auto-fast-forwards only a canonical/sole checkout on its own default branch, clean of tracked changes and ff-safe, with no other session active there recently, else emits a loud advisory naming why not. [ADR-130](../../docs/adr/130-session-start-fetch-ff-only-or-warn.md) |
 | `session-start-auto-resume.py` | SessionStart (`resume`, `asyncRewake`) | When a session's CLI starts and its transcript ended mid-turn, and the session is opted in, waits `settleSeconds`, re-checks nothing new arrived, then exits 2 to wake the model with a check-for-errors-and-continue message. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) |
-| `turn-count-hook.py` | UserPromptSubmit | Warns when session context token/turn count exceeds threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
-| `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state. |
+| `turn-count-hook.py` | UserPromptSubmit | Warns when context growth since the session's first turn, or the prompt count, crosses a threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
+| `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state, state the context size the return re-caches, and suggest `/clear` with a hand-off if the task has changed. |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `hook-timing-report.py` | `py -3 hook-timing-report.py [--since-hours N] [--dir PATH]` | Per-hook run-time and (sampled) launch-time percentiles from the `<hook>.dur.jsonl` lines every heartbeat appends (dev-env#848). Read-only. Before/after evidence for hot-path gating and the hook dispatcher. |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |

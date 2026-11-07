@@ -2,11 +2,11 @@
 
 Moved verbatim from the root `CLAUDE.md` `## Testing` section (2026-07-17, ADR-114) so the
 always-loaded instruction file carries only the index. **Item numbers here match the index
-in [`CLAUDE.md` → `## Testing`](../CLAUDE.md) one-to-one** — keep the two in sync: a new
-test adds an item in both files in the same PR (numbering is append-only and
-collision-checked at merge time by `pre-merge-numbering-check.py`, ADR-074).
+in [`CLAUDE.md` → `## Testing`](../CLAUDE.md) one-to-one** — keep the two in sync. The list
+stops at item 118: a new test takes no number and adds nothing here, and its detail goes in
+the test file ([ADR-074 Amendment 1](adr/074-pre-merge-numbering-collision-check.md)).
 
-For a one-line navigational map of the test directory, see
+For a one-line navigational map of the older tests, see
 [`claude/scripts/tests/README.md`](../claude/scripts/tests/README.md). To run everything:
 `py -3 claude/scripts/run-hook-tests.py` (from the repo root).
 
@@ -892,8 +892,17 @@ For a one-line navigational map of the test directory, see
     must still count the item as pruned (the branch was freed independently of the removal) while
     flagging it skipped for manual retry — a deliberate divergence from the generic merged-worktree
     timeout path above, which skips only. The
-    merge-detection and worktree-list steps are not covered here — they are exercised end-to-end by
-    `--dry-run` in the PR.
+    merge-detection and worktree-list steps have no mocked coverage here — they are exercised
+    end-to-end by `--dry-run` in the PR.
+
+    The command-line tests ([dev-env#1310](https://github.com/brownm09/dev-env/issues/1310)) run the
+    real script against a throwaway repo from `tests/_throwaway_repo.py` (local bare origin, no
+    network): `--help`, `-h`, an undefined flag and a stray argument leave the worktree, its branch and
+    `FETCH_HEAD` alone. A control run proves that same repo really does get pruned, and it checks a
+    `--dry-run` named the throwaway repo before its live step, so a regression in `--repo-path` handling
+    stops there rather than reaching the real dev-env repo. Abbreviated flags and empty paths are tested
+    at parser level only, because a regression that ignored `--repo-pat` or an empty `--repo-path` would
+    go live on the real repo.
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -942,8 +951,12 @@ For a one-line navigational map of the test directory, see
     re-concatenated on every chunk read) — the exact shape that bites `idle-refresher.py`'s live
     caller, since the record immediately before whatever it's scanning past is often the
     transcript's newest entry (the user's just-submitted prompt), whose size a large paste puts
-    directly under the user's control. Used by `idle-refresher.py`, which needs only the last
-    assistant record's timestamp and would otherwise pay a full parse on every prompt submit.
+    directly under the user's control. Used by `idle-refresher.py`, which needs only the newest
+    records (the last assistant timestamp, and the last usable usage once the gap has fired) and
+    would otherwise pay a full parse on every prompt submit. `record_context_tokens`, the one
+    context-size definition `turn-count-hook.py` and `idle-refresher.py` share (dev-env#1217), is
+    pinned to a main-thread turn's input + cache read + cache write, and to `None` without raising
+    for a sidechain, zero or malformed usage, or a non-assistant or non-dict record.
     Also exercises `record_heartbeat(hook_name, heartbeat_dir=None)`
     ([ADR-106](adr/106-hook-heartbeat-liveness-ledger.md); dev-env#745, PR8 of #717): a real
     tmp-dir round trip pins that it writes a parseable, current Unix timestamp to
@@ -1075,10 +1088,17 @@ For a one-line navigational map of the test directory, see
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
     `node_modules`/`.turbo`, does not descend into a found reclaim dir, skips `.git`), `dir_size_bytes`,
     and `reclaim_worktree` (dry-run reports without deleting; a real run deletes only the reclaim dirs,
-    preserving source files and `.git`). The git-dependent eligibility guards (dirty check, primary/cwd
-    exclusion, merge detection) are exercised end-to-end by `--dry-run` in the PR, not here. This test
+    preserving source files and `.git`). Beyond the control run's one eligible worktree below, the
+    git-dependent eligibility guards (dirty check, primary/cwd exclusion, merge detection) are
+    exercised end-to-end by `--dry-run` in the PR. This test
     file pre-dates this list — added here to close the gap where it existed but was never
-    cross-referenced ([ADR-037](adr/037-worktree-disk-reclamation.md)).
+    cross-referenced ([ADR-037](adr/037-worktree-disk-reclamation.md)). Its command-line tests
+    ([dev-env#1310](https://github.com/brownm09/dev-env/issues/1310)) use the same throwaway repo and
+    the same `--dry-run` target check as item 26: `--help`, `-h`, an undefined flag and a stray argument
+    leave `node_modules` and `FETCH_HEAD` alone, and a control run proves that same worktree really does
+    get reclaimed. They also mock the subprocess call in `disk-space-check.py`, `post-pr-merge-reclaim.py`
+    and `worktree-npm-install.py` and parse what each really passes, because those hooks discard the
+    script's stderr and a rejected flag would otherwise silently stop reclaim.
 
     ```bash
     py -3 claude/scripts/tests/test_reclaim_worktree_disk.py
@@ -1265,7 +1285,9 @@ For a one-line navigational map of the test directory, see
     blocks the merge (exit 2) with the reason on stderr and empty stdout. Unlike
     `pre-merge-message-check.py` (whose `main()` never shells out to git and has no such layer),
     this hook's git/subprocess orchestration is exercised directly rather than left as a
-    documented gap ([ADR-074](adr/074-pre-merge-numbering-collision-check.md); dev-env#516).
+    documented gap ([ADR-074](adr/074-pre-merge-numbering-collision-check.md); dev-env#516). The
+    block message tells a Testing-section collision not to renumber, since a new test takes no
+    number (dev-env#1309).
 
     ```bash
     py -3 claude/scripts/tests/test_pre_merge_numbering_check.py
@@ -1353,7 +1375,7 @@ For a one-line navigational map of the test directory, see
     **Tile shards** ([ADR-118](adr/118-tile-persistence-shards.md), dev-env#870) are the third kind,
     and the one whose write is otherwise wholly unverified — a manifest or open-PR shard is written by
     a session already doing PR bookkeeping, whereas a tile shard is written right after the
-    `spawn_task` call whose payload it preserves, so a malformed one fails *silently*
+    tile proposal whose payload it preserves, so a malformed one fails *silently*
     (`iter_numeric_shards` skips it without a word) *and* late, surfacing only when the payload is
     needed back after a crash. Covered: a healthy shard; missing fields in schema order; the
     `prompt`-only omission called out on its own (the field whose loss is total — the issue survives
@@ -2026,6 +2048,16 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
+    **`start_session`** (dev-env#1298): the app replaced `spawn_task`, the older name that most
+    of this item still uses and the gate still reads for older transcripts. `_START_SESSION_DECISIONS`
+    states what each way a call can end counts as, and pins it through triggers 1, 2, 3, 3b and 5:
+    only a proposal card is a tile. `_CARD_LIFE_DECISIONS` does the same for what follows a card:
+    `dismiss_task` withdraws it, and a `proposal_id` start turns it into a started session, both
+    matched on the `task_id` in the proposal's result. The fixtures' result text is taken from
+    recorded transcripts, because a refusal can come back with no error flag ("Nothing was
+    proposed"). See
+    [Detail: Tiles](REFERENCE.md#detail-tiles).
+
 49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays
     (`CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` / `CLAUDE_JUNCTION_LINKS` / `HOME_LINKS`), its
     `link_claude_windows()` / `link_claude_unix()` functions, its backup/restore path
@@ -2261,8 +2293,9 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_journal_stop_check.py
     ```
 
-51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Exercises the
-    pure helpers offline (no stdin, network, gh, or disk — fixture-only, matching item 47's precedent):
+51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Twenty-three
+    cases. Most exercise the pure helpers offline (no stdin, network, gh, or disk, matching item 47's
+    precedent), and the `main()` tests described at the end run a subprocess against a temp transcript:
     `parse_iso_to_epoch` (the transcript `Z` / `+00:00` / naive / microsecond timestamp forms agree, and
     bad/`None`/non-str input yields `None`); `last_activity_epoch` (anchors on the **last** assistant
     record's timestamp — deliberately not "the last record of any type," which would be the just-submitted
@@ -2281,9 +2314,19 @@ For a one-line navigational map of the test directory, see
     above are written newest-first accordingly, and a dedicated test
     (`test_last_activity_epoch_consumes_lazily`) proves the laziness itself with a hand-rolled generator
     that raises `AssertionError` if pulled past its first match. `main()`'s stdin plumbing and the live
-    transcript read (through the already-tested `_hookutil.iter_records_reverse` / `find_transcript`) are
-    not covered (pure-helper convention) — exercised instead by the manual end-to-end smoke run in the PR
+    transcript read (through the already-tested `_hookutil.iter_records_reverse` / `find_transcript`) were
+    left to a manual smoke run at first
     ([ADR-095](adr/095-session-boundary-summaries-and-idle-refresher.md); dev-env#655).
+
+    Since [dev-env#1217](https://github.com/brownm09/dev-env/issues/1217) the cue states the context size
+    the return re-caches and suggests `/clear` with a hand-off. `last_context_tokens` is pinned to the
+    newest main-thread turn with real usage (a prompt, a synthetic zero-usage turn, malformed usage and a
+    sidechain record are skipped), and to `None` when a compaction comes first, since the turn behind it
+    carries the larger context it replaced. A read that raises also gives `None`. The cue keeps its
+    `/clear` sentence and drops only the size sentence when the size is unknown. End to end, the size
+    reaches the stdout JSON with exit 0 and empty stderr, the cue still fires without a size for a record
+    with no usage and for a compaction just before the gap, and an automated prompt and garbage stdin
+    stay silent with exit 0.
 
     ```bash
     py -3 claude/scripts/tests/test_idle_refresher.py
@@ -2630,7 +2673,7 @@ For a one-line navigational map of the test directory, see
     genuine user prompt; the text-item content form; and the false-positive guards — a keyword in
     assistant text, a tool_result, an `isMeta`/`isCompactSummary` record, or a `<command-name>`
     slash-command wrapper never counts); `substantive_tool_count` (counts each of the nine
-    substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`spawn_task`/text — this
+    substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`start_session`/text — this
     harness's real bookkeeping/delegation tools; the original comment named the nonexistent
     `TodoWrite`/bare `Task` instead, dev-env#1020 — counts parallel tool_use in one record, and
     the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
@@ -3285,7 +3328,7 @@ For a one-line navigational map of the test directory, see
     bash claude/scripts/tests/run-pylint-unreachable.sh
     ```
 
-76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
+76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 118, because a new test takes no number (`LAST_NUMBERED_ITEM`, dev-env#1309, ADR-074 Amendment 1). The freeze check counts any numbered line past 118, bold or not and indented or not, and two more checks hold it: no item number is used twice, since `items_of` builds a dict and a repeat would otherwise vanish from every check, and the highest item equals the constant. Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
 
     ```bash
     py -3 claude/scripts/tests/test_testing_index_parity.py
@@ -3338,8 +3381,8 @@ For a one-line navigational map of the test directory, see
     `claude/scripts/reconcile-pending-tiles.py` (dev-env#869, dev-env#882, dev-env#958,
     dev-env#950, [ADR-118](adr/118-tile-persistence-shards.md) + its Amendments 1, 3, and
     5). Pins the
-    UserPromptSubmit hook that re-surfaces `spawn_task` tiles whose chips did not survive an
-    app restart. Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
+    UserPromptSubmit hook that re-surfaces tiles whose cards lapsed (they expire after 7 days; the
+    older chips died on an app restart). Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
     is untested per this repo's fixture-only convention, but everything *around* it is:
     `lookup_states`' injectable `fetch`/`clock`, plus the two pure helpers the REST migration
     deliberately factored out of the subprocess call so its hazards stay coverable
@@ -3538,7 +3581,7 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_reconcile_pending_tiles.py
     ```
 
-81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — required when changing `claude/scripts/new-day-journal-check.py` (ADR-119, amended for dev-env#911). Pins the pure helpers behind check 4 (day rollover): `branch_date` (parses `draft/<date>`, including the documented `-recovery` and other suffixed forms that exist on the remote today; returns None for `main`, feature branches, and malformed/unpadded dates, so no false rollover fires) and `mismatched_stub_paths` (deliberately one-sided — only a stub dated *after* the branch is the rollover failure; older-dated stubs are branch-lineage artifacts already covered by `stale_draft_artifacts`/`unmerged_draft_branches`, and including them buried the 6 real hits under 27 unrelated ones on the first live run). Also pins that non-convention filenames — the ones compose's own glob would not match either — are ignored, and that a branch on its own date reports nothing. The git-reading helpers (`canonical_current_branch`, `branch_stub_paths`) and `day_rollover_message` are subprocess boundaries, left untested per this repo's fixture-only convention. The dirty-canonical caution is also pinned to name the 24-hour stale test and the clean fix, so it cannot go back to contradicting the rule (ADR-119 Amendment 2). `composed_dates_on_main` and `composed_project_dates_on_main` are pinned, with `subprocess.run` stubbed, to count only a journal directly in `sessions/<project>/`, so a report, retro or memory audit never marks its date composed (dev-env#1206, dev-env#1209). Check 3 runs against a real bare origin and clone with only the merged-PR lookup faked: a kept branch with no commits after its day's last merged PR is not flagged and one with them is, a later merge moves the cutoff, `main`'s own commits on a branch cut later are not late, a suffixed branch is reported by its full name, a tip at its `reconciled/<branch>` tag is silent until a newer commit lands, a late commit with only an open-PR shard is not flagged, a late parent under an older-dated child is found, a branch name with shell characters is never reported, and a day with no PR at either head, today's branch, an uncomposed day and a failed lookup report nothing, with the failure logged. A spent time budget stops the check. The warning is pinned to name who acts and to give a command per branch (dev-env#1262). This item and item 111 also cover `_journal_late.py`.
+81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — required when changing `claude/scripts/new-day-journal-check.py` (ADR-119, amended for dev-env#911). Pins the pure helpers behind check 4 (day rollover): `branch_date` (parses `draft/<date>`, including the documented `-recovery` and other suffixed forms that exist on the remote today; returns None for `main`, feature branches, and malformed/unpadded dates, so no false rollover fires) and `mismatched_stub_paths` (deliberately one-sided — only a stub dated *after* the branch is the rollover failure; older-dated stubs are branch-lineage artifacts already covered by `stale_draft_artifacts`/`unmerged_draft_branches`, and including them buried the 6 real hits under 27 unrelated ones on the first live run). Also pins that non-convention filenames — the ones compose's own glob would not match either — are ignored, and that a branch on its own date reports nothing. The git-reading helpers (`canonical_current_branch`, `branch_stub_paths`) and `day_rollover_message` are subprocess boundaries, left untested per this repo's fixture-only convention. The dirty-canonical caution is also pinned to name the 24-hour stale test and the clean fix, so it cannot go back to contradicting the rule (ADR-119 Amendment 2). `composed_dates_on_main` and `composed_project_dates_on_main` are pinned, with `subprocess.run` stubbed, to count only a journal directly in `sessions/<project>/`, so a report, retro or memory audit never marks its date composed (dev-env#1206, dev-env#1209). Check 3 runs against a real bare origin and clone with only the merged-PR lookup faked: a kept branch with no commits after its day's last merged PR is not flagged and one with them is, a later merge moves the cutoff, `main`'s own commits on a branch cut later are not late, a suffixed branch is reported by its full name, a tip at its `reconciled/<branch>` tag is silent until a newer commit lands, a late commit with only an open-PR shard is not flagged, a late parent under an older-dated child is found, a branch name with shell characters is never reported, and a day with no PR at either head, today's branch, an uncomposed day and a failed lookup report nothing, with the failure logged. A spent time budget stops the check. The tests share one process but not the hook's import-time clock: the file's `main()` spends that clock before running anything, so a test reading it fails on every run, and the fixture helper gives each check its own and raises on any failure the check would log, so a spent budget can't turn a finding into `[]` or pass a test expecting `[]` (dev-env#1288). The warning is pinned to name who acts and to give a command per branch (dev-env#1262). This item and item 111 also cover `_journal_late.py`.
 
     Check 5 (stale-canonical self-healing, ADR-119 Amendment 1) gets the same pure-function treatment for `stale_canonical_recovery_decision` (named `_decision`, not `format_*` like its sibling `format_day_rollover`, since a non-None return here also authorizes the checkout, not just advisory text — a PR #912 review finding) — silent on today's branch, a non-draft branch, any dirty tree regardless of idle time, under-threshold idle, and unknown idle time; fires only when clean AND idle >= `STALE_CANONICAL_IDLE_MINUTES` (15); a regression pin asserts dirty short-circuits before idle_minutes is even consulted. Unlike every other check in this file, check 5's action is a REAL `git checkout main`, not just advisory text, so it ALSO gets five real-repo end-to-end tests — the one deliberate departure from this item's "subprocess boundaries are left untested" convention, justified because only a real repo can prove the single most important safety property: a dirty tree is never actually checked out. These drive the real `stale_canonical_recovery_message()` against a disposable throwaway git repo (borrowing the init-a-real-repo fixture technique from `test_journal_canonical_guard.py`'s `_init_throwaway_repo`, backdating commits via `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` instead of sleeping) and assert on the repo's actual branch afterward: today's branch is never touched even when artificially idle; a dirty stale branch is never checked out (and the uncommitted change itself survives untouched); a recently-committed (<15min) stale branch is left alone; **a branch with an ancient tip commit but JUST checked out is left alone** (the PR #912 review regression pin — see `canonical_head_idle_minutes`'s docstring for why idle time is measured from HEAD's own reflog, not the branch's tip-commit time); and a clean, sufficiently idle stale branch is actually restored to `main`. The test runner's per-test exception handling was widened from `except AssertionError` to also catch generic `Exception` (matching `test_journal_canonical_guard.py`'s pattern) so an unexpected real-git-subprocess failure in one of these fixtures reports as a single clean `ERROR:` line instead of aborting the rest of the suite.
 
@@ -3573,16 +3616,15 @@ For a one-line navigational map of the test directory, see
 
 84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` ([ADR-122](adr/122-directory-index-readme-parity-gate.md), dev-env#901). Pure offline file parse — no subprocess, network, or git. The directory<->README analogue of item 76 (`test_testing_index_parity.py`, which gates `CLAUDE.md` <-> `docs/TESTING.md`): here the two hand-maintained per-file indexes `claude/scripts/tests/README.md` (dev-env#822) and `claude/scripts/README.md` (dev-env#830) are checked against the directories they claim to index. Neither directory's tooling reads its README — `run-hook-tests.py` discovers tests by glob and Claude Code loads scripts by their `settings.json` wiring — so a file with no row still works and the index rots invisibly; by the time the gate was written both had drifted (missing rows, plus header counts that were stale and, in `claude/scripts/README.md`, self-contradicting: it stated both "79 files" and "76 files" for the same 82-file set).
 
-    Six checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and optional component globs), each README parsed once in `setUpClass` (matching the item-76 sibling):
+    Six checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and the frozen number of rows, which also means a file may carry its own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
 
-    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count.
+    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test carries its own entry instead: in its first 10 lines, one line starting `Required when` with text after it, and one starting `Run:` that names the file. Only a file the runner discovers qualifies, so a support module takes an exemption, and the unit tests in `TestHasOwnEntry` pin the accepted and refused shapes (dev-env#1309).
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
-    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py` and `_heartbeat_isolation.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
-    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/tests/`: `test_*.py`, bash-gate, and total; `claude/scripts/`: top-level total). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
+    3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py`, `_heartbeat_isolation.py` and `_throwaway_repo.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
+    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/`: top-level total; `claude/scripts/tests/` has no header counts since dev-env#1309, because every new test changed them). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
     5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
-    6. **Component completeness** — where a header breaks its total into components (the tests README's "N `test_*.py`, N bash gates, one module"), every indexable file matches a declared component glob or is an exemption, so a file of a new kind (e.g. a stray `.ps1`) can't make the components silently fail to sum to the gated total.
-
-    Fail-closed by construction: a count sentence reworded past its regex fails check 4 (zero matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)` fails check 5's heading-count assertion — none pass on a count the gate can no longer see, the correct direction for a gate whose whole job is catching silent drift. This is why the two headers are worded so the numbers parse without depending on an em-dash. Verified during authoring that an injected unindexed test file trips checks 1 and 4 together (missing row + both stale counts, exit 1), that rewording a numbered heading drops the numbered-heading count 5→4 (check 5), and that a `.ps1` added to the tests dir is reported uncovered (check 6).
+    6. **Frozen rows** — `claude/scripts/tests/README.md` has no more first-column names than the 118 it had when its rows were frozen (`FROZEN_TEST_ROWS`, dev-env#1309), because a new row would conflict with the next PR that adds one. It's a ceiling, so removing a test leaves room for one row.
+    Fail-closed by construction: a count sentence reworded past its regex fails check 4 (zero matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)` fails check 5's heading-count assertion — none pass on a count the gate can no longer see, the correct direction for a gate whose whole job is catching silent drift. `claude/scripts/README.md`'s header is worded so its number parses without depending on an em-dash. Verified during authoring that rewording a numbered heading drops the numbered-heading count 5→4 (check 5). Before dev-env#1309, an injected unindexed test file also tripped the tests README's header counts, and a since-removed sixth check reported a `.ps1` in the tests directory as uncovered; check 1 does that now.
 
     ```bash
     py -3 claude/scripts/tests/test_readme_index_parity.py
@@ -4758,8 +4800,9 @@ For a one-line navigational map of the test directory, see
     ([ADR-150](adr/150-context-growth-journal-stub-trigger.md), dev-env#1160).
 
     The hook nudges Claude to update the session's journal stub the first time cumulative context
-    growth reaches each band. Sixteen cases, all against fixture transcripts in a temp directory with
-    the module's `SCRATCH` swapped out, so no case touches the real `~/.claude/scratch`:
+    growth reaches each band, and warns with `[session-size]` on the same growth figure. Twenty-three
+    cases, all against fixture transcripts in a temp directory with the module's `SCRATCH` swapped out,
+    so no case touches the real `~/.claude/scratch`:
 
     - **Growth is cumulative, from the first turn.** `get_context_stats` sums every increase between
       consecutive main-thread assistant turns. A compaction's drop is not subtracted. Sidechain
@@ -4769,6 +4812,12 @@ For a one-line navigational map of the test directory, see
       growth, which the `/review` of PR #1164 found in 38 of 192 local transcripts. A record with
       a non-integer usage field (`null`, a string) is skipped rather than raised, since one bad
       record would otherwise silence every warning for the rest of the session.
+    - **The size warning keys on growth, not absolute size** ([ADR-150 Amendment 1](adr/150-context-growth-journal-stub-trigger.md#amendment-1-2026-11-06--the-size-warning-also-keys-on-growth),
+      dev-env#1217). A 167k start with no growth is silent and writes no state file. It fires at the
+      first threshold and each step, naming the growth and the current size. A jump over several
+      thresholds warns once and records the highest, a post-compaction re-climb fires only when
+      growth reaches the next threshold, and the text is ASCII. End to end, the warning is absent at
+      a large start and present on stdout after growth, with exit 0 both times.
     - **Each band fires once.** Below the first band is silent. Band 1 and band 2 each fire exactly
       once, and a jump straight to band 3 nudges once and records band 3.
     - **Post-compaction.** After a compaction, climbing back past the absolute size that fired band 1
@@ -4789,9 +4838,8 @@ For a one-line navigational map of the test directory, see
     - **End to end.** `main()` runs as a subprocess with a temporary home directory: two prompts in
       the same band produce one nudge, and garbage stdin still exits 0.
 
-    The existing `[session-size]` and `[prompt-count]` warnings are not covered here beyond the
-    unsafe-id case. Only their input changed: the shared transcript pass now skips sidechain,
-    zero-usage and malformed records, and an unsafe session id now falls back to `unknown`.
+    The `[prompt-count]` warning is covered only for firing at its threshold with ASCII text, and in
+    the unsafe-id case.
 
     ```bash
     py -3 claude/scripts/tests/test_turn_count_hook.py
@@ -5235,4 +5283,38 @@ For a one-line navigational map of the test directory, see
 
      ```bash
      py -3 claude/scripts/tests/test_deferred_followup_sweep.py
+     ```
+
+117. **duplicate-issue retrieval scorer test** — required when changing anything under
+     `experiments/2026-11-issue-dup-retrieval/`
+     ([ADR-157](adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
+     instrument behind the experiment's verdict: known-good rankers score 1.0 and known-bad ones
+     0.0 through `score.py`'s real path, a partial keyword file is rejected, and `score.py`
+     reproduces the committed `scored.json`. The outcome map must reach all three verdicts and hold
+     at each exact threshold. Draft text comes from one helper, which raises on an empty draft. The
+     evaluation set must be non-empty.
+
+     This pins the frozen outcome map's reading, not the audit's verdict, which `results.md` records
+     after the threat sweep.
+
+     Privacy: the committed data files may hold only numbers and short structure, and the title
+     scanner must catch a known-bad fixture. **Scope gap:** the scan of committed files against real
+     private titles runs only when `DUP_EVAL_ISSUE_CACHE` names a local issue cache, because CI can't
+     read the private repos, and it skips visibly otherwise. It checks full verbatim titles only. It's
+     run by hand before committing results, and the result is in
+     `results.md`.
+
+     ```bash
+     py -3 claude/scripts/tests/test_issue_dup_eval.py
+118. **closing-negation test** — required when changing `claude/scripts/_closing_negation.py`
+     ([ADR-153](adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1300). The lines that closed
+     an issue by accident in switchyard PR 21 and lifting-logbook PR 510 must name #12 and #468. Emphasis and a
+     colon still match, and ordinary wording doesn't, nor do the forms GitHub doesn't link (a code span, and
+     emphasis closing after a keyword's colon), nor an issue the body also really closes. The
+     fixtures hold only the lines #1300 quotes, because both repos are private. Item 38's shell test covers the
+     warning at merge. The hit rate over merged PRs is in ADR-153, because it needs labelled data. Its two
+     callers are items 38 and 116, so run those too.
+
+     ```bash
+     py -3 claude/scripts/tests/test_closing_negation.py
      ```

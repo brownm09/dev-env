@@ -194,7 +194,7 @@ _STUB_BASH_WRITE_RE = re.compile(
 #     touching any real content, so counting them would let planning overhead
 #     alone cross SUBSTANTIVE_THRESHOLD -- exactly the "trivial lookup" false
 #     positive this threshold exists to prevent. They stay excluded.
-#   - Agent/spawn_task/mcp__* (delegation) -- bare "Task" never appears either
+#   - Agent/start_session/mcp__* (delegation) -- bare "Task" never appears either
 #     (confirmed live: 0 occurrences); the real subagent-spawning tool name is
 #     "Agent". Excluded so a single delegation can't inflate the count past the
 #     threshold on its own.

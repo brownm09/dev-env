@@ -83,6 +83,14 @@ $ printf 'sys.exit(0)\nos._exit(1)\ndef clean_exit():\n  xit(%s\n' "'foo', () =>
 
 ---
 
+## Amendment (2026-11-06) — Rule 4: a test must be able to fail
+
+This policy guarded against degrading tests. It said nothing about a new test that was never able to fail, and those pass all three rules. The 2026-09-19 biweekly retro counted at least 8 in lifting-logbook, such as a mock returning the empty case, an assertion on one lucky index, and a test iterating the code's own input.
+
+Rule 4 in `claude/CLAUDE.md` says to break what the test claims to cover and watch it go red, and for a lookup or resolver to change the data it reads as well as its logic. It stays a written rule. No grep separates these tests from sound ones, and an uncalibrated check may not block (ADR-144), so `/review` remains what catches them. See [dev-env#1306](https://github.com/brownm09/dev-env/issues/1306).
+
+---
+
 ## References
 
 - [ADR-022 — Test Coverage Gate Before PR](022-test-coverage-gate-before-pr.md) — companion gate for *missing* tests on new behavior
