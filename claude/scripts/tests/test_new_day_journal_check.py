@@ -611,7 +611,7 @@ def test_late_commits_cutoff_is_the_days_last_merge() -> str:
 
 
 def test_last_merged_at_reads_both_heads_and_takes_the_latest() -> str:
-    orig_run = mod.subprocess.run
+    orig_run, orig_started = mod.subprocess.run, mod.HOOK_STARTED
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -621,11 +621,11 @@ def test_last_merged_at_reads_both_heads_and_takes_the_latest() -> str:
                 "h2": {"nodes": []}, "h3": {"nodes": []}}
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"data": {"repository": data}}), "")
 
-    mod.subprocess.run = fake_run
+    mod.subprocess.run, mod.HOOK_STARTED = fake_run, time.monotonic()
     try:
         merged = mod.last_merged_at({"2098-01-02", "2098-01-03"})
     finally:
-        mod.subprocess.run = orig_run
+        mod.subprocess.run, mod.HOOK_STARTED = orig_run, orig_started
     assert merged == {"2098-01-02": "2098-01-02T12:00:00Z"}, merged
     for head in ("draft/2098-01-02", "compose/2098-01-02"):
         assert f'"{head}"' in captured["query"], captured["query"]
@@ -751,20 +751,6 @@ def test_seconds_left_raises_once_the_budget_is_spent() -> str:
         raise AssertionError("a spent budget must raise")
     finally:
         mod.HOOK_STARTED = orig
-
-
-def test_late_commits_earlier_tests_cannot_spend_the_budget() -> str:
-    with tempfile.TemporaryDirectory() as tmp:
-        clone = _late_fixture(tmp)
-        _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
-        orig = mod.HOOK_STARTED
-        mod.HOOK_STARTED = time.monotonic() - mod.HOOK_BUDGET_SECONDS
-        try:
-            found = _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT})
-        finally:
-            mod.HOOK_STARTED = orig
-        assert found == ["draft/2098-01-02"], found
-    return "each check gets its own clock, so the time earlier tests took can't turn a finding into []"
 
 
 def test_late_commits_spent_budget_fails_the_helper() -> str:
@@ -917,7 +903,6 @@ def main() -> int:
         ("late commits: a late parent under an older child is found", test_late_commits_with_an_older_child_are_still_found),
         ("late commits: a branch name with shell characters is never reported", test_late_commits_branch_with_shell_characters_is_never_reported),
         ("late commits: a spent time budget stops the check", test_seconds_left_raises_once_the_budget_is_spent),
-        ("late commits: earlier tests can't spend a later test's budget", test_late_commits_earlier_tests_cannot_spend_the_budget),
         ("late commits: a spent budget fails the helper instead of reading as no findings", test_late_commits_spent_budget_fails_the_helper),
         ("late commits: the message says who acts and gives each command", test_late_commits_message_says_who_acts_and_gives_each_command),
         ("stale-recovery (real repo): today's branch never touched", test_stale_recovery_noop_on_todays_branch),
@@ -926,6 +911,9 @@ def main() -> int:
         ("stale-recovery (real repo): just checked out (ancient tip commit) -> no-op", test_stale_recovery_noop_when_just_checked_out),
         ("stale-recovery (real repo): clean + idle -> auto-restores to main", test_stale_recovery_restores_when_clean_and_idle),
     ]
+    # A test reading the hook's import-time clock would pass or fail by how long earlier tests
+    # took (dev-env#1288). Spent from the start, it fails on every run instead.
+    mod.HOOK_STARTED = time.monotonic() - mod.HOOK_BUDGET_SECONDS
     failed = 0
     for name, fn in tests:
         try:
