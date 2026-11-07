@@ -602,6 +602,47 @@ def test_backfill_records_model_unpriced() -> str:
     return "backfill prices the hourly tier, skips synthetic records, and marks unknown models"
 
 
+def _one_response_three_records() -> list:
+    return [
+        _assistant("m1", "2026-11-01T09:00:00Z", _usage(cache_read=100, write_1h=20, output=output, input_tokens=3))
+        for output in (1, 5, 40)
+    ]
+
+
+ONE_RESPONSE = {
+    "input_tokens": 3,
+    "output_tokens": 40,
+    "cache_read_input_tokens": 100,
+    "cache_creation_input_tokens": 20,
+    "cache_write_1h_input_tokens": 20,
+}
+
+
+def test_backfill_counts_a_repeated_message_id_once() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = _write(Path(d) / "s.jsonl", _one_response_three_records())
+        totals, turn_count, model = bf._count_turns_from_jsonl(path)
+        summary = bf.process_transcript(path)
+    assert totals == ONE_RESPONSE, totals
+    assert turn_count == 1, turn_count
+    assert model == "claude-opus-5-5", model
+    assert summary["tokens"] == ONE_RESPONSE and summary["turn_count"] == 1, summary
+    return "backfill gives the last record's usage and turn_count 1 for three records of one message id"
+
+
+def test_read_subagents_counts_a_repeated_message_id_once() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        main = Path(d) / "s.jsonl"
+        _write(Path(d) / "s" / "subagents" / "agent-1.jsonl", _one_response_three_records())
+        subagents = tr.read_subagents(str(main))
+    assert len(subagents) == 1, subagents
+    assert subagents[0]["tokens"] == ONE_RESPONSE, subagents[0]
+    assert subagents[0]["turns"] == 1, subagents[0]
+    # Opus 5.5: 3 input at $4, 40 output at $20, 100 read at $0.20, 20 hourly writes at $8.
+    assert abs(subagents[0]["cost"] - 0.000992) < 1e-12, subagents[0]
+    return "read_subagents gives the last record's usage, one turn, and the cost of one response"
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
