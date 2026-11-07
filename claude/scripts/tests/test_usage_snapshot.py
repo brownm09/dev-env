@@ -137,13 +137,17 @@ Exit 0 = all pass.
 
 import importlib.util
 import io
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 # tests/ -> scripts/ -> claude/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "claude" / "scripts" / "usage-snapshot.py"
+KEEP_WARM_SCRIPT = REPO_ROOT / "claude" / "scripts" / "keep-token-warm.ps1"
 
 # The script now imports _winsubp (a sibling in scripts/); make it resolvable
 # when exec_module runs the module body.
@@ -416,6 +420,138 @@ def test_cli_auth_status_none_on_subprocess_error() -> str:
     got = cli_auth_status(exe_fn=lambda: "C:/fake/claude.exe", run_fn=boom)
     assert got is None, f"expected None on subprocess error, got {got!r}"
     return "subprocess error -> None (degrades to legacy, dev-env#915)"
+
+
+# dev-env#1286: the desktop app moved its bundled CLI. usage-snapshot.py and
+# keep-token-warm.ps1 each search the same two locations, so both are pinned here.
+CURRENT_REL = "Claude-Data/claude_pzs8sxrjxfjjc/claude-code"
+OLDER_REL = "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
+
+
+def _fake_exe(local: str, rel: str, *parts: str) -> Path:
+    """Create an empty claude.exe under <local>/<rel>/<parts...> and return its path."""
+    exe = Path(local, rel, *parts, "claude.exe")
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.touch()
+    return exe
+
+
+def _resolve_with_local(local: str) -> str | None:
+    with mock.patch.dict(os.environ, {"LOCALAPPDATA": local}):
+        return usage_snapshot.resolve_claude_exe()
+
+
+def test_resolve_claude_exe_current_location_newest_version() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        newest = _fake_exe(local, CURRENT_REL, "2.1.170", "abc")
+        _fake_exe(local, CURRENT_REL, "2.1.99", "def")
+        got = _resolve_with_local(local)
+        assert got == str(newest), f"expected {newest}, got {got}"
+    return "Claude-Data with 2.1.170/abc and 2.1.99/def -> 2.1.170 (numeric, not lexical)"
+
+
+def test_resolve_claude_exe_either_depth() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        hashed = _fake_exe(local, CURRENT_REL, "2.1.170", "abc")
+        _fake_exe(local, CURRENT_REL, "2.1.99")
+        got = _resolve_with_local(local)
+        assert got == str(hashed), f"newer hashed beats older flat: expected {hashed}, got {got}"
+    with tempfile.TemporaryDirectory() as local:
+        flat = _fake_exe(local, CURRENT_REL, "2.1.170")
+        _fake_exe(local, CURRENT_REL, "2.1.99", "def")
+        got = _resolve_with_local(local)
+        assert got == str(flat), f"newer flat beats older hashed: expected {flat}, got {got}"
+    return "<ver>/claude.exe and <ver>/<hash>/claude.exe compete on the version directory alone"
+
+
+def test_resolve_claude_exe_falls_back_to_older_location() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        older = _fake_exe(local, OLDER_REL, "2.1.50")
+        got = _resolve_with_local(local)
+        assert got == str(older), f"no current location: expected {older}, got {got}"
+        # A current location that exists but holds no binary is the same as none.
+        Path(local, CURRENT_REL, "2.1.170", "abc").mkdir(parents=True)
+        got = _resolve_with_local(local)
+        assert got == str(older), f"binary-less current location: expected {older}, got {got}"
+    return "Packages location resolves when Claude-Data holds no binary"
+
+
+def test_resolve_claude_exe_prefers_current_location() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        current = _fake_exe(local, CURRENT_REL, "2.1.50", "abc")
+        _fake_exe(local, OLDER_REL, "2.1.170")
+        got = _resolve_with_local(local)
+        assert got == str(current), f"expected {current}, got {got}"
+    return "Claude-Data wins even when Packages holds a higher version"
+
+
+def test_resolve_claude_exe_skips_non_version_directories() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        _fake_exe(local, CURRENT_REL, "staging")
+        _fake_exe(local, CURRENT_REL, "2.1.170-partial", "abc")
+        assert _resolve_with_local(local) is None, "only non-version directories -> None"
+        real = _fake_exe(local, CURRENT_REL, "2.1.99", "def")
+        got = _resolve_with_local(local)
+        assert got == str(real), f"expected {real}, got {got}"
+    return "a directory not named like a version is never a candidate (as in bin/claude)"
+
+
+def test_resolve_claude_exe_none_when_absent() -> str:
+    with tempfile.TemporaryDirectory() as local:
+        assert _resolve_with_local(local) is None, "neither location -> None"
+    with mock.patch.dict(os.environ):
+        os.environ.pop("LOCALAPPDATA", None)
+        assert usage_snapshot.resolve_claude_exe() is None, "LOCALAPPDATA unset -> None"
+    return "no binary or no LOCALAPPDATA -> None (routes the caller to the legacy path)"
+
+
+# Runs Resolve-ClaudeExe alone, under the settings the script runs with. It parses the
+# script and evaluates only that function's text: the script has no main guard, so
+# dot-sourcing it would run its `claude -p ok` model call.
+_RUN_KEEP_WARM_RESOLVER = r"""
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:KEEP_WARM_SCRIPT, [ref]$null, [ref]$null)
+$fn = $ast.Find({
+    param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Resolve-ClaudeExe'
+}, $true)
+Invoke-Expression $fn.Extent.Text
+Resolve-ClaudeExe
+"""
+
+
+def _keep_warm_resolver_output(local: str) -> str:
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _RUN_KEEP_WARM_RESOLVER],
+        env={**os.environ, "LOCALAPPDATA": local, "KEEP_WARM_SCRIPT": str(KEEP_WARM_SCRIPT)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, f"resolver failed ({proc.returncode}): {proc.stderr}"
+    return proc.stdout.strip()
+
+
+def test_keep_warm_resolver_current_location_newest_version() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as local:
+        newest = _fake_exe(local, CURRENT_REL, "2.1.170", "abc")
+        _fake_exe(local, CURRENT_REL, "2.1.99", "def")
+        _fake_exe(local, CURRENT_REL, "staging")
+        _fake_exe(local, OLDER_REL, "2.1.200")
+        got = _keep_warm_resolver_output(local)
+        assert Path(got).samefile(newest), f"expected {newest}, got {got}"
+    return "Resolve-ClaudeExe: Claude-Data, version sort on the version directory, not the hash"
+
+
+def test_keep_warm_resolver_either_depth_and_older_location() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as local:
+        flat = _fake_exe(local, OLDER_REL, "2.1.170")
+        _fake_exe(local, OLDER_REL, "2.1.99", "def")
+        Path(local, CURRENT_REL, "2.1.300", "abc").mkdir(parents=True)
+        got = _keep_warm_resolver_output(local)
+        assert Path(got).samefile(flat), f"expected {flat}, got {got}"
+    return "Resolve-ClaudeExe: Packages when Claude-Data holds no binary; flat beats older hashed"
 
 
 def test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit() -> str:
@@ -1073,6 +1209,32 @@ def main() -> int:
             test_cli_auth_status_out_when_subprocess_reports_logged_out,
         ),
         ("cli_auth_status: subprocess error -> None (dev-env#915)", test_cli_auth_status_none_on_subprocess_error),
+        (
+            "resolve_claude_exe: current location, newest version (dev-env#1286)",
+            test_resolve_claude_exe_current_location_newest_version,
+        ),
+        ("resolve_claude_exe: either depth (dev-env#1286)", test_resolve_claude_exe_either_depth),
+        (
+            "resolve_claude_exe: falls back to the older location (dev-env#1286)",
+            test_resolve_claude_exe_falls_back_to_older_location,
+        ),
+        (
+            "resolve_claude_exe: current location beats older (dev-env#1286)",
+            test_resolve_claude_exe_prefers_current_location,
+        ),
+        (
+            "resolve_claude_exe: skips non-version directories (dev-env#1286)",
+            test_resolve_claude_exe_skips_non_version_directories,
+        ),
+        ("resolve_claude_exe: absent -> None (dev-env#1286)", test_resolve_claude_exe_none_when_absent),
+        (
+            "Resolve-ClaudeExe: current location, newest version (dev-env#1286)",
+            test_keep_warm_resolver_current_location_newest_version,
+        ),
+        (
+            "Resolve-ClaudeExe: either depth, older location (dev-env#1286)",
+            test_keep_warm_resolver_either_depth_and_older_location,
+        ),
         (
             "worktree-merge output confirms despite non-zero exit",
             test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,

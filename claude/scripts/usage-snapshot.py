@@ -293,13 +293,39 @@ def get_access_token(creds: dict) -> tuple[str | None, int]:
 # file) the packaged .exe is absent, the probe returns None, and the legacy
 # refresh-then-advise path runs unchanged.
 
-# MSIX package family for the Claude desktop app; mirrors keep-token-warm.ps1's
-# Resolve-ClaudeExe so both resolve the same bundled binary.
-_MSIX_CLAUDE_CODE_REL = "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code"
+# Where the Claude desktop app installs its bundled CLI, current location first.
+# Mirrors bin/claude and keep-token-warm.ps1's Resolve-ClaudeExe so all three
+# resolve the same binary (dev-env#1286).
+_CLAUDE_CODE_RELS = (
+    "Claude-Data/claude_pzs8sxrjxfjjc/claude-code",
+    "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code",
+)
+_VERSION_DIR_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+
+
+def _newest_exe_under(base: Path) -> str | None:
+    """claude.exe from the newest version directory under *base* that holds one.
+
+    A version directory holds it directly or one level down in a hash directory.
+    Versions compare numerically on the version directory's name (2.1.170 beats
+    2.1.99), and a directory not named like a version is skipped, as in bin/claude.
+    """
+    try:
+        exes = list(base.glob("*/claude.exe")) + list(base.glob("*/*/claude.exe"))
+    except OSError:
+        return None
+
+    def _version_dir(p: Path) -> str:
+        return p.relative_to(base).parts[0]
+
+    exes = [p for p in exes if _VERSION_DIR_RE.fullmatch(_version_dir(p))]
+    if not exes:
+        return None
+    return str(max(exes, key=lambda p: tuple(int(x) for x in _version_dir(p).split("."))))
 
 
 def resolve_claude_exe() -> str | None:
-    """Path to the newest packaged claude.exe, or None if the MSIX layout is absent.
+    """Path to the newest packaged claude.exe, or None if the desktop app's is absent.
 
     Returns the real .exe (not the ~/bin PATH shim) so subprocess can exec it
     directly without the .cmd/PATHEXT indirection. Deliberately no PATH fallback:
@@ -310,21 +336,11 @@ def resolve_claude_exe() -> str | None:
     local = os.environ.get("LOCALAPPDATA", "")
     if not local:
         return None
-    base = Path(local) / _MSIX_CLAUDE_CODE_REL
-    try:
-        exes = list(base.glob("*/claude.exe"))
-    except OSError:
-        return None
-    if not exes:
-        return None
-
-    def _ver(p: Path) -> tuple:
-        try:
-            return tuple(int(x) for x in p.parent.name.split("."))
-        except ValueError:
-            return (0,)
-
-    return str(max(exes, key=_ver))
+    for rel in _CLAUDE_CODE_RELS:
+        exe = _newest_exe_under(Path(local) / rel)
+        if exe:
+            return exe
+    return None
 
 
 def parse_auth_status(stdout: str) -> str | None:

@@ -1,9 +1,9 @@
 # ADR-115 — Experimental Rigor Protocol: Tiered Pre-Registration and Verdict Gating for Process Experiments
 
-**Date:** 2026-07-21
+**Date:** 2026-07-21 (amended 2026-11-06)
 **Status:** Accepted
 **Closes:** [dev-env#860](https://github.com/brownm09/dev-env/issues/860)
-**Tags:** workflow, experiments, calibration, pre-registration, verdict, rigor, skills, claude-md, pass-3, hooks, stop, global-rule, career-playbook, claude-behavior, adr-042, adr-089, adr-100, adr-109, adr-114
+**Tags:** workflow, experiments, calibration, pre-registration, verdict, rigor, skills, claude-md, pass-3, hooks, stop, global-rule, career-playbook, claude-behavior, budget, cost-model, adr-042, adr-089, adr-100, adr-109, adr-114
 **Related:** [ADR-042](042-plan-risk-dimension-audit-and-observability-section.md), [ADR-089](089-privilege-restricted-test-defaults.md), [ADR-100](100-stop-journal-stub-checkpoint-hook.md), [ADR-109](109-tile-gate-deferral-question-trigger.md), [ADR-103](103-shared-hookout-emitter.md), [ADR-114](114-slim-testing-section-index.md)
 
 ---
@@ -65,6 +65,34 @@ Ship a cross-repo experimental-rigor protocol in four coordinated artifacts.
 - **A third tier for high-stakes adopt/reject** — rejected: the extra rigor properly attaches to the *irreversibility of the decision*, not the size of the experiment. Replaced by the adoption rider (held-out input + tripwire + rollback), keeping the tier count at the memorable minimum.
 - **Per-repo skill copies** — rejected: the `claude/skills/` junction already distributes one skill globally.
 - **Mandatory per-project `## Experiments` section everywhere (N/A when absent)** — rejected in favor of optional/advisory: most repos run no experiments, and forcing an N/A line into every project CLAUDE.md is churn for no signal. The skill asks for and proposes the section on demand.
+
+## Amendment (2026-11-06) — a budget is a measured projection, checked between stages (dev-env#1224)
+
+**Finding.** The protocol froze the design of a comparison but said nothing about whether the comparison could be paid for. An experiment that runs out of money partway produces no verdict, so a budget miss wastes everything already spent.
+
+**Incident ([cover-letter-runtime#204](https://github.com/brownm09/cover-letter-runtime/issues/204)).** A Tier 1 experiment on parallel vs serial draft audits estimated $7.50 and would have cost about $29, because its blinded reader was estimated per call while its cost scaled with claims per run. The arms finished with $5.17 left and a known need of at least $14.60. Nothing checked that, so scoring spent $5.03 before reaching the $10 cap, attempted 89 of 270 passes, and the experiment closed `inconclusive — confounded by an incomplete run`. The ledger's $9.86 is itself a lower bound: it can't price a call that timed out, so the real bill may be near $11.80. Full breakdown: engineering-journal `sessions/cover-letter-runtime/reports/2026-11-05-parallel-audits-budget-assessment.md`.
+
+**Fix (`claude/skills/experiment-audit/SKILL.md`).**
+
+1. **Field 11 and a new Step D6** (Freeze becomes D7). Design mode requires what the budget covers, a per-unit cost model with the unit named for each stage, a pilot on a non-corpus input or a stated reason for skipping one, and a stop rule at each stage boundary that re-projects the remaining stages from measured units and asks the owner if they don't fit.
+2. **Reader-free screen.** Design mode asks whether such a screen can gate the expensive instrument. It may gate spending but may not decide the verdict (T10), so a clean screen that skips the reader yields `inconclusive — primary construct not measured`.
+3. **Gate 3** reports estimated against actual spend and states whether unpriced failures make the total a lower bound.
+
+**Three consequences the rule forced.**
+
+- **Gate 0 needed an exemption.** A pilot generates output before the freeze, which "precedes *every* generation timestamp" would have capped at `inconclusive — unregistered`. A pilot declared in field 11 on a non-corpus input is now exempt. Its output may inform the design but never scores, the same treatment as probe data.
+- **A stop can't read results.** Stopping on a budget looks like optional stopping (T7), which field 10 forbids. The check stays legal because it reads only unit counts and spend, never scores by arm. A pre-registered screen is the one by-arm read allowed.
+- **The stage-boundary block omits the `[experiment-audit]` marker.** It's emitted during the run, by neither mode, and `stop-experiment-verdict-gate.py` reads the marker as "the audit ran". Carrying it would silence the verdict backstop in the session most likely to state a conclusion.
+
+**What the budget covers is stated, not modelled.** [dev-env PR 1276](https://github.com/brownm09/dev-env/pull/1276)'s duplicate-issue experiment estimated query writing at $1.75 and spent $1.73, while its session ($15.45) and review subagents ($5.04) dominated a total of about $22.60. The field therefore names session and review spend as outside the budget unless listed as stages. It doesn't require modelling them: [dev-env#1213](https://github.com/brownm09/dev-env/issues/1213) covers Claude Code session spend, and the issue's criteria stop at the experiment's own stages.
+
+**Alternatives rejected.**
+
+- **A per-experiment hard cap alone.** #204 had one. A cap fires mid-stage after the money is spent, and it can't bound a bill the ledger can't fully price.
+- **Folding this into field 10.** The decision rule says how results map to verdicts, and spend isn't evidence for a verdict. A separate field also lets Gate 1 diff budget conduct on its own.
+- **A hook enforcing the stop rule.** Experiments run through many different harnesses, so there's no common signature for a stage boundary. This matches this ADR's stance on the design half.
+
+**Verification.** None under this text yet. PR 1276 followed a pilot and a stage-boundary check before this landed, and its pilot predicted the one stage it measured, which is a single case and doesn't validate the method. The real test is [cover-letter-runtime#208](https://github.com/brownm09/cover-letter-runtime/issues/208), if the owner chooses to re-run rather than shelve. Nothing enforces the rule mechanically; Gate 1 treats a missing boundary block as a deviation.
 
 ## References
 
