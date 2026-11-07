@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ITEM_RE = re.compile(r"^(\d+)\.\s+\*\*(.+?)\*\*", re.MULTILINE)
 # The numbered list stops here (dev-env#1309, ADR-074 Amendment 1): other documents cite
 # these numbers, and appending to the list made every pair of test-adding PRs conflict.
-LAST_NUMBERED_ITEM = 117
+LAST_NUMBERED_ITEM = 118
 
 
 def extract_section(text, heading):

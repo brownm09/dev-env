@@ -3,7 +3,7 @@
 Moved verbatim from the root `CLAUDE.md` `## Testing` section (2026-07-17, ADR-114) so the
 always-loaded instruction file carries only the index. **Item numbers here match the index
 in [`CLAUDE.md` → `## Testing`](../CLAUDE.md) one-to-one** — keep the two in sync. The list
-stops at item 117: a new test takes no number and adds nothing here, and its detail goes in
+stops at item 118: a new test takes no number and adds nothing here, and its detail goes in
 the test file ([ADR-074 Amendment 1](adr/074-pre-merge-numbering-collision-check.md)).
 
 For a one-line navigational map of the older tests, see
@@ -3315,7 +3315,7 @@ For a one-line navigational map of the older tests, see
     bash claude/scripts/tests/run-pylint-unreachable.sh
     ```
 
-76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 117, because a new test takes no number (`LAST_NUMBERED_ITEM`, dev-env#1309, ADR-074 Amendment 1). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
+76. **Testing-index parity gate** — required when changing the `## Testing` index in `CLAUDE.md` or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 118, because a new test takes no number (`LAST_NUMBERED_ITEM`, dev-env#1309, ADR-074 Amendment 1). Pure offline file parse (no subprocess/network/git); auto-discovered by `run-hook-tests.py`, so it gates CI on every PR. Exists because the merge-time numbering-collision gate (ADR-074) reads only the CLAUDE.md index against `origin/main` — it never opens `docs/TESTING.md` — so cross-file drift (an item added to one file but not the other, or one number titling different tests) had no mechanical guard. Added from `/review` findings on PR #855.
 
     ```bash
     py -3 claude/scripts/tests/test_testing_index_parity.py

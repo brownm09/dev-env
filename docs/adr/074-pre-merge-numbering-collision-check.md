@@ -161,7 +161,7 @@ globally in `~/.claude/settings.json` but the two files being checked are dev-en
   check.
 - `claude/scripts/pre-merge-numbering-check.py`, `claude/scripts/tests/test_pre_merge_numbering_check.py`.
 
-## Amendment 1 (2026-11-06): new tests take no number, so they can't conflict
+## Amendment 1 (2026-11-07): new tests take no number, so they can't conflict
 
 **Trigger.** [dev-env#1309](https://github.com/brownm09/dev-env/issues/1309). This check stops a bad
 merge, but it doesn't reduce the conflicts or the renumbering behind them. On 2026-11-06
@@ -174,7 +174,7 @@ clean merge and silent duplicate described above need different insertion points
 are also cited outside the list now, for example `dev-env-sync.py` cites "Testing item 68", so they
 can't be renumbered.
 
-**Decision.** The numbered list stops at item 117, and those items keep their numbers. A new test
+**Decision.** The numbered list stops at item 118, and those items keep their numbers. A new test
 edits only its own file: a `Required when ...` line and a `Run: ...` line in its first 10 lines, with
 what it pins and its scope gaps below them in the same docstring or comment. It adds nothing to
 `CLAUDE.md`, `docs/TESTING.md` or `claude/scripts/tests/README.md`, and it's cited by file name.
@@ -183,9 +183,9 @@ The README loses its header counts, because every new test changed them.
 Two gates hold this, both in CI:
 
 - `test_testing_index_parity.py` (item 76) refuses any item past `LAST_NUMBERED_ITEM`. That constant
-  is 117, the last number on `origin/main` when the list was frozen. The check is exact, so there's
-  no margin to tune. Known good: `main`. Known bad: an added item 118, as
-  [PR #1284](https://github.com/brownm09/dev-env/pull/1284) has.
+  is 118, the last number on `origin/main` when the list was frozen. The check is exact, so there's
+  no margin to tune. Known good: `main`. Known bad: one more numbered item, as
+  [PR #1284](https://github.com/brownm09/dev-env/pull/1284) adds.
 - `test_readme_index_parity.py` (item 84) requires each file in `claude/scripts/tests/` to have a row
   or its own entry. Known good: `test_testing_index_merge.py`. Known bad: a test with neither, which
   that same test builds and expects to fail.
@@ -199,7 +199,7 @@ Testing number that reaches a merge. Its message now tells a Testing collision n
   [`.git/config`, not in `.gitattributes`](https://git-scm.com/docs/gitattributes#_defining_a_custom_merge_driver),
   so a repository can't carry it to GitHub's merge.
 - **`merge=union` on the three files.** This built-in removes the conflict but not the duplicate: both
-  PRs still claim 118, so this check still blocks one and it still renumbers. The attribute also
+  PRs still claim the same number, so this check still blocks one and it still renumbers. The attribute also
   covers the whole file, so two edits to the same line anywhere in `CLAUDE.md` would keep both sides
   with no conflict, and the
   [Git documentation](https://git-scm.com/docs/gitattributes#_built_in_merge_drivers) warns that the
@@ -214,7 +214,7 @@ Testing number that reaches a merge. Its message now tells a Testing collision n
 **GitHub's merge.** GitHub merges with
 [`merge-ort` and no working tree](https://github.blog/engineering/infrastructure/scaling-merge-ort-across-github/),
 so the choice has to work without local configuration. Branches that each add a different file have
-no text to merge, so this doesn't depend on attributes or a driver. This was checked on 2026-11-06
+no text to merge, so this doesn't depend on attributes or a driver. This was checked on 2026-11-07
 through the [merge-a-branch endpoint](https://docs.github.com/en/rest/branches/branches#merge-a-branch),
 on throwaway refs since deleted, cut from this change:
 
@@ -233,7 +233,8 @@ Row 3 is the known-bad reference, showing the endpoint reports a conflict for th
 - `CLAUDE.md` loads in every session, and it no longer lists every test. A session finds a newer test
   with `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. The list stops growing
   in the always-loaded file, which is the direction [ADR-114](114-slim-testing-section-index.md) set.
-- An open PR that added item 118 fails item 76 once this merges, and the failure says what to change.
+- An open PR that adds a numbered item fails item 76 once this merges, and the failure says what to
+  change.
 - Adding a script still conflicts in `claude/scripts/README.md`, on its counts and rows. That's
   tracked in [dev-env#1311](https://github.com/brownm09/dev-env/issues/1311).
 - To reverse this: revert the change, then give each test added since then a number and a row.

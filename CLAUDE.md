@@ -16,7 +16,7 @@ guidelines, and journal conventions are defined there and apply to every project
 ## Testing
 
 This is the index of dev-env verification commands, one numbered item per test file or gate.
-Items 1 to 117 keep their numbers because other documents cite them, and the list takes no new
+Items 1 to 118 keep their numbers because other documents cite them, and the list takes no new
 ones. The global "Test before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this
 section.
 
@@ -114,7 +114,7 @@ older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py` or the six hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py`). Run: `py -3 claude/scripts/tests/test_repo_target.py`
 74. **session-mode-report test** — required when changing `claude/scripts/session-mode-report.py`. Run: `py -3 claude/scripts/tests/test_session_mode_report.py`
 75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching `claude/scripts/*.py` or `claude/scripts/tests/*.py`. Run: `bash claude/scripts/tests/run-pylint-unreachable.sh`
-76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 117. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
+76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 118. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
 77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
 78. **worktree-recovery recipe + runbook-parity gate** — required when changing `claude/scripts/_worktree_recovery.py`, the orphan block message in `claude/scripts/pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
 79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`

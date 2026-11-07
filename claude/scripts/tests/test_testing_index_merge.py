@@ -13,8 +13,8 @@ with `git merge-tree` in a bare clone. `git merge-tree` is the closest local sta
 for GitHub's merge, which has no working tree (ADR-074 Amendment 1).
 
 A green run proves little unless the harness can also go red, so the old way is the
-known-bad reference: two branches that each append item 118 must conflict, and the
-gates must refuse a numbered item or a new test with no entry.
+known-bad reference: two branches that each append the next item must conflict, and
+the gates must refuse a numbered item or a new test with no entry.
 """
 import os
 import shutil
@@ -23,6 +23,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from test_testing_index_parity import LAST_NUMBERED_ITEM
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SHARED_FILES = ("CLAUDE.md", "docs/TESTING.md", "claude/scripts/tests/README.md")
@@ -112,7 +114,7 @@ class TestTestingIndexMerge(unittest.TestCase):
     @classmethod
     def _numbered_item(cls, title):
         """The old way: the next number, appended to the end of both lists."""
-        item = f"118. **{title}** — required when changing a fixture. Run: `true`\n"
+        item = f"{LAST_NUMBERED_ITEM + 1}. **{title}** — required when changing a fixture. Run: `true`\n"
         claude_md = (cls.repo / "CLAUDE.md").read_text(encoding="utf-8")
         marker = "\n## Experiments\n"
         if marker not in claude_md:
@@ -182,7 +184,7 @@ class TestTestingIndexMerge(unittest.TestCase):
     def test_gate_refuses_a_new_numbered_item(self):
         _git(self.repo, "checkout", "-q", "-f", "old-a")
         run = self._run_gate("test_testing_index_parity.py")
-        self.assertNotEqual(run.returncode, 0, "item 118 passed the parity gate")
+        self.assertNotEqual(run.returncode, 0, "a new numbered item passed the parity gate")
         self.assertIn("Required when", run.stdout + run.stderr,
                       "the failure must say what to do instead of taking a number")
 
