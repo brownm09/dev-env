@@ -1,7 +1,7 @@
 # ADR-124 — Usage-Snapshot Detects the Desktop-App Keychain Dead-End Instead of a Futile Refresh
 
 **Date:** 2026-07-27
-**Status:** Accepted
+**Status:** Accepted; detection removed by Amendment 2 (2026-11-06)
 **Closes:** [dev-env#915](https://github.com/brownm09/dev-env/issues/915)
 **Tags:** hooks, usage-snapshot, oauth, credentials, keychain, msix, desktop-app, post-tool-use, token-refresh, graceful-degradation, error-message-diligence, global-rule, adr-043, adr-044
 **Related:** [ADR-043](043-keep-warm-scheduled-task-for-token-freshness.md), [ADR-044](044-eliminate-usage-snapshot-gap-on-demand-refresh.md), [ADR-034](034-error-message-diligence.md), [ADR-103](103-shared-hookout-emitter.md)

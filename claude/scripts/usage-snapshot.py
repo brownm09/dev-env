@@ -29,12 +29,15 @@ Exit 0  — not a merge command, or an unconfirmed merge (no success marker and 
           `--auto`, or a genuinely failed merge); silent
 Exit 2  — snapshot emitted via stderr, OR an advisory that says why it was skipped
           and what fixes it: no readable credentials file (dev-env#1139), no usable
-          token in that file, an expired token, or the usage API unreachable after
-          one retry (#302). A still-valid "expiring" token proceeds to fetch.
+          token in that file, an expired or rejected token, the usage API unreachable
+          after one retry (#302), or an unexpected error while building the snapshot.
+          A still-valid "expiring" token proceeds to fetch.
 
-This hook never refreshes the token. The only refresh available to it was a
+This hook never refreshes the token. The refresh it used to run was a
 `claude --print` model call, which spent plan limit on a status readout, so a stale
 window costs one skipped snapshot instead (dev-env#1299, ADR-124 Amendment 2).
+`claude auth status` was measured refreshing an expired token; dev-env#1327 tracks
+whether this hook should use it.
 
 Merge-decision trace (dev-env#474 follow-up): dev-env#489/#496 both established
 live that gh's success marker does not reliably survive to `tool_response` on a
@@ -84,7 +87,6 @@ exception itself; and a non-dict top-level payload is guarded before it can
 reach `data.get("tool_name")`. See ADR-050 Amendment 26 (including its
 "Post-review fix" section) for the full detail.
 """
-import _winsubp  # noqa: F401  -- patches subprocess to suppress console windows
 import json
 import re
 import sys
@@ -274,9 +276,14 @@ def get_access_token(creds: dict) -> tuple[str | None, int]:
 
 # --- usage API ---
 
-def fetch_usage(token: str) -> dict | None:
+# fetch_usage's return for an HTTP 401 or 403: the API answered, so a retry can't help.
+TOKEN_REJECTED = object()
+
+
+def fetch_usage(token: str) -> dict | object | None:
     # Imported here, not at the top: urllib.request costs about 85 ms and only a
     # confirmed merge reaches this, while the hook runs on every Bash call (dev-env#1173).
+    import http.client  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
@@ -291,7 +298,11 @@ def fetch_usage(token: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError):
+    except urllib.error.HTTPError as e:
+        return TOKEN_REJECTED if e.code in (401, 403) else None
+    except (OSError, http.client.HTTPException, ValueError):
+        # urllib wraps only request-phase errors in URLError (an OSError). A read
+        # timeout or dropped connection reaches here raw, and a bad body is a ValueError.
         return None
 
 
@@ -349,13 +360,13 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
         return "expired", (
             f"[usage-snapshot] Skipped: OAuth token in .credentials.json expired "
             f"{days_ago:.1f} days ago, and this hook makes no model call to refresh it "
-            f"(dev-env#1299). Run `claude` in a terminal, or `claude auth login`, to "
-            f"rewrite it; the next merge then shows the snapshot."
+            f"(dev-env#1299). Run `claude auth status` in a terminal to refresh it, or "
+            f"`claude auth login` if that fails; the next merge then shows the snapshot."
         )
     if (expires_at_ms - now_ms) < 3_600_000:
         return "expiring", (
-            "[usage-snapshot] OAuth token expires within 1 hour — run `claude` in a "
-            "terminal to refresh it before the next check."
+            "[usage-snapshot] OAuth token expires within 1 hour — open Claude Code "
+            "interactively to refresh before the next check."
         )
     return "ok", ""
 
@@ -667,10 +678,23 @@ def main() -> None:
         if not resolution["confirmed"]:
             sys.exit(0)
 
+    try:
+        _report_usage(data, cwd)
+    except Exception as exc:  # noqa: BLE001
+        # A confirmed merge is never silent (dev-env#1139). The type name only: a
+        # bad header value's message contains the token.
+        _hookout.emit_block(
+            f"[usage-snapshot] Skipped: the hook hit an unexpected {type(exc).__name__}, "
+            "likely from a usage API response it doesn't understand. The snapshot was "
+            "omitted for this merge."
+        )
+
+
+def _report_usage(data: dict, cwd: str) -> None:
     # Every skip below is an advisory, never a refresh: a status readout must not
     # make a model call (dev-env#1299). emit_block() exits 2.
     creds = load_credentials()
-    if not creds:
+    if creds is None:
         _hookout.emit_block(
             f"[usage-snapshot] Skipped: no readable credentials file at {CREDS_PATH}. "
             "Run `claude auth login` in a terminal to sign the CLI in; the next merge "
@@ -681,7 +705,7 @@ def main() -> None:
     if not token:
         _hookout.emit_block(
             "[usage-snapshot] Skipped: .credentials.json has no usable OAuth token "
-            "(missing or blank). Run `claude auth login` in a terminal to rewrite it; "
+            "(missing, blank or malformed). Run `claude auth login` in a terminal to rewrite it; "
             "the next merge then shows the snapshot."
         )
 
@@ -696,6 +720,12 @@ def main() -> None:
         # Retry once — transient network blips often self-heal
         time.sleep(1)
         util_data = fetch_usage(token)
+    if util_data is TOKEN_REJECTED:
+        _hookout.emit_block(
+            "[usage-snapshot] Skipped: the usage API rejected the OAuth token (HTTP 401 "
+            "or 403). Run `claude auth login` in a terminal to rewrite it; the next "
+            "merge then shows the snapshot."
+        )
     if not util_data:
         _hookout.emit_block(
             "[usage-snapshot] Skipped: usage API unavailable (network error or "

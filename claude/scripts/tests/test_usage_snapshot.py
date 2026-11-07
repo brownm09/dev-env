@@ -116,9 +116,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -127,7 +129,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "claude" / "scripts" / "usage-snapshot.py"
 
-# The script now imports _winsubp (a sibling in scripts/); make it resolvable
+# The script imports siblings in scripts/ (_hookout, _hookio); make them resolvable
 # when exec_module runs the module body.
 sys.path.insert(0, str(SCRIPT.parent))
 
@@ -225,25 +227,12 @@ _CONFIRMED_MERGE = {
 _USAGE = {"seven_day": {"utilization": 10}, "five_hour": {"utilization": 5}}
 
 
-def _record_spawns(spawned: list) -> mock._patch:
-    """Patch subprocess.Popen to record each argv and refuse to start it.
-
-    subprocess.run goes through Popen, so this sees both. Raising instead of
-    returning means a real process can never start from these tests.
-    """
-
-    def refuse(args, *_a, **_k):
-        spawned.append(args)
-        raise OSError("spawn refused by test")
-
-    return mock.patch.object(subprocess, "Popen", side_effect=refuse)
-
-
-def _run_merge_path(creds_text: str | None, load_fn=None) -> dict:
+def _run_merge_path(creds_text: str | None, load_fn=None, fetch_fn=None) -> dict:
     """Run the real main() on a confirmed merge against a real temp credentials file.
 
-    *creds_text* None means the file doesn't exist. Returns the exit code, stderr,
-    every process it tried to spawn, and how many times it called fetch_usage.
+    *creds_text* None means the file doesn't exist. *fetch_fn* replaces the usage API
+    and defaults to a good response. Returns the exit code, stderr, every process it
+    tried to spawn, and how many times it called fetch_usage.
     """
     spawned: list = []
     fetches: list = []
@@ -255,34 +244,137 @@ def _run_merge_path(creds_text: str | None, load_fn=None) -> dict:
 
         def fake_fetch(token):
             fetches.append(token)
-            return _USAGE
+            return fetch_fn(token) if fetch_fn else _USAGE
 
-        patches = [
+        def refuse_spawn(args, *_a, **_k):
+            # subprocess.run goes through Popen, so this sees both. Raising means a
+            # real process can never start from these tests.
+            spawned.append(args)
+            raise OSError("spawn refused by test")
+
+        with (
             mock.patch.object(usage_snapshot, "CREDS_PATH", str(creds_path)),
             mock.patch.object(usage_snapshot, "fetch_usage", fake_fetch),
+            mock.patch.object(usage_snapshot, "load_credentials", load_fn or usage_snapshot.load_credentials),
             mock.patch.object(usage_snapshot, "_log_merge_trace", lambda entry: None),
+            mock.patch.object(usage_snapshot.time, "sleep", lambda seconds: None),
             mock.patch.object(usage_snapshot.sys, "stdin", io.StringIO(json.dumps(_CONFIRMED_MERGE))),
-            _record_spawns(spawned),
-        ]
-        if load_fn is not None:
-            patches.append(mock.patch.object(usage_snapshot, "load_credentials", load_fn))
-        for p in patches:
-            p.start()
-        try:
-            with contextlib.redirect_stderr(stderr):
+            mock.patch.object(subprocess, "Popen", side_effect=refuse_spawn),
+            contextlib.redirect_stderr(stderr),
+        ):
+            try:
                 usage_snapshot.main()
-            exit_code = 0
-        except SystemExit as e:
-            exit_code = e.code
-        finally:
-            for p in reversed(patches):
-                p.stop()
+                exit_code = 0
+            except SystemExit as e:
+                exit_code = e.code
     return {"exit": exit_code, "stderr": stderr.getvalue(), "spawned": spawned, "fetches": fetches}
 
 
-def _creds_json(expires_in_ms: int, token: str = "fake-token-for-test") -> str:
+_TOKEN = "fake-token-for-test"
+
+
+def _creds_json(expires_in_ms: int) -> str:
     expires_at = int(time.time() * 1000) + expires_in_ms
-    return json.dumps({"claudeAiOauth": {"accessToken": token, "expiresAt": expires_at}})
+    return json.dumps({"claudeAiOauth": {"accessToken": _TOKEN, "expiresAt": expires_at}})
+
+
+def _fetch_against_raw_response(response: bytes | None) -> object:
+    """Run the real fetch_usage against a local socket answering with raw bytes.
+
+    *response* None accepts the connection and never answers. Raw bytes, not a
+    mock, because which exception urllib raises unwrapped is what's under test.
+    """
+    listener = socket.create_server(("127.0.0.1", 0))
+    release = threading.Event()
+
+    def serve():
+        conn, _addr = listener.accept()
+        with conn:
+            conn.recv(65536)
+            if response is None:
+                release.wait(10)
+            else:
+                conn.sendall(response)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/"
+    try:
+        with mock.patch.object(usage_snapshot, "USAGE_URL", url):
+            return usage_snapshot.fetch_usage(_TOKEN)
+    finally:
+        release.set()
+        thread.join(10)
+        listener.close()
+
+
+def _http_response(status: str, body: bytes) -> bytes:
+    return f"HTTP/1.1 {status}\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body
+
+
+def test_fetch_usage_returns_none_for_every_network_or_body_failure() -> str:
+    for label, response in (
+        ("hung server", None),
+        ("dropped connection", b""),
+        ("bad status line", b"not http\r\n\r\n"),
+        ("non-UTF-8 body", _http_response("200 OK", b"\xff\xfe")),
+        ("invalid JSON", _http_response("200 OK", b"{not json")),
+        ("server error", _http_response("500 Internal Server Error", b"")),
+    ):
+        result = _fetch_against_raw_response(response)
+        assert result is None, f"{label}: {result!r}"
+    return "hang, drop, bad status, bad body, 500 -> None, so main() retries then says why"
+
+
+def test_fetch_usage_marks_401_and_403_as_token_rejected() -> str:
+    for status in ("401 Unauthorized", "403 Forbidden"):
+        result = _fetch_against_raw_response(_http_response(status, b""))
+        assert result is usage_snapshot.TOKEN_REJECTED, f"{status}: {result!r}"
+    return "401 and 403 -> TOKEN_REJECTED"
+
+
+def test_fetch_usage_returns_parsed_body_on_success() -> str:
+    result = _fetch_against_raw_response(_http_response("200 OK", json.dumps(_USAGE).encode()))
+    assert result == _USAGE, result
+    return "200 with JSON -> parsed dict"
+
+
+def test_merge_path_rejected_token_names_login_without_retry() -> str:
+    result = _run_merge_path(_creds_json(5 * HOUR_MS), fetch_fn=lambda t: usage_snapshot.TOKEN_REJECTED)
+    assert result["exit"] == 2, result
+    assert len(result["fetches"]) == 1, f"a rejected token must not be retried: {result}"
+    assert "rejected the OAuth token" in result["stderr"], result["stderr"]
+    assert "claude auth login" in result["stderr"], result["stderr"]
+    assert "network error" not in result["stderr"], result["stderr"]
+    return "401/403 -> one fetch, advisory names `claude auth login`, not a network error"
+
+
+def test_merge_path_unreachable_api_retries_once_then_says_so() -> str:
+    result = _run_merge_path(_creds_json(5 * HOUR_MS), fetch_fn=lambda t: None)
+    assert result["exit"] == 2, result
+    assert len(result["fetches"]) == 2, result
+    assert "usage API unavailable" in result["stderr"], result["stderr"]
+    return "API down -> two fetches, advisory, exit 2"
+
+
+def test_merge_path_null_in_usage_response_is_not_silent() -> str:
+    result = _run_merge_path(_creds_json(5 * HOUR_MS), fetch_fn=lambda t: {"seven_day": {"utilization": None}})
+    assert result["exit"] == 2, f"a confirmed merge must never be silent (dev-env#1139): {result}"
+    assert "[usage-snapshot] Skipped:" in result["stderr"], result["stderr"]
+    assert "TypeError" in result["stderr"], result["stderr"]
+    return "null utilization -> advisory naming the exception type, exit 2"
+
+
+def test_merge_path_unexpected_error_never_prints_its_message() -> str:
+    # The real case: urllib's ValueError for a bad header value quotes the header.
+    def raise_with_token(token):
+        raise ValueError(f"Invalid header value b'Bearer {token}'")
+
+    result = _run_merge_path(_creds_json(5 * HOUR_MS), fetch_fn=raise_with_token)
+    assert result["exit"] == 2, result
+    assert "ValueError" in result["stderr"], result["stderr"]
+    assert _TOKEN not in result["stderr"], "the advisory must not print the token"
+    return "exception quoting the token -> type name only, exit 2"
 
 
 def test_spawn_recorder_catches_a_reinstated_refresh() -> str:
@@ -327,12 +419,15 @@ def test_merge_path_missing_token_spawns_nothing_and_names_login() -> str:
         ("no oauth block", "{}"),
         ("no accessToken", json.dumps({"claudeAiOauth": {}})),
         ("blank accessToken", json.dumps({"claudeAiOauth": {"accessToken": "", "expiresAt": 0}})),
+        ("null expiresAt", json.dumps({"claudeAiOauth": {"accessToken": _TOKEN, "expiresAt": None}})),
     ):
         result = _run_merge_path(text)
         assert result["spawned"] == [], f"{label}: a status readout spawned: {result['spawned']}"
         assert result["exit"] == 2, f"{label}: {result}"
         assert result["fetches"] == [], f"{label}: {result}"
+        assert "no usable OAuth token" in result["stderr"], f"{label}: {result['stderr']}"
         assert "claude auth login" in result["stderr"], f"{label}: {result['stderr']}"
+        assert _TOKEN not in result["stderr"], f"{label}: the advisory must not print the token"
         assert "unavailable" not in result["stderr"], f"{label}: {result['stderr']}"
     return "file without a usable token + confirmed merge -> nothing spawned, names `claude auth login`"
 
@@ -982,6 +1077,13 @@ def main() -> int:
             test_merge_path_missing_token_spawns_nothing_and_names_login,
         ),
         ("merge path: ok and expiring tokens fetch, nothing spawned", test_merge_path_valid_tokens_fetch_without_spawning),
+        ("fetch_usage: network and body failures return None", test_fetch_usage_returns_none_for_every_network_or_body_failure),
+        ("fetch_usage: 401 and 403 are token rejections", test_fetch_usage_marks_401_and_403_as_token_rejected),
+        ("fetch_usage: 200 returns the parsed body", test_fetch_usage_returns_parsed_body_on_success),
+        ("merge path: rejected token names login, no retry", test_merge_path_rejected_token_names_login_without_retry),
+        ("merge path: unreachable API retries once, then says so", test_merge_path_unreachable_api_retries_once_then_says_so),
+        ("merge path: null in the usage response isn't silent", test_merge_path_null_in_usage_response_is_not_silent),
+        ("merge path: unexpected error prints only its type", test_merge_path_unexpected_error_never_prints_its_message),
         (
             "worktree-merge output confirms despite non-zero exit",
             test_merge_confirmed_true_for_worktree_merge_despite_nonzero_exit,

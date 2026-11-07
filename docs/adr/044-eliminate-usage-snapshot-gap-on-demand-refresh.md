@@ -1,7 +1,7 @@
 # ADR-044 — Eliminate the Usage-Snapshot Gap via On-Demand CLI Refresh
 
 **Date:** 2026-06-16
-**Status:** Accepted
+**Status:** Accepted; Decision reversed by the 2026-11-06 amendment
 **Closes:** [dev-env#361](https://github.com/brownm09/dev-env/issues/361)
 **Tags:** hooks, oauth, token-refresh, usage-snapshot, post-tool-use, lazy-refresh
 **Related:** [ADR-043](043-keep-warm-scheduled-task-for-token-freshness.md), [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md)
@@ -173,10 +173,12 @@ subscription rather than the API would satisfy the
 [token-source rule](https://github.com/brownm09/dev-env/issues/1280), but the call would still spend
 plan limit on a readout. The check answers which budget pays, and the objection is to paying at all.
 
-**Open question.** Whether `claude auth status --json` refreshes an expired token without a model call
-would decide if a no-model refresh is possible. It can't be checked while the token is valid, so
-[dev-env#1299](https://github.com/brownm09/dev-env/issues/1299) records the result. The hook skips either
-way until something shows that route works.
+**Measured.** #1299 left open whether `claude auth status --json` refreshes an expired token. Run once
+at 06:30:36 local on 2026-11-07 with the token expired, it moved `expiresAt` from 1794051019496
+(06:30:19) to 1794079838328 (14:30:38), and the credentials file's mtime from 22:30:19 the previous day
+to 06:30:38. So it refreshes, though whether it spends any plan limit wasn't measured. The hook still
+skips, and the advisory now names that command.
+[dev-env#1327](https://github.com/brownm09/dev-env/issues/1327) decides whether the hook should run it.
 
 **Left as is.** The hook's 90-second budget in `hook-dispatch.py` was sized for the refresh. The fetch's
 retry and the merge confirmation now take far less, but a larger budget costs nothing unless the hook

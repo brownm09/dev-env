@@ -1,7 +1,7 @@
 # ADR-043 — Keep-Warm Scheduled Task for OAuth Token Freshness
 
 **Date:** 2026-06-15 (amended 2026-07-27)
-**Status:** Accepted
+**Status:** Accepted; task and scripts retired by the 2026-11-06 amendment
 **Closes:** [dev-env#359](https://github.com/brownm09/dev-env/issues/359)
 **Supersedes:** [dev-env#356](https://github.com/brownm09/dev-env/issues/356) (self-healing refresh — not built)
 **Tags:** hooks, windows, scheduled-task, oauth, token-refresh, usage-snapshot, automation, desktop-app, msix, backup-restore, adr-124
@@ -204,3 +204,7 @@ remove it, since its script is gone:
 ```powershell
 Unregister-ScheduledTask -TaskName ClaudeKeepTokenWarm -Confirm:$false
 ```
+
+The deleted script exported the task before removing it, under ADR-079. This command doesn't need to:
+the task holds only what its registration script wrote, and reverting the PR that removed the script
+restores both.
