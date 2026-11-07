@@ -22,7 +22,7 @@ _REF = re.compile(
 )
 _DECLARATION = re.compile(
     r"duplicat|\bdupe?\b|supersed|near-dup|already (tracked|filed|covered)|not filing|no new issue"
-    r"|rather than fil|instead of fil|filing (separately|fresh)|same (bug|issue|root cause) as"
+    r"|rather than fil|rather than open|instead of fil|filing (separately|fresh)|same (bug|issue|root cause) as"
     r"|check-before-filing|search-before-filing",
     re.I,
 )
