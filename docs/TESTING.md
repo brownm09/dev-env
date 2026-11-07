@@ -5217,7 +5217,24 @@ For a one-line navigational map of the test directory, see
      py -3 claude/scripts/tests/test_claude_md_size.py
      ```
 
-116. **duplicate-issue retrieval scorer test** — required when changing anything under
+116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py`
+     ([ADR-153](adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Fixtures cut down from
+     the two references pin the outcome: switchyard PR 13 reports #12, and lifting-logbook PR 115 reports
+     nothing and counts #106 as not judged. They are fixtures because a live run of PR 13 changes if #12 is
+     reopened. Also pinned: only a deferring Evidence cell of a `not verifiable` row counts, in the newest block
+     for each issue; the block's own issue is skipped; a prose line gives only references after its deferral
+     word, never the PR's own closing issue; the negated forms GitHub still acts on report, and a body that also
+     closes the issue doesn't; two names for one issue count once; a closure before the merge reports nothing;
+     a missing issue or repo is unresolved while any other read failure exits 1 and keeps the other repos'
+     results; reaching the PR limit is a failure; a bad `--closed-since` is refused; and zero deferrals warns.
+     `gh` is stubbed. Deliberately not covered: the sweep's hit rate, which is in ADR-153 because it needs
+     labelled data.
+
+     ```bash
+     py -3 claude/scripts/tests/test_deferred_followup_sweep.py
+     ```
+
+117. **duplicate-issue retrieval scorer test** — required when changing anything under
      `experiments/2026-11-issue-dup-retrieval/`
      ([ADR-157](adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
      instrument behind the experiment's verdict: known-good rankers score 1.0 and known-bad ones
