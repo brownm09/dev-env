@@ -1,0 +1,15 @@
+{"t": "2026-11-07T05:07:56Z", "stage": "calibrate_scorer", "passed": true, "tests": "test_issue_dup_eval.py", "commit": "93c56e2"}
+{"t": "2026-11-07T05:08:10Z", "stage": "calibrate_search", "known_good": {"parity": true, "default": true}, "known_bad_results": 0, "passed": true}
+{"t": "2026-11-07T05:08:23Z", "stage": "embed_corpus", "event": "start", "model": "BAAI/bge-small-en-v1.5"}
+{"t": "2026-11-07T05:11:46Z", "stage": "keyword_search", "event": "start", "generations": 3}
+{"t": "2026-11-07T05:17:55Z", "stage": "embed_corpus", "event": "end", "docs": 3050, "seconds": 572}
+{"t": "2026-11-07T05:18:03Z", "stage": "rank_inputs", "inputs": 44, "seconds": 8.13}
+{"t": "2026-11-07T05:24:53Z", "stage": "keyword_search", "event": "generation_done", "generation": "g1", "calls": 225}
+{"t": "2026-11-07T05:31:39Z", "stage": "keyword_search", "event": "generation_done", "generation": "g2", "calls": 418}
+{"t": "2026-11-07T05:36:04Z", "stage": "keyword_search", "event": "generation_done", "generation": "g3", "calls": 584}
+{"t": "2026-11-07T05:36:04Z", "stage": "keyword_search", "event": "end", "calls": 584, "seconds": 1458}
+{"t": "2026-11-07T05:38:33Z", "stage": "retry_search", "event": "start"}
+{"t": "2026-11-07T05:40:43Z", "stage": "retry_search", "event": "generation_done", "generation": "g1", "calls": 81}
+{"t": "2026-11-07T05:43:04Z", "stage": "retry_search", "event": "generation_done", "generation": "g2", "calls": 167}
+{"t": "2026-11-07T05:45:01Z", "stage": "retry_search", "event": "generation_done", "generation": "g3", "calls": 237}
+{"t": "2026-11-07T05:45:01Z", "stage": "retry_search", "event": "end", "calls": 237, "seconds": 389}

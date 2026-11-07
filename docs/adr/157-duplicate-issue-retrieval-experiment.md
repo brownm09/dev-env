@@ -2,6 +2,7 @@
 
 **Date:** 2026-11-06
 **Status:** Accepted
+**Amended:** 2026-11-07 (the re-run is also inconclusive, see below)
 **Closes:** [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260)
 **Tags:** retrieval, embeddings, vector-search, duplicate-issues, experiment, tier-1, privacy, local-model, cost-model, adr-115
 **Related:** [ADR-115](115-experimental-rigor-protocol.md), [ADR-048](048-memory-immortalization-issue-pairing.md), [ADR-154](154-token-attribution-and-shared-pricing.md)
@@ -51,6 +52,30 @@ Three constraints shaped the choice of tools:
 **The first audit passed a threat it should have flagged.** The author marked T4 as a residual note, and the same audit said nothing undisclosed was found. Independent reviewers given the code and not the conclusion found both. A review from outside the session that ran the experiment is worth keeping as a step before a verdict is treated as final.
 
 **Tripwire and rollback.** Nothing is wired in, so nothing to roll back. `score.py` only reads stored output, so re-running it can't catch a change in behaviour. The tripwire for any future helper is to produce fresh rankings in `vector_results.json`'s format through that helper, and score those.
+
+## Amendment (2026-11-07): the re-run is also inconclusive
+
+[#1282](https://github.com/brownm09/dev-env/issues/1282) re-ran the comparison, [pre-registered](https://github.com/brownm09/dev-env/issues/1282#issuecomment-6702622020) before any result, against a keyword arm that replaced every query that returned nothing. Full audit: [`rerun/results.md`](../../experiments/2026-11-issue-dup-retrieval/rerun/results.md).
+
+**Result.** Recall@10 of 0.907 against 0.791 on the same 43 inputs, 39 against 34, a gap of +0.116. That's below the 0.15 win bar and above the 0.05 no-gain line, and the family sign test gives p = 0.109. The retry recovered 4 inputs and lost none, and 3 of the 4 turn on one generation. The verdict is **inconclusive, confounded by T1 and T4**.
+
+**Decision.**
+
+1. **Neither adopt nor reject embedding search.** This replaces decision 1 above: the re-run it called for has happened and didn't settle the question.
+2. **[#1275](https://github.com/brownm09/dev-env/issues/1275) stays blocked.** This extends decision 5. The owner chooses between another run and shelving, and nothing here treats embedding search as adopted.
+3. **Decisions 2 to 4 stand as conditions on any future helper:** local embedding, flat-file storage, and candidates shown rather than decided. The re-run tested none of them further.
+
+**Why not supported or refuted.** Baseline choice alone moves the reading across the bar: +0.209 with no retry, +0.186 at the recorded 25% retry rate, and +0.116 at full retry. Writers could also see other drafts in their batch, and for 5 inputs that includes the target, which favours keyword search: losing 2 of those 4 hits would clear the bar. An approximate 95% interval on the gap, computed after the run, runs from 0.00 to 0.23.
+
+**Why not simply run again on these inputs.** The vector arm is deterministic, so its 39 isn't a new sample, and another keyword arm on the same 43 can't resolve an interval that wide. Trying arms until one reads as wanted would be generate-until-win. A run that could settle it needs new inputs, and only 1 new declared duplicate appeared in the 62 new issues and 68 new comments since the first fetch.
+
+**Rejected: read this as refuted because the first gap shrank.** The result is two inputs short of the bar, against an arm more generous than recorded retry behaviour. Also rejected: treating the +0.186 at the recorded retry rate as supporting adoption. It's a secondary figure, conditional on filing, and can't decide the verdict.
+
+**A finding worth keeping.** GitHub's search doesn't match an identifier when the issue has it with a file extension: `test_pyw_stdio` misses dev-env#734, whose title holds `test_pyw_stdio.py`, while `test pyw stdio` finds it. 30 of 37 query and target pairs that looked like harness misses trace to a term like this, and the affected queries cover 4 of the 6 inputs only the vector arm hit. Those searches gave identical lists when re-run, so it's search behaviour and not a harness defect. The other 7 pairs are unexplained. Whether telling sessions to split identifiers into words closes part of the gap is untested. This is an observation, not documented search behaviour; the [search documentation](https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests) doesn't describe tokenizing at this level.
+
+**Review caught the audit again.** Two reviewers in fresh contexts reproduced the figures and the reading. They also found an undisclosed deviation, a T7 pass that contradicted its evidence, an understated T4 and the batch contamination behind T1. The first run's lesson held: a review from outside the session belongs before a verdict is final.
+
+**Cost.** About $25 at list price against a $30 budget, on the subscription, so this estimates plan usage and isn't a charge. Query writing ran above estimate ($4.03 against at most $3.50), and the session stayed within its $10 to $15 estimate.
 
 ## References
 

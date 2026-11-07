@@ -147,6 +147,20 @@ class RetryPathCalibration(unittest.TestCase):
         merged = retry_round.merge_round({"parity": [[]], "default": [[]]}, {0: {"parity": [3], "default": [4]}})
         self.assertEqual(merged, {"parity": [[3]], "default": [[4]]})
 
+    def test_merge_never_overwrites_a_list_that_returned_results(self):
+        per_scope = {"parity": [[1]], "default": [[2]]}
+        merged = retry_round.merge_round(per_scope, {0: {"parity": [9], "default": [9]}})
+        self.assertEqual(merged, {"parity": [[1]], "default": [[2]]})
+
+    def test_scoring_reads_each_scope_from_its_own_list(self):
+        keyword = {
+            g: {i["id"]: {"parity": [[999]], "default": [i["targets"]]} for i in FIXTURE_INPUTS}
+            for g in ("g1", "g2", "g3")
+        }
+        recall = run_score_files(GOOD_RANKS, keyword)["recall_at_10"]
+        self.assertEqual(recall["pooled"]["keyword"], 0.0)
+        self.assertEqual(recall["stratum_A"]["keyword_default_scope"], 1.0)
+
     def test_merge_leaves_the_round_one_lists_alone(self):
         original = {"parity": [[]]}
         retry_round.merge_round(original, {0: {"parity": [3]}})
@@ -215,6 +229,25 @@ class CommittedResult(unittest.TestCase):
     def test_frozen_map_reading_is_pinned(self):
         # The audit's threat sweep overrides this reading: see results.md.
         self.assertEqual(load_json("scored.json")["summary"]["verdict"], "supported")
+
+    def test_score_reproduces_the_committed_rerun(self):
+        for keyword, scored, reading in (
+            ("rerun/keyword_round1.json", "rerun/scored_round1.json", "supported"),
+            ("rerun/keyword_final.json", "rerun/scored_final.json", "inconclusive"),
+        ):
+            with self.subTest(keyword), tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "scored.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    score.main(
+                        str(EXPERIMENT / "labels.json"),
+                        str(EXPERIMENT / "rerun/vector_results.json"),
+                        str(EXPERIMENT / keyword),
+                        out,
+                    )
+                with open(out, encoding="utf-8") as f:
+                    result = json.load(f)
+                self.assertEqual(result, load_json(scored))
+                self.assertEqual(result["summary"]["verdict"], reading)
 
 
 class OutcomeMap(unittest.TestCase):

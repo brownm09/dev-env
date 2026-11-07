@@ -1,6 +1,6 @@
 # Duplicate-issue retrieval: results
 
-Tracking issue: [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260). Pre-registration: [comment frozen 2026-11-06T16:16:10Z](https://github.com/brownm09/dev-env/issues/1260#issuecomment-6689587273), citing commit `a4139e8`. Decision record: [ADR-157](../../docs/adr/157-duplicate-issue-retrieval-experiment.md). Re-run: [dev-env#1282](https://github.com/brownm09/dev-env/issues/1282).
+Tracking issue: [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260). Pre-registration: [comment frozen 2026-11-06T16:16:10Z](https://github.com/brownm09/dev-env/issues/1260#issuecomment-6689587273), citing commit `a4139e8`. Decision record: [ADR-157](../../docs/adr/157-duplicate-issue-retrieval-experiment.md). Re-run: [dev-env#1282](https://github.com/brownm09/dev-env/issues/1282), also inconclusive: [`rerun/results.md`](rerun/results.md).
 
 **Result:** on 43 inputs, embedding search put the existing issue in the first 10 candidates 39 times, and keyword search 30 times. The frozen outcome map reads that as supported, but the audit's verdict is **inconclusive, confounded by threat T4**. The keyword arm couldn't retry after an empty result, half its queries returned nothing, and recovering 3 of the 7 inputs that came back empty would take the gain below the win bar.
 
