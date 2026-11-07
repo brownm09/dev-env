@@ -3,9 +3,13 @@
 Builds, under a temp directory and with no network:
 
     <root>/github.com/owner/repo.git   bare origin; the path satisfies detect_gh_repo()
-    <root>/repo                        primary checkout on main, pushed to origin
-    <root>/repo/.claude/worktrees/wt   clean worktree on claude/merged, at main's commit,
-                                       so it is merged by ancestry and `gh` is never called
+    <root>/repo                        primary checkout on the default branch (main unless
+                                       the caller names another), pushed to origin
+    <root>/repo/.claude/worktrees/wt   clean worktree on claude/merged, at that branch's
+                                       commit, so it is merged by ancestry and `gh` is never
+                                       called
+
+refs/remotes/origin/HEAD is left unset, as `git remote add` leaves it. set_origin_head() sets it.
 
 The worktree holds a gitignored node_modules/ so reclaim-worktree-disk.py can see it as
 clean and eligible. run_script() always passes --repo-path, but that flag is parsed by the
@@ -35,8 +39,9 @@ def _env() -> dict:
 
 
 class ThrowawayRepo:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, default_branch: str = "main") -> None:
         self.root = root.resolve()
+        self.default_branch = default_branch
         self.origin = self.root / "github.com" / "owner" / "repo.git"
         self.primary = self.root / "repo"
         self.worktree = self.primary / ".claude" / "worktrees" / "wt"
@@ -58,8 +63,8 @@ class ThrowawayRepo:
         # Local config, so the script's own git commands also skip the machine's global hooks.
         no_hooks = self.root / "no-hooks"
         no_hooks.mkdir()
-        self._git(self.root, "init", "--bare", "-b", "main", str(self.origin))
-        self._git(self.primary, "init", "-b", "main")
+        self._git(self.root, "init", "--bare", "-b", default_branch, str(self.origin))
+        self._git(self.primary, "init", "-b", default_branch)
         self._git(self.primary, "config", "core.hooksPath", str(no_hooks))
         self._git(self.primary, "config", "user.name", "test")
         self._git(self.primary, "config", "user.email", "test@example.invalid")
@@ -67,7 +72,7 @@ class ThrowawayRepo:
         self._git(self.primary, "add", ".gitignore")
         self._git(self.primary, "commit", "-m", "init")
         self._git(self.primary, "remote", "add", "origin", self.origin.as_posix())
-        self._git(self.primary, "push", "origin", "main")
+        self._git(self.primary, "push", "origin", default_branch)
         self._git(self.primary, "worktree", "add", str(self.worktree), "-b", self.branch)
         self.node_modules.mkdir()
         (self.node_modules / "dep.js").write_text("x", encoding="utf-8")
@@ -79,9 +84,28 @@ class ThrowawayRepo:
         if r.returncode != 0:
             raise AssertionError(f"git {' '.join(args)} failed in {cwd}: {r.stderr.strip()}")
 
-    def branch_exists(self) -> bool:
+    def set_origin_head(self, branch: str) -> None:
+        self._git(self.primary, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{branch}")
+
+    def add_worktree_on_default_branch(self) -> Path:
+        """Check the default branch out in a second worktree; the primary must have left it."""
+        path = self.primary / ".claude" / "worktrees" / "on-default"
+        self._git(self.primary, "worktree", "add", str(path), self.default_branch)
+        return path
+
+    def git(self, *args: str) -> None:
+        self._git(self.primary, *args)
+
+    def current_branch(self, worktree: Path) -> str:
         r = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{self.branch}"],
+            ["git", "branch", "--show-current"],
+            cwd=worktree, env=self._env, capture_output=True, text=True, timeout=60,
+        )
+        return r.stdout.strip()
+
+    def branch_exists(self, branch: str = "") -> bool:
+        r = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch or self.branch}"],
             cwd=self.primary, env=self._env, capture_output=True, text=True, timeout=60,
         )
         return r.returncode == 0

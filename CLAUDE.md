@@ -70,11 +70,11 @@ older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 23. **post-merge-tile-checkpoint test** — required when changing `claude/scripts/post-merge-tile-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py`
 24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_message_check.py`
 25. **manifest field validator test** — required when changing `claude/scripts/validate-manifest.py`. Run: `py -3 claude/scripts/tests/test_validate_manifest.py`
-26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py`. Run: `py -3 claude/scripts/tests/test_prune_merged_worktrees.py`
+26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py` or `claude/scripts/_default_branch.py`. Run: `py -3 claude/scripts/tests/test_prune_merged_worktrees.py`
 27. **_hookutil shared-helper test** — required when changing `claude/scripts/_hookutil.py`. Run: `py -3 claude/scripts/tests/test_hookutil.py`
 28. **pr-merge-reminder test** — required when changing `claude/scripts/pr-merge-reminder.py`. Run: `py -3 claude/scripts/tests/test_pr_merge_reminder.py`
 29. **reconcile-project-board test** — required when changing `claude/scripts/reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_reconcile_project_board.py`
-30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py`. Run: `py -3 claude/scripts/tests/test_reclaim_worktree_disk.py`
+30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`. Run: `py -3 claude/scripts/tests/test_reclaim_worktree_disk.py`
 31. **_repo_scan shared-module test** — required when changing `claude/scripts/_repo_scan.py` or the `--scan-dir` discovery path in `prune-merged-worktrees.py` / `reclaim-worktree-disk.py` / `reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_repo_scan.py`
 32. **worktree-path-check test** — required when changing `claude/scripts/pre-tool-use-worktree-path-check.py`. Run: `py -3 claude/scripts/tests/test_worktree_path_check.py`
 33. **canonical-mutate-guard test** — required when changing `claude/scripts/pre-tool-use-canonical-mutate-guard.py`. Run: `py -3 claude/scripts/tests/test_canonical_mutate_guard.py`

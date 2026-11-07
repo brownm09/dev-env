@@ -28,8 +28,10 @@ Exit 0 = all pass.
 import contextlib
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
+import types
 import unittest.mock
 from pathlib import Path
 
@@ -250,6 +252,62 @@ def test_cli_control_dry_run_keeps_and_plain_run_reclaims() -> str:
     return "--dry-run keeps node_modules; a plain run deletes it"
 
 
+def test_real_non_main_default_branch_is_fetched_and_reclaimed() -> str:
+    """dev-env#1088: zero commits ahead of origin/master, which the script used to never fetch."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        r = repo.run_script(MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would reclaim" not in r.stdout:
+            raise AssertionError(f"--dry-run should fetch master and see an idle worktree\n{r.stdout}")
+        r = repo.run_script(MODULE_PATH)
+        if repo.node_modules.exists():
+            raise AssertionError(f"plain run should reclaim\n{r.stdout}\n{r.stderr}")
+    return "origin/HEAD unset, ls-remote finds master, node_modules is reclaimed"
+
+
+def test_scan_continues_after_fetch_timeout_and_unexpected_error() -> str:
+    """dev-env#1087 known-bad references: each of these used to end the run at the first repo."""
+    mod = _load_module()
+    repo_a, repo_b = str(Path("/FAKE_A").resolve()), str(Path("/FAKE_B").resolve())
+
+    def make_dispatch(fail_args: list, exception: Exception, seen: list):
+        def dispatch(args, cwd=None, **_kwargs):
+            seen.append(cwd)
+            if cwd == repo_a and args[1:1 + len(fail_args)] == fail_args:
+                raise exception
+            if args[1:2] == ["remote"]:
+                return types.SimpleNamespace(returncode=0, stdout="git@github.com:o/r.git\n", stderr="")
+            if args[1:2] == ["symbolic-ref"]:
+                return types.SimpleNamespace(returncode=0, stdout="refs/remotes/origin/main\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return dispatch
+
+    def scan(dispatch) -> tuple:
+        out, code = io.StringIO(), 0
+        with unittest.mock.patch("subprocess.run", side_effect=dispatch), \
+                unittest.mock.patch.object(mod, "find_git_repos", return_value=[repo_a, repo_b]), \
+                unittest.mock.patch.object(sys, "argv", ["reclaim", "--scan-dir", "/FAKE_SCAN"]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                mod.main()
+            except SystemExit as exc:
+                code = exc.code
+        return out.getvalue(), code
+
+    seen: list = []
+    timeout = subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=30)
+    out, code = scan(make_dispatch(["fetch"], timeout, seen))
+    if repo_b not in seen or "fetch timed out" not in out or code:
+        raise AssertionError(f"fetch timeout: reached B={repo_b in seen}, exit {code}\n{out}")
+
+    seen = []
+    out, code = scan(make_dispatch(["worktree", "list"], OSError("boom"), seen))
+    if repo_b not in seen or f"error in 1 repo(s): {repo_a}" not in out or code != 1:
+        raise AssertionError(f"unexpected error: reached B={repo_b in seen}, exit {code}\n{out}")
+    return "repo B reached both times; a timed-out fetch warns and exits 0, an unexpected error is named and exits 1"
+
+
 def _load_hook(name: str):
     spec = importlib.util.spec_from_file_location(name.replace("-", "_"), SCRIPTS_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -310,6 +368,8 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
 
 def main() -> int:
     tests = [
+        ("real repo: non-main default branch fetched and reclaimed", test_real_non_main_default_branch_is_fetched_and_reclaimed),
+        ("scan: fetch timeout or unexpected error -> next repo reached", test_scan_continues_after_fetch_timeout_and_unexpected_error),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run reclaims", test_cli_control_dry_run_keeps_and_plain_run_reclaims),
