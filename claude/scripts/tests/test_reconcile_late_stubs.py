@@ -225,7 +225,12 @@ def snapshot(scenario) -> Path:
         (SNAPSHOTS / "no-hooks").mkdir(exist_ok=True)
         journal = Journal(Path(tempfile.mkdtemp(dir=SNAPSHOTS)))
         scenario(journal)
-        journal.root.rename(path)
+        try:
+            journal.root.rename(path)
+        except OSError:
+            if not path.exists():
+                raise
+            # Another test's process built it first; use that one.
     return path
 
 
@@ -734,7 +739,8 @@ def run_one(test) -> int:
 
 def run_in_own_process(test) -> subprocess.CompletedProcess:
     """Tests patch this module's globals and git is slow to start, so run them side by side
-    in separate processes, each getting its own share of a busy machine's CPU."""
+    in separate processes, each getting its own share of a busy machine's CPU. Not
+    `multiprocessing`: this goes through `_winsubp`, so no console window opens (ADR-155)."""
     return REAL_RUN(
         [sys.executable, __file__, test.__name__], capture_output=True, text=True,
         env={**os.environ, SHARED_SNAPSHOTS_VAR: str(SNAPSHOTS)},
