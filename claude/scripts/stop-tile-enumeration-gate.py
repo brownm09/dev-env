@@ -99,6 +99,16 @@ follow-up artifact before the stop is allowed:
    prompt), not a natural-language judgment, so it does NOT ride trigger 4's
    advisory channel.
 
+**The tool's name.** The app now offers ``start_session``, and ``spawn_task`` is the
+older name, which this hook still reads so older transcripts keep working. The trigger
+descriptions here and in the ADRs name the older tool; read them as "a tile". What a
+``start_session`` call counts as depends on how it ended, not just on the call
+(dev-env#1298): a proposal card is a tile, so it satisfies triggers 1, 2 and 5 and owes
+a table and a shard (3, 3b). A session that actually started (``user_asked``, an offer
+answered "New session", or ``proposal_id``) satisfies 1, 2 and 5 but owes neither, since
+it has no card to lose. A refusal, and an offer answered "Do it here" or left
+unanswered, counts as nothing. See ``session_tile_outcomes``.
+
 Triggers 1-3b and 5 are the direct Stop-hook analog of
 ``pre-merge-findings-gate`` (ADR-039) and BLOCK the stop (exit 2) with a
 reminder on stderr. A recorded enumeration (triggers 1/2) is either an actual
@@ -206,8 +216,10 @@ from _hookio import (
     strip_env_prefix,
 )
 from _hookutil import (
+    _content_items,
     _is_synthetic_user,
     _parse_records,
+    _result_text,
     _user_message_texts,
     first_user_prompt_text,
     iter_assistant_texts,
@@ -311,7 +323,21 @@ _OUTPUT_NUMBER_RE = re.compile(r'"number"\s*:\s*(\d+)')       # gh pr view numbe
 # --- enumeration / override text markers ---------------------------------------
 # An actual spawn_task tool call (MCP name mcp__ccd_session__spawn_task) — the
 # strongest "the checkpoint fired" signal. Bare verb so any namespacing hits.
+# spawn_task is the older name: the app now offers start_session, and this stays so
+# transcripts recorded before the change are still read correctly (dev-env#1298).
 _SPAWN_TASK_RE = re.compile(r"spawn_task", re.IGNORECASE)
+# The tool the app offers now. Any namespace hits, but it's matched as a whole word
+# because a bare substring would also take restart_session.
+_START_SESSION_RE = re.compile(r"(?:^|_)start_session$", re.IGNORECASE)
+# A refusal doesn't always set is_error: "Nothing was proposed. ..." comes back as a
+# normal result (seen in 6 recorded calls), so the text is read too.
+_NOTHING_HAPPENED_RE = re.compile(r"\s*Nothing was\b", re.IGNORECASE)
+# What an offer's result says when the user picked a separate session. An offer starts
+# nothing by itself, so unlike the check above this one has to be positive.
+_OFFER_ACCEPTED = '"New session"'
+# How a call ended, for the two questions the triggers ask (see session_tile_outcomes).
+_OUTCOME_CARD = "card"
+_OUTCOME_STARTED = "started"
 # Text forms of the prescribed enumeration. A BARE "no follow-ups" matches none
 # of these on purpose — that is the #700 skip the ADR-046 refinement invalidated.
 _ENUM_MARKERS = (
@@ -338,6 +364,9 @@ _SKIP_RE = re.compile(r"\b(?:skip\s+tiles?|don'?t\s+(?:spawn\s+)?tiles?|no\s+til
 # transcript) -- a bounded, accepted perf cost, the same tradeoff the
 # pre-existing "merged" pre-filter branch below already makes.
 _SPAWN_TASK_SUBSTRING = "spawn_task"
+# Both names, since a transcript carries one or the other. Same tradeoff as above:
+# the pre-filter only has to be a superset of what session_tile_outcomes can match.
+_TILE_TOOL_SUBSTRINGS = (_SPAWN_TASK_SUBSTRING, "start_session")
 # The stable heading marker PR1 (#663) defined in claude/CLAUDE.md -- Session
 # Summaries & Tile Tracking: "### Tiles spawned this session". Requires a `#`
 # heading prefix (1-6 levels) anchored to the START of a line (re.MULTILINE)
@@ -742,19 +771,71 @@ def session_unresolved_created_issues(calls: list, merged_prs: set) -> set:
     return set(created) - session_resolved_issue_numbers(calls, merged_prs)
 
 
+def _start_session_outcome(item: dict, result: tuple | None) -> str | None:
+    """How one ``start_session`` call ended: ``_OUTCOME_CARD``, ``_OUTCOME_STARTED``,
+    or ``None`` when nothing came of it (dev-env#1298).
+
+    ``own_initiative`` puts up a proposal card. ``user_asked`` and ``proposal_id``
+    start a session. ``offer`` only asks: "Do it here" keeps the work in this session,
+    so it counts only when the user chose "New session". No recorded result counts as
+    what the call asked for, because nothing says it was refused and missing a real
+    tile is the failure this exists to fix.
+    """
+    inp = item.get("input")
+    initiation = inp.get("initiation") if isinstance(inp, dict) else None
+    text = ""
+    if result is not None:
+        result_item, result_rec = result
+        text = _result_text(result_item, result_rec)
+        if result_item.get("is_error") or _NOTHING_HAPPENED_RE.match(text):
+            return None
+    if initiation == "own_initiative":
+        return _OUTCOME_CARD
+    if initiation == "offer":
+        return _OUTCOME_STARTED if _OFFER_ACCEPTED in text else None
+    return _OUTCOME_STARTED
+
+
+def session_tile_outcomes(records: list) -> set:
+    """Every way this session handed work to another session. The single source of
+    truth behind the two questions below, so they can't drift on what a call means.
+
+    A ``spawn_task`` call (the older name) is always a card: the tool had no other
+    mode, and its result was never read. Results are paired by ``tool_use_id``, as
+    ``iter_bash_calls`` pairs them, so parallel calls can't mismatch.
+    """
+    results = {
+        item.get("tool_use_id"): (item, rec)
+        for rec in records
+        if isinstance(rec, dict) and rec.get("type") == "user"
+        for item in _content_items(rec)
+        if isinstance(item, dict) and item.get("type") == "tool_result"
+    }
+    outcomes: set = set()
+    for _i, _rec, item in iter_tool_uses(records):
+        name = item.get("name", "") or ""
+        if _SPAWN_TASK_RE.search(name):
+            outcomes.add(_OUTCOME_CARD)
+        elif _START_SESSION_RE.search(name):
+            outcomes.add(_start_session_outcome(item, results.get(item.get("id"))))
+    outcomes.discard(None)
+    return outcomes
+
+
 def session_spawned_tiles(records: list) -> bool:
-    """True iff a real ``spawn_task`` tool call happened this session, checked
-    via ``_SPAWN_TASK_RE`` against a ``tool_use`` item's ``name``. The single
-    source of truth for "was a tile spawned" — ``enumeration_recorded``
-    delegates to this for its own tool_use check (triggers 1/2), and
-    ``evaluate_tile_table`` uses it directly (trigger 3) to require a spawn
-    independently of enumeration TEXT (which must NOT, by itself, require a
-    table — only an actual spawn does). Extracting this out of
-    ``enumeration_recorded`` (review of PR #674) means the two callers can
-    never drift on what counts as "a tile was spawned."""
-    return any(
-        _SPAWN_TASK_RE.search(item.get("name", "") or "") for _i, _rec, item in iter_tool_uses(records)
-    )
+    """True iff a proposal card was put up this session. Only a card is a tile: the
+    table and shard guard a proposal that can be lost, and a session already started
+    has no card to lose, so triggers 3 and 3b key on this and not on
+    ``session_queued_work``. Trigger 3 still requires a real call independently of
+    enumeration TEXT, which must NOT, by itself, require a table."""
+    return _OUTCOME_CARD in session_tile_outcomes(records)
+
+
+def session_queued_work(records: list) -> bool:
+    """True iff follow-on work now has somewhere to go: a card, or a started session.
+    This is what satisfies the merge and issue floors (triggers 1, 2 and 5), so
+    ``enumeration_recorded`` and ``evaluate_workstream`` key on it."""
+    return bool(session_tile_outcomes(records))
 
 
 def table_marker_present(records: list) -> bool:
@@ -768,19 +849,19 @@ def table_marker_present(records: list) -> bool:
 
 
 def enumeration_recorded(records: list) -> bool:
-    """True iff the session recorded a tile-enumeration artifact: a ``spawn_task``
-    tool call, or an assistant message carrying the prescribed enumeration text.
+    """True iff the session recorded a tile-enumeration artifact: work handed to
+    another session, or an assistant message carrying the prescribed enumeration text.
 
     Session-global by design (documented ADR-088 limitation): one enumeration
     satisfies the gate for the session — the gate targets the *total skip*
     (merged, nothing recorded), not per-merge enumeration quality. A bare "no
     follow-ups" matches none of the markers and so does NOT satisfy it.
 
-    The tool_use check delegates to ``session_spawned_tiles`` (review of PR
-    #674) rather than re-implementing it, so this and the tile-table trigger
-    (``evaluate_tile_table``) can never disagree on what counts as a spawn.
+    The tool_use check delegates to ``session_queued_work`` (review of PR #674)
+    rather than re-implementing it, so this and the tile-table trigger
+    (``evaluate_tile_table``) read a call through the same ``session_tile_outcomes``.
     """
-    if session_spawned_tiles(records):
+    if session_queued_work(records):
         return True
     return any(
         rx.search(text) for text in iter_assistant_texts(records) for rx in _ENUM_MARKERS
@@ -1196,7 +1277,7 @@ def evaluate_workstream(records: list) -> tuple:
         return None, True
     post_merge = _records_after_merge(records, calls, merged)
     if (
-        session_spawned_tiles(post_merge)
+        session_queued_work(post_merge)
         or session_asked_user(post_merge)
         or session_created_issues(iter_bash_calls(post_merge))
     ):
@@ -1214,8 +1295,8 @@ def format_reminder(pr: int) -> str:
         "post-merge tile enumeration was recorded. Per ADR-046, before ending the turn "
         "write out the follow-ups you considered -- scan for out-of-scope fixes, deferred "
         "work, tech debt, and ideas noticed in passing, and record each as "
-        "'-> tiled (task_id / #N)' or '-> not tiled, because <reason>', spawning a "
-        "spawn_task tile for each genuine follow-up. \"No follow-ups\" is valid only as "
+        "'-> tiled (task_id / #N)' or '-> not tiled, because <reason>', proposing a "
+        "start_session tile for each genuine follow-up. \"No follow-ups\" is valid only as "
         "the visible result of that scan, never a bare assertion. Only an explicit "
         "\"skip tiles\" instruction anywhere in this session exempts this checkpoint."
     )
@@ -1230,7 +1311,7 @@ def format_issue_reminder(issue: int) -> str:
         "open (no same-session merged PR closed it via a Closes/Fixes/Resolves keyword, "
         "and it was not explicitly closed), but no tile enumeration was recorded. Per "
         "ADR-046/ADR-092, before ending the turn write out the follow-ups you considered "
-        "-- spawn a spawn_task tile to pick up this issue, or record '-> not tiled, "
+        "-- propose a start_session tile to pick up this issue, or record '-> not tiled, "
         "because <reason>'. \"No follow-ups\" is valid only as the visible result of "
         "that scan, never a bare assertion. Only an explicit \"skip tiles\" instruction "
         "anywhere in this session exempts this checkpoint."
@@ -1243,7 +1324,7 @@ def format_table_reminder(payload: object = None) -> str:
     ``format_*_reminder`` functions (Claude Code pipes hook output as
     cp1252 on Windows)."""
     return (
-        "[tile-enumeration-gate] One or more spawn_task tiles were spawned this "
+        "[tile-enumeration-gate] One or more tiles were proposed this "
         "session, but no end-of-session tile table was found. Per the Session "
         "Summaries & Tile Tracking section of claude/CLAUDE.md (ADR-094), close "
         "with a table under the exact heading '### Tiles spawned this session' "
@@ -1258,9 +1339,9 @@ def format_shard_reminder(payload: object = None) -> str:
     (ADR-118 enforcement, dev-env#870). ASCII-only, same cp1252 constraint as the
     other ``format_*_reminder`` functions."""
     return (
-        "[tile-enumeration-gate] One or more spawn_task tiles were spawned this "
-        "session, but no tile-shard write was found. A chip does not survive an app "
-        "restart and there is no API to re-create one, so the shard "
+        "[tile-enumeration-gate] One or more tiles were proposed this "
+        "session, but no tile-shard write was found. A card expires and there is no "
+        "API to recover a lost one, so the shard "
         "sessions/<project>/tiles/<issue-number>.json IS the durable payload -- without "
         "it the paired issue survives but the one-click restart does not (ADR-118). "
         "Write one shard per tile now, filed under the tile's TARGET project (from its "
@@ -1284,11 +1365,11 @@ def format_workstream_reminder(pr: int) -> str:
     restating it here would just be a second, driftable copy of the same list."""
     return (
         f"[tile-enumeration-gate] PR #{pr} merged in a session whose opening prompt named "
-        "no follow-on work, and nothing was queued at or after the merge -- no spawn_task "
+        "no follow-on work, and nothing was queued at or after the merge -- no start_session "
         "tile, no AskUserQuestion, and no gh issue create (the fallback for a session where "
-        "spawn_task itself is unavailable). Per ADR-137/ADR-140, a merge is a look-ahead "
+        "start_session itself is unavailable). Per ADR-137/ADR-140, a merge is a look-ahead "
         "moment: if this work predictably surfaces or unblocks a next thread, tile it now "
-        "(tracking issue + spawn_task + shard); only if none is determinable, survey and "
+        "(tracking issue + start_session + shard); only if none is determinable, survey and "
         "rank the repo's open issues per claude/CLAUDE.md -> Capture follow-ups as tiles, "
         "then offer the top options via AskUserQuestion and tile the choice. The survey ask "
         "is the ONE bounded carve-out to the don't-ask-just-tile rule and applies only when "
@@ -1309,7 +1390,7 @@ def format_deferral_reminder(payload: object = None) -> str:
         "Heads up: this session's last response, after a merge or issue-create, "
         "used deferral/permission phrasing (e.g. 'let me know if you want me to "
         "start it now') about what looks like known follow-up work, instead of "
-        "spawning a spawn_task tile for it. Per the tile-now discipline in "
+        "proposing a start_session tile for it. Per the tile-now discipline in "
         "claude/CLAUDE.md, that kind of known follow-up should be tiled "
         "directly rather than asked about. This is a heuristic text match and "
         "may be a false positive -- worth a quick look, not necessarily an error."
@@ -1386,14 +1467,14 @@ _TRIGGER_SPECS = (
     _TriggerSpec(
         key=_TRIGGER_TABLE,
         evaluate=evaluate_tile_table,
-        prefilter=lambda c: _SPAWN_TASK_SUBSTRING in c.lower,
+        prefilter=lambda c: any(sub in c.lower for sub in _TILE_TOOL_SUBSTRINGS),
         formatter=format_table_reminder,
         blocking=True,
     ),
     _TriggerSpec(
         key=_TRIGGER_SHARD,
         evaluate=evaluate_tile_shard,
-        prefilter=lambda c: _SPAWN_TASK_SUBSTRING in c.lower,
+        prefilter=lambda c: any(sub in c.lower for sub in _TILE_TOOL_SUBSTRINGS),
         formatter=format_shard_reminder,
         blocking=True,
     ),

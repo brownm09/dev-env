@@ -4,7 +4,7 @@ description: Check whether a repo's retro-action backlog-burn-down chain (dev-en
 ---
 
 Check the liveness of each tracked repo's `retro-action` chain and refill any repo whose chain has
-died. This skill **mutates** GitHub state (may file a new issue, spawns a `spawn_task` tile) and the
+died. This skill **mutates** GitHub state (may file a new issue, proposes a tile with `start_session`) and the
 engineering-journal repo (writes and commits a tile shard) -- it is not a read-only check.
 
 This skill is invoked **by other routines** (`biweekly-retro`'s Step 6.5, the `retro-chain-backstop`
@@ -12,7 +12,7 @@ routine), not directly by users. It is a building block, not an end-user command
 as `sync-routine-worktree`.
 
 **Background.** [dev-env#967](https://github.com/brownm09/dev-env/issues/967) describes a
-prompt-carried "CHAIN block" mechanism: a `spawn_task` tile anchored to a dedicated GitHub issue
+prompt-carried "CHAIN block" mechanism: a tile (a `start_session` proposal card) anchored to a dedicated GitHub issue
 carries a block instructing whichever session picks it up to tick the completed backlog item, pick
 the next unchecked item from that repo's `retro-action` queue issue, and spawn the next link itself.
 The mechanism is entirely prompt-carried and breaks silently and permanently on a dismissed chip, a
@@ -140,15 +140,19 @@ unchecked-item list:
    the next unchecked item in the queue and restart from sub-step 1. If the queue's checklist is
    exhausted without finding a collision-free item, record this repo as effectively
    `QUEUE_EXHAUSTED` for this run and take no further action.
-3. **Compose the `spawn_task` prompt.** Self-contained, per the cross-session hand-off standard
+3. **Compose the tile prompt.** Self-contained, per the cross-session hand-off standard
    ([ADR-113](../../../docs/adr/113-cross-session-handoff-tiles.md)): name the repo, the anchor issue
    (URL and number), the actual backlog item text, and enough surrounding context that the spawned
-   session needs nothing beyond the prompt itself. End the prompt with the CHAIN block below,
+   session needs nothing beyond the prompt itself. When the target repo is not this session's own
+   project, the prompt's first line names its local clone path from the table above, because a card
+   always starts in the proposing session's project. End the prompt with the CHAIN block below,
    verbatim, with `<QUEUE_ISSUE_URL>` and `<OWNER>`/`<REPO>` filled in with this repo's real values.
-4. **`spawn_task`** the tile: `title` a short chip label, `tldr` a one-to-two sentence summary,
-   `prompt` the composed text from sub-step 3, `cwd` this repo's local clone path from the table
-   above (forward slashes, per [ADR-118](../../../docs/adr/118-tile-persistence-shards.md) Amendment
-   4).
+4. **Propose the tile** with `mcp__ccd_session__start_session`, `initiation: "own_initiative"`,
+   `context: "fresh"`, `title` a short card label, `prompt` the composed text from sub-step 3, and
+   `background` the one-to-two sentence `tldr` expanded to at least 80 characters. Pass no `cwd`:
+   the app refuses a folder on a proposal card. The shard (sub-step 5) still records `tldr` and
+   `cwd`, this repo's local clone path from the table above (forward slashes, per
+   [ADR-118](../../../docs/adr/118-tile-persistence-shards.md) Amendment 4).
 5. **Write the shard immediately** -- `sessions/<project>/tiles/N.json`, with the **Write tool**,
    never a shell redirect or heredoc
    ([ADR-129](../../../docs/adr/129-journal-shell-write-guard.md)) -- carrying all seven
@@ -228,7 +232,11 @@ skipped -- but do this anyway; it is the fast path. Before ending the session:
    not a pull request) before reusing it as the anchor. Otherwise -- or if no
    reference resolves -- file a new one in <OWNER>/<REPO> (label `retro-action`)
    so the tile has a durable anchor per ADR-094.
-5. `spawn_task` a tile for that item, carrying this entire CHAIN block forward
+5. Propose a tile for that item with `mcp__ccd_session__start_session`
+   (`initiation: "own_initiative"`, `context: "fresh"`, a `title`, this
+   prompt, and a `background` of at least 80 characters; no folder, and if the
+   repo is not your own project, open the prompt with its local clone path),
+   carrying this entire CHAIN block forward
    verbatim (updating the issue URLs), then write its shard to
    `sessions/<project>/tiles/<issue-number>.json` per ADR-118 using the Write
    tool -- never a shell redirect or heredoc (ADR-129). Include a "chain" field:
@@ -239,7 +247,7 @@ unchecked items left, say so explicitly and spawn nothing.
 ```
 
 **The six tile shards already spawned on 2026-08-08 are not retroactively edited.** Their `prompt`
-field is a historical record of what was actually sent to `spawn_task` under the original block text
+field is a historical record of what was actually sent under the original block text
 -- the updated block above applies only to links spawned going forward.
 
 ---

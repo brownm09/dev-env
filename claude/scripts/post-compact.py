@@ -121,7 +121,7 @@ def format_pending_tiles(entries: list[dict], max_shown: int = MAX_TILES_SHOWN) 
     if not entries:
         return ""
     lines = [
-        f"Pending tiles ({len(entries)}) -- spawn_task chips do not survive an app restart; "
+        f"Pending tiles ({len(entries)}) -- tile cards don't last (they expire after 7 days); "
         "these shards are the durable payload (ADR-118). Check list_sessions for a matching "
         "title/branch before re-spawning any of them."
     ]

@@ -6,7 +6,7 @@
 
 A biweekly-retro run files a per-repo "queue" GitHub issue (label `retro-action`, a
 markdown checklist of action items). A 2026-08-08 session manually seeded one "chained
-tile" per repo: `spawn_task` a tile for the top unchecked checklist item, anchored to a
+tile" per repo: propose a tile (`start_session`) for the top unchecked checklist item, anchored to a
 dedicated issue (ADR-094), with a tile shard (ADR-118) carrying a "CHAIN block" instructing
 the *next* session to tick the item, pick the next unchecked one, and spawn the next link
 itself. This mechanism was entirely **prompt-carried** -- it breaks silently and
@@ -17,11 +17,11 @@ This script is the idempotent, stateless liveness check behind the self-healing 
 a repo, it answers "is there an open, unstarted retro-action chain tile? If not, what's the
 current top unchecked item, and is there already a trusted anchor issue for it?" It never
 mutates anything -- filing an issue, spawning a tile, and writing a shard are all session-
-only actions (`gh issue create`, `spawn_task`, the Write tool) that only the
+only actions (`gh issue create`, `start_session`, the Write tool) that only the
 `retro-chain-refill` skill (invoked by a live Claude session) can perform. See ADR-131 for
 why the script/skill split is drawn exactly here: everything in this file is deterministic
 and offline-testable; the skill supplies the one thing a script structurally cannot --
-`list_sessions` and `spawn_task` are session-only MCP tools.
+`list_sessions` and `start_session` are session-only MCP tools.
 
 ## Real-world messiness this classifier accounts for (not hypothetical -- found live during
 ## the design of this mechanism)

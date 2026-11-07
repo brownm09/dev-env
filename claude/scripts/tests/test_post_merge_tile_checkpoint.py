@@ -2,7 +2,7 @@
 """Unit tests for post-merge-tile-checkpoint.py's merge-detection predicate.
 
 `post-merge-tile-checkpoint.py` is a PostToolUse hook that, after a successful
-`gh pr merge`, emits a blocking reminder to spawn follow-up tiles via spawn_task
+`gh pr merge`, emits a blocking reminder to spawn follow-up tiles via start_session
 (ADR-046 enforcement). The detection of "was this a successful merge?" is
 extracted into the pure `is_successful_merge()` predicate so it can be exercised
 offline (no subprocess, no network), matching the repo's fixture-only convention.

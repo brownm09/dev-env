@@ -1350,7 +1350,7 @@ For a one-line navigational map of the test directory, see
     **Tile shards** ([ADR-118](adr/118-tile-persistence-shards.md), dev-env#870) are the third kind,
     and the one whose write is otherwise wholly unverified — a manifest or open-PR shard is written by
     a session already doing PR bookkeeping, whereas a tile shard is written right after the
-    `spawn_task` call whose payload it preserves, so a malformed one fails *silently*
+    tile proposal whose payload it preserves, so a malformed one fails *silently*
     (`iter_numeric_shards` skips it without a word) *and* late, surfacing only when the payload is
     needed back after a crash. Covered: a healthy shard; missing fields in schema order; the
     `prompt`-only omission called out on its own (the field whose loss is total — the issue survives
@@ -2023,6 +2023,13 @@ For a one-line navigational map of the test directory, see
     py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py
     ```
 
+    **`start_session`** (dev-env#1298): the app replaced `spawn_task`, the older name that most
+    of this item still uses and the gate still reads for older transcripts. `_START_SESSION_DECISIONS`
+    states what each way a call can end counts as, and pins it through triggers 1, 2, 3, 3b and 5:
+    only a proposal card is a tile. The fixtures' result text is taken from recorded transcripts,
+    because a refusal can come back with no error flag ("Nothing was proposed"). See
+    [Detail: Tiles](REFERENCE.md#detail-tiles).
+
 49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays
     (`CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` / `CLAUDE_JUNCTION_LINKS` / `HOME_LINKS`), its
     `link_claude_windows()` / `link_claude_unix()` functions, its backup/restore path
@@ -2627,7 +2634,7 @@ For a one-line navigational map of the test directory, see
     genuine user prompt; the text-item content form; and the false-positive guards — a keyword in
     assistant text, a tool_result, an `isMeta`/`isCompactSummary` record, or a `<command-name>`
     slash-command wrapper never counts); `substantive_tool_count` (counts each of the nine
-    substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`spawn_task`/text — this
+    substantive tools, ignores `TaskCreate`/`TaskUpdate`/`Agent`/`start_session`/text — this
     harness's real bookkeeping/delegation tools; the original comment named the nonexistent
     `TodoWrite`/bare `Task` instead, dev-env#1020 — counts parallel tool_use in one record, and
     the 4-vs-5 threshold boundary); `opened_or_merged_pr` (anchored `gh pr create`/
@@ -3335,8 +3342,8 @@ For a one-line navigational map of the test directory, see
     `claude/scripts/reconcile-pending-tiles.py` (dev-env#869, dev-env#882, dev-env#958,
     dev-env#950, [ADR-118](adr/118-tile-persistence-shards.md) + its Amendments 1, 3, and
     5). Pins the
-    UserPromptSubmit hook that re-surfaces `spawn_task` tiles whose chips did not survive an
-    app restart. Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
+    UserPromptSubmit hook that re-surfaces tiles whose cards lapsed (they expire after 7 days; the
+    older chips died on an app restart). Pure offline fixtures — the live `gh` boundary (`fetch_repo_issue_states`)
     is untested per this repo's fixture-only convention, but everything *around* it is:
     `lookup_states`' injectable `fetch`/`clock`, plus the two pure helpers the REST migration
     deliberately factored out of the subprocess call so its hazards stay coverable

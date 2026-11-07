@@ -188,6 +188,55 @@ stale-draft / unmerged-branch advisories stay exit 0.) See
   over-coupling concern). `_first_line` stays duplicated (a command-segment helper with per-hook
   intent, not a transcript reader).
 
+## Amendment (2026-11-06, dev-env#1298): read how a `start_session` call ended
+
+The desktop app replaced `spawn_task` with `mcp__ccd_session__start_session`, and this gate
+recognized a tile only by the old name. It blocked sessions that had tiled correctly, and it never
+reminded sessions that proposed tiles about their table or shard. `spawn_task` is still read, as a
+card, for transcripts recorded before the change.
+
+**Decision.** The new tool has modes the old one didn't, so the gate classifies each call by how it
+ended, and only a proposal card is a tile:
+
+- **`own_initiative`, proposed:** a card. It satisfies the merge and issue floors (triggers 1, 2 and
+  5) and owes a table and a shard (3 and 3b).
+- **Started** (`user_asked`, an `offer` answered "New session", or `proposal_id`): it satisfies the
+  floors and owes neither, because the table and shard guard a card that can be lost, and a started
+  session has no card to lose.
+- **Nothing came of it** (a refusal, or an `offer` answered "Do it here" or left unanswered): it
+  counts as nothing.
+
+The table is in `docs/REFERENCE.md` → Detail: Tiles, and `_START_SESSION_DECISIONS` in the test file
+pins each row through the triggers.
+
+**Alternatives rejected.**
+
+- *Count any `start_session` call as a tile, the way `spawn_task` was counted.* An offer answered
+  "Do it here" would satisfy the merge floor with nothing queued, and a refused proposal would too.
+  A session the user started in plain words would be blocked for a shard no one needs.
+- *Key on the `initiation` argument alone.* It can't see a refusal, and 6 of the 20 refused
+  `own_initiative` calls recorded carry no error flag ("Nothing was proposed").
+- *Require the words the app uses for success ("Proposed ...").* If the app rewords it, the gate is
+  blind to real tiles again, which is this bug. So a call counts unless it was refused. Only `offer`
+  needs a positive match, because an offer starts nothing by itself.
+
+**Calibration** (Pass 3, Gate calibration). The gate was replayed, old against new, over all 155
+transcripts recording a `start_session` call on this machine, at 2026-11-06.
+
+- **Measured property:** the result's error flag, its opening words `Nothing was`, and, for an offer
+  only, the text `"New session"`. Each comes from those recorded results.
+- **Classifier, against each result's own wording:** 238 "Proposed" results read as cards, 44
+  "Started session" and accepted-offer results read as started, 30 refusals and 2 offers not taken
+  read as nothing. No misreads.
+- **Blocks removed:** the old gate wrongly blocked 9 times across these transcripts (merge floor 1,
+  issue floor 6, unchained merge 2). An unchained session that merged PR #2200 and then proposed a
+  tile exits 2 on the old gate and 0 on the new.
+- **Reminders restored:** the table now fires on 43 of the 155 and the shard on 16. The old gate
+  fired on none of them. Each fires once per session, by the existing per-trigger sentinel.
+- **Margin:** no recorded result sits near the boundary, since refusals and proposals open with
+  different words. If the app rewords a refusal, it reads as a card, and the cost is one reminder.
+  If it rewords an accepted offer, the `proposal_id` call that follows still counts.
+
 ## References
 
 - [ADR-046](046-post-merge-followup-tiles.md) — the rule being enforced (2026-07-05 addendum: merged-state

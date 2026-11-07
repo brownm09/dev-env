@@ -24,7 +24,7 @@ Three schemas are covered:
     documented for this shard kind).
   - Tile shards (``sessions/<project>/tiles/<issue-number>.json``, ADR-118):
     ``TILE_REQUIRED_FIELDS`` — kept in sync with docs/REFERENCE.md -> "Tile shards". Also
-    all-required: a tile shard exists to reconstruct a lost ``spawn_task`` chip, and a
+    all-required: a tile shard exists to reconstruct a lost tile card, and a
     partial one cannot do that, so there is no field it is meaningful to omit.
 
 Two schemas additionally check a *present* field, not just its presence:
@@ -53,7 +53,7 @@ REQUIRED_FIELDS = ("stub", "topic", "tokens", "prs_opened", "prs_closed")
 OPEN_PR_REQUIRED_FIELDS = ("pr", "url", "topic", "stub", "opened")
 
 # The tile shard schema, in canonical (schema) order. Kept in sync with docs/REFERENCE.md →
-# "Tile shards" (ADR-118). `title`/`tldr`/`prompt`/`cwd` are the four spawn_task arguments —
+# "Tile shards" (ADR-118). `title`/`tldr`/`prompt`/`cwd` are the four tile-proposal inputs (`tldr` seeds `background`) —
 # together they are what makes an exact re-spawn possible, which is the whole point of the
 # shard. `url` carries owner/repo so a bare-numeric filename still resolves cross-repo (the
 # same trick the open-PR shard uses). `task_id` is deliberately absent: chip IDs do not

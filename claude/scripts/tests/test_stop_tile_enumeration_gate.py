@@ -102,6 +102,37 @@ def _asst_spawn_other_namespace(tid="s1"):
          "input": {"title": "Follow-up"}}]}}
 
 
+# Result text as the desktop app records it, cut short (dev-env#1298). Taken from
+# recorded transcripts, because the gate reads these: a refused proposal can come back
+# without is_error ("Nothing was proposed"), so the call alone doesn't say what happened.
+_PROPOSED = 'Proposed "Follow-up (#1)" (task_id: task_9c1d4435). The user sees a card and nothing runs'
+_NOTHING_PROPOSED = "Nothing was proposed. The user is working over Remote Control"
+_CARD_REFUSED = "A proposal card cannot carry a host, folder, environment or preset yet"
+_STARTED = 'Started session "Follow-up" (session_id: local_7e6ef5b1, name: follow-up). It runs on its own'
+_START_REFUSED = "Start sessions only on the user's own words to you"
+_OFFER_NEW_SESSION = 'The user chose "New session" - the session is already opening for "X" (task_id: task_f00f)'
+_OFFER_DO_IT_HERE = 'The user chose "Do it here" (task_id: task_498c): do the task in this session now'
+_OFFER_UNANSWERED = "The user did not answer the card: they sent a new message"
+
+
+def _start_session(inp, result=_PROPOSED, *, tid="ss1", is_error=False,
+                   name="mcp__ccd_session__start_session"):
+    """A start_session call and its recorded result, as two transcript records."""
+    outcome = {"type": "tool_result", "tool_use_id": tid, "content": result}
+    if is_error:
+        outcome["is_error"] = True
+    return [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": name, "id": tid, "input": inp}]}},
+        {"type": "user", "message": {"content": [outcome]}},
+    ]
+
+
+def _own_initiative(result=_PROPOSED, **kwargs):
+    return _start_session({"initiation": "own_initiative", "title": "Follow-up", "prompt": "Do it."},
+                          result, **kwargs)
+
+
 _TILE_SHARD = "sessions/dev-env/tiles/870.json"
 
 
@@ -1336,6 +1367,140 @@ def test_e2e_spawn_other_namespace_no_table_still_blocks():
 
 
 # ---------------------------------------------------------------------------
+# start_session, the tool the app offers now (dev-env#1298)
+#
+# THE DECISION, one row per way the call can end. "queued" means the follow-on work has
+# somewhere to go, so it satisfies the merge and issue floors (triggers 1, 2 and 5).
+# "tile" means a proposal card now exists, so its table and shard are owed (triggers 3 and
+# 3b). Only a card is a tile: the table and shard guard a proposal that can be lost, and
+# a session the user started has no card to lose, so asking for a shard there would block
+# someone who asked for parallel sessions in plain words.
+# ---------------------------------------------------------------------------
+
+_START_SESSION_DECISIONS = (
+    # label, input, result, is_error, queued, tile
+    ("own_initiative proposed: a tile",
+     {"initiation": "own_initiative"}, _PROPOSED, False, True, True),
+    ("own_initiative, nothing proposed (no error flag): no card exists",
+     {"initiation": "own_initiative"}, _NOTHING_PROPOSED, False, False, False),
+    ("own_initiative refused with an error: no card exists",
+     {"initiation": "own_initiative"}, _CARD_REFUSED, True, False, False),
+    ("user_asked started: the work is queued, with no card to lose",
+     {"initiation": "user_asked"}, _STARTED, False, True, False),
+    ("user_asked refused: nothing started",
+     {"initiation": "user_asked"}, _START_REFUSED, True, False, False),
+    ("offer, user chose New session: a session opens, with no card to lose",
+     {"initiation": "offer"}, _OFFER_NEW_SESSION, False, True, False),
+    ("offer, user chose Do it here: the work stays here, nothing is queued",
+     {"initiation": "offer"}, _OFFER_DO_IT_HERE, False, False, False),
+    ("offer left unanswered: nothing is queued",
+     {"initiation": "offer"}, _OFFER_UNANSWERED, False, False, False),
+    ("proposal_id started: the card, if any, was counted when it was proposed",
+     {"proposal_id": "task_9c1d4435"}, _STARTED, False, True, False),
+)
+
+
+def test_start_session_decision_table():
+    for label, inp, result, is_error, queued, tile in _START_SESSION_DECISIONS:
+        records = _start_session(inp, result, is_error=is_error)
+        assert gate.session_queued_work(records) is queued, f"queued: {label}"
+        assert gate.session_spawned_tiles(records) is tile, f"tile: {label}"
+    return f"{len(_START_SESSION_DECISIONS)} ways a start_session call can end each decided"
+
+
+def test_start_session_decisions_reach_the_triggers():
+    # The table above pins the two helpers; this pins what each trigger does with them.
+    for label, inp, result, is_error, queued, tile in _START_SESSION_DECISIONS:
+        call = _start_session(inp, result, is_error=is_error)
+        fire, _ = gate.evaluate(_MERGED_NO_ENUM + call)
+        assert (fire is None) is queued, f"merge floor: {label}"
+        fire, _ = gate.evaluate_issues(_ISSUE_CREATED_NO_ENUM + call)
+        assert (fire is None) is queued, f"issue floor: {label}"
+        fire, _ = gate.evaluate_workstream(_MERGED_UNCHAINED + call)
+        assert (fire is None) is queued, f"unchained merge: {label}"
+        fire, _ = gate.evaluate_tile_table(call)
+        assert (fire is True) is tile, f"table: {label}"
+        fire, _ = gate.evaluate_tile_shard(call)
+        assert (fire is True) is tile, f"shard: {label}"
+    return "each decision reaches triggers 1, 2, 3, 3b and 5"
+
+
+def test_own_initiative_satisfies_the_merge_floor():
+    # The miss dev-env#1298 was filed for: the gate saw no tile here and blocked.
+    assert gate.evaluate(_MERGED_NO_ENUM + _own_initiative()) == (None, True)
+    return "merged + start_session own_initiative -> merge floor satisfied"
+
+
+def test_start_session_before_the_merge_does_not_resolve_trigger_5():
+    # Same at-or-after-the-merge rule the older tool had (review of PR #1053).
+    records = [_MERGED_UNCHAINED[0]] + _own_initiative() + _MERGED_NO_ENUM
+    assert gate.evaluate_workstream(records) == (599, False)
+    return "a proposal made before the merge does not chain what follows it"
+
+
+def test_start_session_result_in_a_content_list_is_read():
+    records = _own_initiative()
+    records[1]["message"]["content"][0]["content"] = [{"type": "text", "text": _NOTHING_PROPOSED}]
+    assert not gate.session_queued_work(records)
+    return "a result stored as a content list is read like a string"
+
+
+def test_start_session_with_no_recorded_result_counts_as_proposed():
+    # Nothing says it was refused, and missing a real tile is the failure this fixes.
+    records = _own_initiative()[:1]
+    assert gate.session_spawned_tiles(records) and gate.session_queued_work(records)
+    return "no result recorded -> treated as what it asked for"
+
+
+def test_older_spawn_task_still_counts_as_a_tile():
+    assert gate.session_spawned_tiles([_asst_spawn()])
+    assert gate.session_queued_work([_asst_spawn()])
+    return "an older transcript's spawn_task is still a tile"
+
+
+def test_other_session_tools_are_not_a_start_session():
+    # The name is matched as a whole word so restart_session can't pass for it. A
+    # hand-off moves the task in hand to another session, so it queues nothing new.
+    for name in ("mcp__ccd_session__restart_session", "mcp__ccd_session__hand_off_to_session",
+                 "mcp__ccd_session__dismiss_task"):
+        records = _start_session({"initiation": "own_initiative"}, _PROPOSED, name=name)
+        assert not gate.session_queued_work(records), name
+    records = _start_session({"initiation": "own_initiative"}, _PROPOSED,
+                             name="mcp__other_namespace__start_session")
+    assert gate.session_spawned_tiles(records), "any namespace still counts"
+    return "similar names don't count, and another namespace does"
+
+
+def test_e2e_merge_then_proposal_is_allowed():
+    records = _MERGED_UNCHAINED + _own_initiative() + [
+        _asst_shard_write(),
+        _asst_text("### Tiles spawned this session\n| # | Tile | Issue | Status | Next |\n"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        rc, _out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e merge + start_session proposal + shard + table -> exit 0"
+
+
+def test_e2e_proposal_alone_gets_the_table_and_shard_reminders():
+    # No merge and no enumeration text, so the only signal the pre-filter can pass on
+    # is the start_session call itself.
+    with tempfile.TemporaryDirectory() as home:
+        rc, _out, err = _run_hook(_own_initiative(), home)
+    assert rc == 2, f"expected exit 2, got {rc} (stderr={err!r})"
+    assert "end-of-session tile table" in err and "no tile-shard write" in err, err
+    return "e2e start_session proposal, no table or shard -> exit 2 naming both"
+
+
+def test_e2e_session_the_user_asked_for_owes_no_table_or_shard():
+    records = _start_session({"initiation": "user_asked"}, _STARTED)
+    with tempfile.TemporaryDirectory() as home:
+        rc, _out, err = _run_hook(records, home)
+    assert rc == 0, f"expected exit 0, got {rc} (stderr={err!r})"
+    return "e2e user_asked session -> exit 0"
+
+
+# ---------------------------------------------------------------------------
 # per-trigger sentinel independence (ADR-097, dev-env#677)
 #
 # Before this fix, all three triggers shared ONE sentinel file: whichever
@@ -1598,7 +1763,7 @@ def test_format_deferral_reminder_is_cp1252_encodable():
     msg = gate.format_deferral_reminder()
     assert msg.isascii(), "reminder must be ASCII (Claude Code pipes hook output as cp1252)"
     msg.encode("cp1252")  # must not raise
-    assert "tile-now discipline" in msg and "spawn_task" in msg
+    assert "tile-now discipline" in msg and "start_session" in msg
     return "format_deferral_reminder is ASCII/cp1252-encodable"
 
 
@@ -2087,7 +2252,7 @@ def test_format_workstream_reminder_is_ascii_and_names_both_paths():
     text = gate.format_workstream_reminder(599)
     assert text.isascii(), "exit-2 stderr is cp1252-decoded on Windows"
     assert "#599" in text
-    assert "spawn_task" in text and "AskUserQuestion" in text and "gh issue create" in text, \
+    assert "start_session" in text and "AskUserQuestion" in text and "gh issue create" in text, \
         "all three resolution paths named"
     assert "claude/CLAUDE.md" in text, "the ranking order is pointed at, not restated"
     assert "start-here" not in text and "retro-action" not in text, (
@@ -2472,6 +2637,17 @@ def main():
         ("e2e AskUserQuestion resolves trigger 5", test_e2e_unchained_merge_resolved_by_ask_user),
         ("e2e 'skip tiles' waives trigger 5", test_e2e_unchained_merge_skip_override_allows),
         ("e2e trigger 5 sentinel suppresses re-fire", test_e2e_workstream_sentinel_suppresses_refire),
+        ("start_session: decision table", test_start_session_decision_table),
+        ("start_session: decisions reach the triggers", test_start_session_decisions_reach_the_triggers),
+        ("start_session: own_initiative satisfies the merge floor", test_own_initiative_satisfies_the_merge_floor),
+        ("start_session: before the merge doesn't resolve trigger 5", test_start_session_before_the_merge_does_not_resolve_trigger_5),
+        ("start_session: result in a content list", test_start_session_result_in_a_content_list_is_read),
+        ("start_session: no recorded result", test_start_session_with_no_recorded_result_counts_as_proposed),
+        ("older spawn_task still counts as a tile", test_older_spawn_task_still_counts_as_a_tile),
+        ("start_session: similar tool names don't count", test_other_session_tools_are_not_a_start_session),
+        ("e2e merge + proposal + shard + table allowed", test_e2e_merge_then_proposal_is_allowed),
+        ("e2e proposal alone gets table and shard reminders", test_e2e_proposal_alone_gets_the_table_and_shard_reminders),
+        ("e2e session the user asked for owes no table or shard", test_e2e_session_the_user_asked_for_owes_no_table_or_shard),
         ("trigger table: _TRIGGERS derived from _TRIGGER_SPECS (dev-env#696)", test_triggers_tuple_is_derived_from_spec_table),
         ("trigger table: every evaluator honors the (payload, resolved) contract (dev-env#696)", test_every_evaluator_honors_the_payload_contract),
         ("trigger table: every formatter takes one payload, returns ASCII (dev-env#696)", test_every_formatter_takes_one_payload_and_is_ascii),

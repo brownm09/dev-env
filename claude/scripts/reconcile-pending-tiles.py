@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: re-surface pending tile shards whose chips did not survive.
 
-A `spawn_task` tile is the one-click control for starting a follow-up session, and it is
+A tile (a `start_session` proposal card) is the one-click control for starting a follow-up session, and it is
 ephemeral: chip IDs are not persisted across an app restart, and no non-destructive API
 reports whether a chip was clicked. ADR-118 makes the *payload* durable by persisting each
 tile as a shard `sessions/<project>/tiles/<issue-number>.json`, keyed by the paired GitHub
@@ -13,7 +13,7 @@ Once per session (per-session sentinel in scratch/, matching `reconcile-open-prs
 walks every project's `tiles/` directory, reconciles each shard against live GitHub issue
 state, unlinks the shards whose issue is CLOSED, and emits a compact **index** of what is
 still pending. It surfaces the index, not the payloads: Claude reads a shard for the full
-`spawn_task` prompt only when it actually re-spawns one, which keeps turn-1 context small
+tile prompt only when it actually re-spawns one, which keeps turn-1 context small
 even when many tiles are pending.
 
 Three things this hook does deliberately differently from its `reconcile-open-prs.py`
@@ -476,7 +476,7 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
 
     if pending:
         parts.append(
-            f"Pending tiles ({len(pending)}) -- spawn_task chips do not survive an app restart; "
+            f"Pending tiles ({len(pending)}) -- tile cards don't last (they expire after 7 days); "
             "these shards are the durable payload (ADR-118)."
         )
         parts.extend(tile_index_line(tile) for tile in pending[:max_shown])
@@ -490,7 +490,7 @@ def format_message(pending: list[dict], removed: list[dict], skipped: list[dict]
             "Before re-spawning any of these, check list_sessions for a session whose title or "
             "branch already matches: a tile whose work has started keeps its issue open, so it "
             "still appears here. Read a shard only when you actually re-spawn one -- the full "
-            "spawn_task payload (title/tldr/prompt/cwd) is inside it."
+            "tile payload (title/tldr/prompt/cwd) is inside it."
         )
 
     if removed:

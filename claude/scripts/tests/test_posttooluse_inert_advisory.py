@@ -2,7 +2,7 @@
 """Unit tests for posttooluse-inert-advisory.py — the Stop-hook safety net that
 surfaces inert PostToolUse hooks (ADR-053 / ADR-055).
 
-In background / `spawn_task`-launched sessions, every PostToolUse hook is silently
+In background / tile-launched sessions, every PostToolUse hook is silently
 inert (upstream Claude Code limitation; ADR-053). This Stop hook reads the
 just-ended transcript and, when a dev-env (project #3) `gh issue/pr create` or
 `gh pr merge` ran but **no** PostToolUse hook left an `attachment` record all

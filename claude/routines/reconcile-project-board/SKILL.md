@@ -1,6 +1,6 @@
 ---
 name: reconcile-project-board
-description: Add open issues missing from each configured repo's GitHub project board (across every repo under C:/Users/brown/Git with a .claude/hook-config.json) and surface any still missing a required field. Backstop for issues filed in background/spawn_task sessions where the add-hook is inert.
+description: Add open issues missing from each configured repo's GitHub project board (across every repo under C:/Users/brown/Git with a .claude/hook-config.json) and surface any still missing a required field. Backstop for issues filed in background/tile-launched sessions where the add-hook is inert.
 schedule: "0 6 * * *"
 ---
 
@@ -21,7 +21,7 @@ required field)**.
 > mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
 
 **Why:** `post-tool-use.py` auto-adds each newly-created issue to its repo's board, but
-PostToolUse hooks are inert in background / `spawn_task` / SDK-launched sessions
+PostToolUse hooks are inert in background / tile-launched / SDK-launched sessions
 ([ADR-053](../../docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)), so issues
 filed from such a session are silently never boarded — missing Impact, Why, and the Status
 workflow. This routine is the nightly backstop that catches them, across every repo that has
