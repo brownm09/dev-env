@@ -562,18 +562,31 @@ def _late_branch(clone: Path, branch: str, when: str | None) -> str:
     return tip
 
 
-def _resurrected_against(clone: Path, merged: dict[str, str]) -> list[str]:
-    """Run the real check against the fixture, with last_merged_at answering from `merged`."""
+def _resurrected_against(clone: Path, merged: dict[str, str], started: float | None = None) -> list[str]:
+    """Run the real check against the fixture, with last_merged_at answering from `merged`.
+
+    The hook's clock starts at import because it times one hook run, and this file runs
+    many checks in one process, so each check gets its own clock unless `started` sets it
+    (dev-env#1288). A failed check returns [], the same as a clean one, so any failure it
+    would log raises here instead: a `found == []` test can't pass without the check running.
+    """
     _run_git(clone, "fetch", "-q", "origin")
-    orig = (mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at)
+    failures: list[str] = []
+    orig = (mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at, mod.HOOK_STARTED, mod.note_late_check_failure)
     mod.JOURNAL_REPO, mod.TODAY = clone, "2098-01-04"
     mod.last_merged_at = lambda dates: {d: at for d, at in merged.items() if d in dates}
+    mod.note_late_check_failure = failures.append
     mod.composed_dates_on_main.cache_clear()
     mod.remote_draft_refs.cache_clear()
+    mod.HOOK_STARTED = time.monotonic() if started is None else started
     try:
-        return mod.late_commit_branches()
+        found = mod.late_commit_branches()
+        assert not failures, f"the check failed instead of running: {failures}"
+        # This lookup swallows its own errors, so a failure here never reaches `failures`.
+        assert mod.composed_dates_on_main(), "the check read no composed days from the fixture"
+        return found
     finally:
-        mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at = orig
+        mod.JOURNAL_REPO, mod.TODAY, mod.last_merged_at, mod.HOOK_STARTED, mod.note_late_check_failure = orig
         mod.composed_dates_on_main.cache_clear()
         mod.remote_draft_refs.cache_clear()
 
@@ -670,8 +683,9 @@ def test_late_commits_failed_lookup_reports_nothing_and_logs_it() -> str:
         clone = _late_fixture(tmp)
         _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
         _run_git(clone, "fetch", "-q", "origin")
-        orig = (mod.JOURNAL_REPO, mod.last_merged_at, mod.SCRATCH)
+        orig = (mod.JOURNAL_REPO, mod.last_merged_at, mod.SCRATCH, mod.HOOK_STARTED)
         mod.JOURNAL_REPO, mod.SCRATCH = clone, Path(tmp) / "scratch"
+        mod.HOOK_STARTED = time.monotonic()
 
         def boom(_dates):
             raise subprocess.CalledProcessError(1, "gh")
@@ -684,7 +698,7 @@ def test_late_commits_failed_lookup_reports_nothing_and_logs_it() -> str:
             log = (Path(tmp) / "scratch" / "journal_hook_late_check_failures.log").read_text(encoding="utf-8")
             assert "CalledProcessError" in log, log
         finally:
-            mod.JOURNAL_REPO, mod.last_merged_at, mod.SCRATCH = orig
+            mod.JOURNAL_REPO, mod.last_merged_at, mod.SCRATCH, mod.HOOK_STARTED = orig
             mod.composed_dates_on_main.cache_clear()
             mod.remote_draft_refs.cache_clear()
     return "a failed PR lookup stays silent, leaves a line in the log, and doesn't raise out of the hook"
@@ -737,6 +751,34 @@ def test_seconds_left_raises_once_the_budget_is_spent() -> str:
         raise AssertionError("a spent budget must raise")
     finally:
         mod.HOOK_STARTED = orig
+
+
+def test_late_commits_earlier_tests_cannot_spend_the_budget() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-02", LATE_AFTER)
+        orig = mod.HOOK_STARTED
+        mod.HOOK_STARTED = time.monotonic() - mod.HOOK_BUDGET_SECONDS
+        try:
+            found = _resurrected_against(clone, {"2098-01-02": LATE_MERGED_AT})
+        finally:
+            mod.HOOK_STARTED = orig
+        assert found == ["draft/2098-01-02"], found
+    return "each check gets its own clock, so the time earlier tests took can't turn a finding into []"
+
+
+def test_late_commits_spent_budget_fails_the_helper() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = _late_fixture(tmp)
+        _late_branch(clone, "draft/2098-01-02", LATE_BEFORE)
+        merged = {"2098-01-02": LATE_MERGED_AT}
+        assert _resurrected_against(clone, merged) == []
+        try:
+            found = _resurrected_against(clone, merged, started=time.monotonic() - mod.HOOK_BUDGET_SECONDS)
+        except AssertionError as exc:
+            assert "budget" in str(exc), exc
+            return "an expected [] passes with time left, and raises rather than passing once the budget is spent"
+    raise AssertionError(f"a spent budget returned {found} instead of raising")
 
 
 def test_late_commits_message_says_who_acts_and_gives_each_command() -> str:
@@ -875,6 +917,8 @@ def main() -> int:
         ("late commits: a late parent under an older child is found", test_late_commits_with_an_older_child_are_still_found),
         ("late commits: a branch name with shell characters is never reported", test_late_commits_branch_with_shell_characters_is_never_reported),
         ("late commits: a spent time budget stops the check", test_seconds_left_raises_once_the_budget_is_spent),
+        ("late commits: earlier tests can't spend a later test's budget", test_late_commits_earlier_tests_cannot_spend_the_budget),
+        ("late commits: a spent budget fails the helper instead of reading as no findings", test_late_commits_spent_budget_fails_the_helper),
         ("late commits: the message says who acts and gives each command", test_late_commits_message_says_who_acts_and_gives_each_command),
         ("stale-recovery (real repo): today's branch never touched", test_stale_recovery_noop_on_todays_branch),
         ("stale-recovery (real repo): dirty tree -> checkout does NOT happen", test_stale_recovery_noop_when_dirty),
