@@ -120,7 +120,7 @@ invocation instead.
 | `pre-tool-use-canonical-mutate-guard.py` | PreToolUse (Bash/PowerShell) | Blocks git-mutating commands (checkout, commit, merge, reset, `gh pr merge --delete-branch`, …) run against a canonical (non-worktree) checkout. |
 | `pre-bash-drift-check.py` | PreToolUse (Bash), every call | A fourth, elapsed-time-gated cwd/branch drift checkpoint alongside the three above, covering non-commit/merge Bash calls. |
 | `pr-merge-reminder.py` | PostToolUse (Bash/PowerShell), `gh pr create`/`merge`/`git push` | Reminds Claude to write a journal stub (and the open-PR shard, for creates), scoped to the actual target repo. |
-| `post-merge-tile-checkpoint.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Blocking reminder to spawn follow-up tiles via `spawn_task` immediately after a merge. |
+| `post-merge-tile-checkpoint.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Blocking reminder to spawn follow-up tiles via `start_session` immediately after a merge. |
 | `post-pr-merge-pull.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Fast-forwards local `main`; parks a worktree left squatting `main` by `--delete-branch`. |
 | `post-pr-merge-reclaim.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Spawns detached `node_modules`/`.turbo` reclamation from now-idle merged worktrees. |
 | `post-tool-use-cwd-track.py` | PostToolUse (Bash/PowerShell), every call | Records `{repo_root, branch, cwd}` to a per-session state file, feeding the four drift checks above. |

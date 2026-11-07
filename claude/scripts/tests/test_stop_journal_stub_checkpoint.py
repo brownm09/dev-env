@@ -248,10 +248,11 @@ def test_substantive_ignores_bookkeeping_delegation_and_text():
         _asst_tool("t2", "TaskUpdate", {"taskId": "1", "status": "in_progress"}),
         _asst_tool("t3", "Agent", {"prompt": "investigate the flaky test", "subagent_type": "Explore"}),
         _asst_tool("t4", "mcp__ccd_session__spawn_task", {"title": "x"}),
+        _asst_tool("t5", "mcp__ccd_session__start_session", {"title": "x"}),
         _asst_text("some analysis text"),
     ]
     assert hook.substantive_tool_count(recs) == 0
-    return "substantive_tool_count: TaskCreate/TaskUpdate/Agent/spawn_task/text not counted -> 0"
+    return "substantive_tool_count: TaskCreate/TaskUpdate/Agent/spawn_task/start_session/text not counted -> 0"
 
 
 def test_substantive_parallel_in_one_record():

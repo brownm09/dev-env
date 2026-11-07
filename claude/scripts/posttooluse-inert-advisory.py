@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook — reliable-event safety net for inert PostToolUse hooks.
 
-In sessions launched as background tasks / via `spawn_task` (SDK-driven), *all*
+In sessions launched as background tasks (SDK-driven), *all*
 PostToolUse settings hooks are silently inert — no project-board add after
 `gh issue create`/`gh pr create`, no Done-move / usage snapshot after
 `gh pr merge` — while UserPromptSubmit, PreToolUse, and Stop hooks from the same
