@@ -88,6 +88,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from _last_run import commit as commit_state, pending_path  # noqa: E402
+
 _MODULE_PATH = SCRIPTS_DIR / "prune-merged-worktrees.py"
 _spec = importlib.util.spec_from_file_location("prune_merged_worktrees", _MODULE_PATH)
 prune = importlib.util.module_from_spec(_spec)
@@ -838,9 +840,10 @@ def _run_scan(dispatch) -> tuple:
     """Run the real main() over repos A and B. Returns (stdout, exit code, what was raised)."""
     out = io.StringIO()
     code = 0
+    # --full: no last-run state, so the real state file is never read or written.
     with unittest.mock.patch("subprocess.run", side_effect=dispatch), \
             unittest.mock.patch.object(prune, "find_git_repos", return_value=[_REPO_A, _REPO_B]), \
-            unittest.mock.patch.object(sys, "argv", ["prune", "--scan-dir", "/FAKE_SCAN"]), \
+            unittest.mock.patch.object(sys, "argv", ["prune", "--scan-dir", "/FAKE_SCAN", "--full"]), \
             redirect_stdout(out), redirect_stderr(io.StringIO()):
         try:
             prune.main()
@@ -908,6 +911,8 @@ def test_scan_continues_after_unexpected_error() -> str:
             raise AssertionError(f"{exception!r}: repo B was never reached\n{out}")
         if f"error in 1 repo(s): {_REPO_A}" not in out:
             raise AssertionError(f"{exception!r}: summary does not name the errored repo\n{out}")
+        if " errors=1" not in out.splitlines()[-1]:
+            raise AssertionError(f"{exception!r}: the RESULT line should carry errors=1\n{out}")
         if code != 1:
             raise AssertionError(f"{exception!r}: exit {code}, expected 1")
     return "repo B reached after a TimeoutExpired or OSError; summary names repo A; exit 1"
@@ -1049,6 +1054,206 @@ def test_real_default_branch_worktree_under_detached_primary_is_kept() -> str:
     return "main and master each keep their worktree; the merged claude/* worktree beside it still goes"
 
 
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
+# The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
+# network, because is_merged() skips its `gh` fallback for a commit with no branch name.
+
+def _scan(repo: ThrowawayRepo, state: Path, *flags: str, commit: bool = True):
+    """One --scan-dir run, then the routine's commit step unless commit=False."""
+    r = repo.run_script(_MODULE_PATH, "--scan-dir", str(repo.root), "--include-named",
+                        "--state-file", str(state), *flags)
+    if r.returncode != 0:
+        raise AssertionError(f"scan: exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    if commit and "--dry-run" not in flags and "--full" not in flags:
+        error = commit_state(state)
+        if error:
+            raise AssertionError(error)
+    return r.stdout
+
+
+def _result_field(stdout: str, name: str) -> str:
+    lines = [line for line in stdout.splitlines() if line.startswith("RESULT: ")]
+    if not lines:
+        raise AssertionError(f"no RESULT line\n{stdout}")
+    fields = dict(part.split("=", 1) for part in lines[-1].split()[1:])
+    return fields[name]
+
+
+def _add_unmerged_worktree(repo: ThrowawayRepo, name: str) -> str:
+    path = repo.primary / ".claude" / "worktrees" / name
+    repo._git(repo.primary, "worktree", "add", "--detach", str(path))
+    (path / "unmerged.txt").write_text(name, encoding="utf-8")
+    repo._git(path, "add", "unmerged.txt")
+    repo._git(path, "commit", "-m", name)
+    return str(path.resolve())
+
+
+def _break_fetch(repo: ThrowawayRepo) -> None:
+    repo._git(repo.root, "--git-dir", str(repo.origin), "update-ref", "-d", "refs/heads/main")
+
+
+def test_scan_second_run_lists_nothing_then_only_the_new_entries() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+        _break_fetch(repo)
+
+        first = _scan(repo, state)
+        if f"skipped {old}" not in first or "WARNING: fetch failed" not in first:
+            raise AssertionError(f"first run should list both\n{first}")
+        if _result_field(first, "baseline") != "true" or _result_field(first, "new_fetch_failed") != "1":
+            raise AssertionError(f"first run RESULT wrong\n{first}")
+
+        second = _scan(repo, state)
+        if str(repo.primary) in second:
+            raise AssertionError(f"second run still lists this repo's entries\n{second}")
+        checks = {"baseline": "false", "new_skipped": "0", "new_fetch_failed": "0", "fetch_failed": "1"}
+        for name, want in checks.items():
+            if _result_field(second, name) != want:
+                raise AssertionError(f"second run: {name} should be {want}\n{second}")
+        if _result_field(second, "skipped") != _result_field(first, "skipped"):
+            raise AssertionError(f"the skipped total should stay in RESULT\n{first}\n{second}")
+
+        new = _add_unmerged_worktree(repo, "new")
+        third = _scan(repo, state)
+        if f"skipped {new}" not in third or old in third:
+            raise AssertionError(f"third run should list only the new worktree\n{third}")
+        if _result_field(third, "new_skipped") != "1":
+            raise AssertionError(f"third run RESULT wrong\n{third}")
+
+        repo._git(repo.primary, "push", "origin", "main")
+        fourth = _scan(repo, state)
+        if f"fetch works again: {repo.primary}" not in fourth or "WARNING" in fourth:
+            raise AssertionError(f"a fetch that recovers should be reported once\n{fourth}")
+    return "repeat run lists no skip or fetch failure and keeps RESULT; only a new entry is listed"
+
+
+def test_scan_missing_or_unreadable_state_gives_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        _scan(repo, state)
+        if kept in _scan(repo, state):
+            raise AssertionError("control: the state file should silence the list")
+
+        state.write_text("{not json", encoding="utf-8")
+        out = _scan(repo, state)
+        if "no usable state" not in out or f"skipped {kept}" not in out or "Done" not in out:
+            raise AssertionError(f"an unreadable state file should give the full report\n{out}")
+
+        state.unlink()
+        out = _scan(repo, state)
+        if f"skipped {kept}" not in out or not state.exists():
+            raise AssertionError(f"a missing state file should give the full report and be rewritten\n{out}")
+    return "an unreadable or missing state file gives the full report, and is rewritten"
+
+
+def test_scan_full_and_dry_run_leave_the_state_alone() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+
+        _scan(repo, state, "--dry-run")
+        if state.exists() or pending_path(state).exists():
+            raise AssertionError("--dry-run wrote the state file")
+        _scan(repo, state)
+        before = state.read_bytes()
+        new = _add_unmerged_worktree(repo, "new")
+
+        full = _scan(repo, state, "--full")
+        if old not in full or new not in full or "new_skipped" in full:
+            raise AssertionError(f"--full should list everything\n{full}")
+        if state.read_bytes() != before:
+            raise AssertionError("--full updated the state")
+
+        dry = _scan(repo, state, "--dry-run")
+        if new not in dry or old in dry or state.read_bytes() != before:
+            raise AssertionError(f"--dry-run should preview the change only\n{dry}")
+
+        real = _scan(repo, state)
+        if new not in real or _result_field(real, "new_skipped") != "1":
+            raise AssertionError(f"--full and --dry-run used up the next run's news\n{real}")
+    return "--full lists all and --dry-run previews, and neither uses up the next run's news"
+
+
+def test_skip_findings_ignores_passing_skips_but_keeps_their_record() -> str:
+    prior = {"/known": "not merged into origin/main"}
+    findings = prune.skip_findings(
+        [("/primary", prune.SKIP_PRIMARY_OR_CURRENT), ("/live", prune.SKIP_LIVE_SESSION),
+         ("/known", prune.SKIP_LIVE_SESSION), ("/dirty", "has uncommitted changes")],
+        prior,
+    )
+    expected = {"/known": "not merged into origin/main", "/dirty": "has uncommitted changes"}
+    if findings != expected:
+        raise AssertionError(f"got {findings}")
+    return "primary/current/live skips aren't findings; a known worktree going live keeps its entry"
+
+
+def test_single_repo_mode_keeps_the_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        for _ in range(2):
+            r = repo.run_script(_MODULE_PATH, "--include-named", "--state-file", str(state))
+            if f"skipped {kept}" not in r.stdout or "RESULT:" in r.stdout:
+                raise AssertionError(f"--repo-path changed behaviour\n{r.stdout}\n{r.stderr}")
+        if state.exists():
+            raise AssertionError("--repo-path wrote the state file")
+    return "--repo-path prints its full report every time and never touches the state"
+
+
+def test_scan_uncommitted_run_reports_again() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        new = _add_unmerged_worktree(repo, "new")
+        # The routine's push failed, so it never committed: the next run must say it again.
+        first = _scan(repo, state, commit=False)
+        second = _scan(repo, state)
+        for label, out in (("uncommitted", first), ("next", second)):
+            if f"skipped {new}" not in out or _result_field(out, "new_skipped") != "1":
+                raise AssertionError(f"{label} run should list the new worktree\n{out}")
+        if new in _scan(repo, state):
+            raise AssertionError("after a commit the worktree should no longer be listed")
+    return "a run that isn't committed is reported again next run, and is quiet once committed"
+
+
+def test_scan_unreadable_remote_is_a_finding() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        url = repo.origin.as_posix()
+        repo._git(repo.primary, "remote", "set-url", "origin", str(Path(tmp) / "elsewhere"))
+        broken = _scan(repo, state)
+        if f"SKIP {repo.primary}" not in broken or _result_field(broken, "new_remote_failed") != "1":
+            raise AssertionError(f"a remote that stops resolving should be reported\n{broken}")
+        if f"SKIP {repo.primary}" in _scan(repo, state):
+            raise AssertionError("the same remote failure was reported twice")
+        repo._git(repo.primary, "remote", "set-url", "origin", url)
+        fixed = _scan(repo, state)
+        if f"GitHub remote resolves again: {repo.primary}" not in fixed:
+            raise AssertionError(f"a fixed remote should be reported once\n{fixed}")
+    return "a GitHub remote that can't be read is reported once, and so is its recovery"
+
+
+def test_scan_unreadable_scan_dir_fails() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        not_a_dir = Path(tmp) / "file.txt"
+        not_a_dir.write_text("x", encoding="utf-8")
+        r = repo.run_script(_MODULE_PATH, "--scan-dir", str(not_a_dir),
+                            "--state-file", str(Path(tmp) / "state.json"))
+        if r.returncode != 1 or "RESULT:" not in r.stdout or "failed" not in r.stdout:
+            raise AssertionError(f"exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    return "a scan directory that can't be read exits 1 instead of reporting a clean night"
+
+
 def main() -> int:
     tests = [
         ("scan: fetch timeout -> next repo reached, reported as timed out", test_scan_continues_after_fetch_timeout),
@@ -1064,6 +1269,14 @@ def main() -> int:
         ("real repo: discovery failure still protects master", test_real_discovery_failure_still_protects_master),
         ("real repo: non-main squatter parked, default branch survives", test_real_non_main_squatter_is_parked_and_default_branch_survives),
         ("real repo: default-branch worktree under detached primary kept", test_real_default_branch_worktree_under_detached_primary_is_kept),
+        ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
+        ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
+        ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
+        ("--scan-dir uncommitted run reports again", test_scan_uncommitted_run_reports_again),
+        ("--scan-dir unreadable remote is a finding", test_scan_unreadable_remote_is_a_finding),
+        ("--scan-dir unreadable scan dir fails", test_scan_unreadable_scan_dir_fails),
+        ("skip_findings ignores passing skips, keeps their record", test_skip_findings_ignores_passing_skips_but_keeps_their_record),
+        ("--repo-path keeps the full report", test_single_repo_mode_keeps_the_full_report),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run prunes", test_cli_control_dry_run_keeps_and_plain_run_prunes),
