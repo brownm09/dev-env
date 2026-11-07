@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Remove claude/* worktrees whose branches have been merged into origin/main.
+"""Remove claude/* worktrees whose branches have been merged into the default branch.
+
+Each repo's default branch is discovered (see _default_branch.py), so "main" and "origin/main"
+below stand for that branch in a repo that names it differently (dev-env#1088). A worktree on
+the default branch is never removed, even with --include-named, because it is merged by definition.
 
 Also parks non-primary worktrees accidentally checked out on main back onto their own
 claude/<slug> branch (recreated at the worktree's current commit) — e.g. after
@@ -90,8 +94,10 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
+from _default_branch import FAILED, TIMED_OUT, fetch_default_branch
 from _last_run import STATE_DIR, LastRun
 from _repo_scan import find_git_repos
 from _worktree_liveness import git_activity_skip_reason, liveness_minutes_arg, worktree_session_is_live
@@ -181,9 +187,9 @@ def detect_gh_repo(repo: str) -> str:
     raise RuntimeError(f"Cannot parse GitHub repo from remote URL: {url!r}")
 
 
-def is_merged(branch: str, gh_repo: str, repo: str, skip_pr_fallback: bool = False) -> bool:
-    # Regular merge: commit is an ancestor of origin/main
-    r = run(["git", "merge-base", "--is-ancestor", branch, "origin/main"], cwd=repo)
+def is_merged(branch: str, gh_repo: str, repo: str, base: str, skip_pr_fallback: bool = False) -> bool:
+    # Regular merge: commit is an ancestor of origin/<base>
+    r = run(["git", "merge-base", "--is-ancestor", branch, f"origin/{base}"], cwd=repo)
     if r.returncode == 0:
         return True
     if skip_pr_fallback:
@@ -241,7 +247,10 @@ def _origin_ahead_count(branch: str, repo: str) -> "int | None":
     commit (ADR-082), never a fast-forward or matching PR head, so is_merged() would never
     fire for it.
     """
-    fetch = run(["git", "fetch", "origin", branch], cwd=repo)
+    try:
+        fetch = run(["git", "fetch", "origin", branch], cwd=repo)
+    except subprocess.TimeoutExpired:
+        return None
     if fetch.returncode != 0:
         return None
     r = run(["git", "rev-list", "--count", f"origin/{branch}..{branch}"], cwd=repo)
@@ -253,8 +262,8 @@ def _origin_ahead_count(branch: str, repo: str) -> "int | None":
 CONFIG_FILE = ".claude/hook-config.json"
 
 
-def diff_files(branch: str, repo: str) -> list[str]:
-    """Files changed on branch relative to origin/main, via git diff --name-only.
+def diff_files(branch: str, repo: str, base: str) -> list[str]:
+    """Files changed on branch relative to origin/<base>, via git diff --name-only.
 
     Uses the three-dot form (origin/main...branch, i.e. diff against the merge-base, not
     origin/main's current tip) — origin/main normally moves on while a worktree sits idle,
@@ -263,7 +272,7 @@ def diff_files(branch: str, repo: str) -> list[str]:
     empty-patterns guard already makes safe: it can only ever suppress a prune, never force
     one.
     """
-    r = run(["git", "diff", "--name-only", f"origin/main...{branch}"], cwd=repo)
+    r = run(["git", "diff", "--name-only", f"origin/{base}...{branch}"], cwd=repo)
     if r.returncode != 0:
         return []
     return [line for line in r.stdout.splitlines() if line.strip()]
@@ -342,12 +351,17 @@ def skip_findings(skipped: list[tuple[str, str]], prior: dict) -> dict:
 
 
 def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_run: bool,
-                last_run: "LastRun | None") -> str:
-    """The machine-readable last line of a --scan-dir run, which the routine reads."""
+                last_run: "LastRun | None", errors: int = 0) -> str:
+    """The machine-readable last line of a --scan-dir run, which the routine reads.
+
+    fetch_failed counts every repo whose fetch failed or timed out (dev-env#1087); errors, the
+    repos an unexpected exception stopped, appears only when there is one."""
     line = (
         f"RESULT: repos_scanned={repos} pruned={pruned} skipped={skipped} "
         f"fetch_failed={fetch_failed} dry_run={'true' if dry_run else 'false'}"
     )
+    if errors:
+        line += f" errors={errors}"
     if last_run is not None:
         line += (
             f" new_skipped={last_run.changed[SKIPPED_SECTION]}"
@@ -362,8 +376,10 @@ def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_ru
 def prune_one(
     repo: str, dry_run: bool, liveness_window_seconds: int, include_named: bool = False,
     last_run: "LastRun | None" = None,
-) -> tuple[int, int, bool]:
-    """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed).
+) -> "tuple[int, int, str | None]":
+    """Prune merged claude/* worktrees in a single repo.
+
+    Returns (pruned, skipped, fetch_problem), where fetch_problem is None, FAILED or TIMED_OUT.
 
     include_named (opt-in, default False): when True, a worktree whose branch does not start
     with BRANCH_PREFIX is no longer unconditionally skipped by the prefix guard below -- it
@@ -385,7 +401,7 @@ def prune_one(
         remote_new = last_run.record(repo, REMOTE_SECTION, {"origin": str(exc)})[0] if last_run else []
         if verbose or remote_new:
             print(f"  SKIP {repo}: {exc}")
-        return 0, 0, False
+        return 0, 0, None
     if last_run is not None and last_run.record(repo, REMOTE_SECTION, {})[1] and not verbose:
         print(f"  GitHub remote resolves again: {repo}")
 
@@ -398,23 +414,26 @@ def prune_one(
     if verbose:
         print(f"\nRepo: {gh_repo} ({repo})")
 
-    # Fetch origin/main so merge checks are accurate
-    r = run(["git", "fetch", "origin", "main"], cwd=repo)
-    fetch_failed = r.returncode != 0
+    # Fetch the default branch so merge checks are accurate
+    default_branch, fetch_problem, fetch_detail, branch_found = fetch_default_branch(repo)
+    # A worktree on any of these is the branch's real home, never pruned. When the default
+    # branch could not be found, protect both common names rather than only the guess.
+    protected_branches = {default_branch} if branch_found else {"main", "master"}
     fetch_new = fetch_back = []
     if last_run is not None:
         fetch_new, fetch_back = last_run.record(
-            repo, FETCH_SECTION, {"origin main": "failed"} if fetch_failed else {}
+            repo, FETCH_SECTION, {f"origin {default_branch}": fetch_problem} if fetch_problem else {}
         )
-    if fetch_failed and (verbose or fetch_new):
-        print(f"  WARNING: fetch failed in {repo} — merge checks may use stale origin/main: {r.stderr.strip()}")
+    if fetch_problem and (verbose or fetch_new):
+        print(f"  WARNING: fetch {fetch_problem} in {repo} — merge checks may use stale "
+              f"origin/{default_branch}: {fetch_detail}")
     if fetch_back and not verbose:
         print(f"  fetch works again: {repo}")
 
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
         print(f"  ERROR: git worktree list failed in {repo}: {result.stderr}", file=sys.stderr)
-        return 0, 0, fetch_failed
+        return 0, 0, fetch_problem
 
     worktrees = parse_worktree_porcelain(result.stdout)
     primary = primary_worktree_path(worktrees)
@@ -425,7 +444,7 @@ def prune_one(
     # A bare/detached primary can't hold a working-tree checkout of main itself, so a
     # secondary worktree on main there is the real home of main and must NOT be parked.
     # main_squatter() returns None in that case; the naive `branch == "main"` check did not.
-    squatter = main_squatter(worktrees)
+    squatter = main_squatter(worktrees, default_branch)
     squatter_path = str(Path(squatter["path"]).resolve()) if squatter else None
 
     # Every non-canonical worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
@@ -476,14 +495,14 @@ def prune_one(
             park = park_branch_for(path)
             if dry_run:
                 pruned.append(path)
-                print(f"  [dry-run] would park stale main checkout off main: {path} -> {park}")
+                print(f"  [dry-run] would park stale {default_branch} checkout off {default_branch}: {path} -> {park}")
                 continue
             r = run(["git", "-C", path, "checkout", "-b", park], cwd=repo)
             if r.returncode != 0:
-                skipped.append((path, f"park off main failed (branch {park} may already exist): {r.stderr.strip()}"))
+                skipped.append((path, f"park off {default_branch} failed (branch {park} may already exist): {r.stderr.strip()}"))
                 continue
             pruned.append(path)
-            print(f"  parked off main: {path} ({park}) — freed the main ref")
+            print(f"  parked off {default_branch}: {path} ({park}) — freed the {default_branch} ref")
             continue
 
         # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
@@ -522,6 +541,13 @@ def prune_one(
             pruned.append(path)
             continue
 
+        # Past the squatter check, a worktree on the default branch is that branch's real home
+        # (the primary is bare or detached). It is merged by definition, so --include-named
+        # would otherwise remove it and delete the branch.
+        if branch in protected_branches:
+            skipped.append((path, f"on the default branch '{branch}'"))
+            continue
+
         if not branch.startswith(BRANCH_PREFIX) and not include_named:
             skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
             continue
@@ -536,12 +562,12 @@ def prune_one(
         if is_detached:
             merge_ref = resolve_detached_head(path, repo)
             if merge_ref is None:
-                skipped.append((path, "not merged into origin/main (detached HEAD, commit unresolvable)"))
+                skipped.append((path, f"not merged into origin/{default_branch} (detached HEAD, commit unresolvable)"))
                 continue
 
-        if not is_merged(merge_ref, gh_repo, repo, skip_pr_fallback=is_detached):
-            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(merge_ref, repo), ephemeral_patterns)):
-                skipped.append((path, "not merged into origin/main"))
+        if not is_merged(merge_ref, gh_repo, repo, default_branch, skip_pr_fallback=is_detached):
+            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(merge_ref, repo, default_branch), ephemeral_patterns)):
+                skipped.append((path, f"not merged into origin/{default_branch}"))
                 continue
 
         if is_dirty(path):
@@ -582,7 +608,7 @@ def prune_one(
         )
 
     if verbose:
-        suffix = " [fetch failed — results may use stale origin/main]" if fetch_failed else ""
+        suffix = f" [fetch {fetch_problem} — results may use stale origin/{default_branch}]" if fetch_problem else ""
         print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}{suffix}")
         if skipped:
             for path, reason in skipped:
@@ -594,7 +620,7 @@ def prune_one(
         for path in skip_gone:
             print(f"    no longer skipped: {path}")
 
-    return len(pruned), len(skipped), fetch_failed
+    return len(pruned), len(skipped), fetch_problem
 
 
 def main() -> None:
@@ -621,22 +647,40 @@ def main() -> None:
             sys.exit(0)
         print(f"Found {len(repos)} repos under {scan_dir}")
         total_pruned = total_skipped = 0
-        fetch_failed_repos: list[str] = []
+        fetch_problem_repos: dict[str, list[str]] = {FAILED: [], TIMED_OUT: []}
+        error_repos: list[str] = []
         for repo in repos:
-            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds, include_named, last_run)
+            # Any other git call can also time out (`git status` on a large worktree, `gh pr
+            # list`): one repo must never stop the sweep of the rest (dev-env#1087).
+            try:
+                p, s, fetch_problem = prune_one(repo, dry_run, liveness_window_seconds, include_named, last_run)
+            except Exception as exc:  # noqa: BLE001
+                # Lines already printed for this repo record what it changed; its counts are lost.
+                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its counts are not in the total")
+                traceback.print_exc()
+                error_repos.append(repo)
+                continue
             total_pruned += p
             total_skipped += s
-            if ff:
-                fetch_failed_repos.append(repo)
+            if fetch_problem:
+                fetch_problem_repos[fetch_problem].append(repo)
         summary = f"\nTotal — pruned {total_pruned}, skipped {total_skipped}"
-        if fetch_failed_repos:
-            summary += f", fetch failed in {len(fetch_failed_repos)} repo(s)"
-            if last_run is None or last_run.is_baseline:
-                summary += f": {', '.join(fetch_failed_repos)}"
+        list_names = last_run is None or last_run.is_baseline
+        for problem, problem_repos in fetch_problem_repos.items():
+            if problem_repos:
+                summary += f", fetch {problem} in {len(problem_repos)} repo(s)"
+                if list_names:
+                    summary += f": {', '.join(problem_repos)}"
+        if error_repos:
+            summary += f", error in {len(error_repos)} repo(s): {', '.join(error_repos)}"
         print(summary)
         if last_run is not None and not dry_run:
             last_run.save()
-        print(scan_result(len(repos), total_pruned, total_skipped, len(fetch_failed_repos), dry_run, last_run))
+        fetch_problems = sum(len(r) for r in fetch_problem_repos.values())
+        print(scan_result(len(repos), total_pruned, total_skipped, fetch_problems, dry_run, last_run,
+                          errors=len(error_repos)))
+        if error_repos:
+            sys.exit(1)
     else:
         repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
         prune_one(repo, dry_run, liveness_window_seconds, include_named)

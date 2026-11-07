@@ -910,6 +910,14 @@ For a one-line navigational map of the older tests, see
     at parser level only, because a regression that ignored `--repo-pat` or an empty `--repo-path` would
     go live on the real repo.
 
+    Also required when changing `claude/scripts/_default_branch.py`. In `--scan-dir` mode, a `git fetch`
+    or `ls-remote` that raises `subprocess.TimeoutExpired`, and any other exception from one repo, must
+    still reach the next repo, with the summary naming timed-out, failed and errored repos separately
+    ([dev-env#1087](https://github.com/brownm09/dev-env/issues/1087)). Throwaway repos with a non-`main`
+    default branch cover `origin/HEAD` unset and set, discovery failure, a squatter on that branch, and a
+    worktree on the default branch under a detached primary, which `--include-named` must not remove
+    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)).
+
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
     ```
@@ -1092,7 +1100,9 @@ For a one-line navigational map of the older tests, see
     py -3 claude/scripts/tests/test_reconcile_project_board.py
     ```
 
-30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py`.
+30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`.
+    Also covers a throwaway repo with a non-`main` default branch, and a `--scan-dir` run reaching the
+    next repo after a fetch timeout or unexpected error.
     Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
     `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace

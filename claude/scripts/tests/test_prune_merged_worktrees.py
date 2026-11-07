@@ -71,9 +71,11 @@ Exit 0 = all pass.
 """
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
@@ -128,6 +130,8 @@ def _dispatch(args, **_kwargs):
     """Route subprocess.run calls to canned responses; raise TimeoutExpired for worktree remove."""
     if args[1:2] == ["remote"]:              # git remote get-url origin
         return _ok("git@github.com:brownm09/dev-env.git\n")
+    if args[1:2] == ["symbolic-ref"]:        # default-branch discovery
+        return _ok("refs/remotes/origin/main\n")
     if args[1:3] == ["fetch", "origin"]:     # git fetch
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
@@ -147,6 +151,8 @@ def _dispatch_named(args, **_kwargs):
     """
     if args[1:2] == ["remote"]:              # git remote get-url origin
         return _ok("git@github.com:brownm09/dev-env.git\n")
+    if args[1:2] == ["symbolic-ref"]:        # default-branch discovery
+        return _ok("refs/remotes/origin/main\n")
     if args[1:3] == ["fetch", "origin"]:     # git fetch
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
@@ -240,6 +246,8 @@ def _make_dispatch_draft_squat(remove_result=None, remove_exception=None):
         calls.append(list(args))
         if args[1:2] == ["remote"]:                    # git remote get-url origin
             return _ok("git@github.com:brownm09/engineering-journal.git\n")
+        if args[1:2] == ["symbolic-ref"]:               # default-branch discovery
+            return _ok("refs/remotes/origin/main\n")
         if args[1:3] == ["fetch", "origin"]:            # git fetch origin main, AND
             return _ok()                                # _origin_ahead_count's git fetch origin <branch>
         if args[1:3] == ["worktree", "list"]:           # git worktree list --porcelain
@@ -408,6 +416,8 @@ def _make_dispatch_detached(merge_base_ok: bool, rev_parse_ok: bool = True):
         cwd = kwargs.get("cwd")
         if args[1:2] == ["remote"]:                # git remote get-url origin
             return _ok("git@github.com:brownm09/dev-env.git\n")
+        if args[1:2] == ["symbolic-ref"]:           # default-branch discovery
+            return _ok("refs/remotes/origin/main\n")
         if args[1:3] == ["fetch", "origin"]:        # git fetch origin main
             return _ok()
         if args[1:3] == ["worktree", "list"]:       # git worktree list --porcelain
@@ -797,6 +807,253 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
     return "abbreviations, empty paths and bad liveness windows exit 2"
 
 
+# --- dev-env#1087: one repo's hung fetch or unexpected error must not end a --scan-dir run ---
+
+_REPO_A = str(Path("/FAKE_SCAN_REPO_A").resolve())
+_REPO_B = str(Path("/FAKE_SCAN_REPO_B").resolve())
+
+
+def _make_scan_dispatch(fail_args: list, exception: Exception, origin_head: bool = True):
+    """subprocess.run stand-in: `exception` for repo A's git command starting with fail_args."""
+    seen_cwds = []
+
+    def dispatch(args, cwd=None, **_kwargs):
+        seen_cwds.append(cwd)
+        if cwd == _REPO_A and args[1:1 + len(fail_args)] == fail_args:
+            raise exception
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:owner/repo.git\n")
+        if args[1:2] == ["symbolic-ref"]:
+            if origin_head:
+                return _ok("refs/remotes/origin/main\n")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        if args[1:2] == ["ls-remote"]:
+            return _ok("ref: refs/heads/main\tHEAD\nabc123\tHEAD\n")
+        if args[1:3] == ["worktree", "list"]:
+            return _ok("worktree /FAKE_PRIMARY\nHEAD abc\nbranch refs/heads/main\n\n")
+        return _ok()
+
+    return dispatch, seen_cwds
+
+
+def _run_scan(dispatch) -> tuple:
+    """Run the real main() over repos A and B. Returns (stdout, exit code, what was raised)."""
+    out = io.StringIO()
+    code = 0
+    # --full: no last-run state, so the real state file is never read or written.
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch), \
+            unittest.mock.patch.object(prune, "find_git_repos", return_value=[_REPO_A, _REPO_B]), \
+            unittest.mock.patch.object(sys, "argv", ["prune", "--scan-dir", "/FAKE_SCAN", "--full"]), \
+            redirect_stdout(out), redirect_stderr(io.StringIO()):
+        try:
+            prune.main()
+        except SystemExit as exc:
+            code = exc.code
+    return out.getvalue(), code
+
+
+def _timeout(args: list) -> subprocess.TimeoutExpired:
+    return subprocess.TimeoutExpired(cmd=["git", *args], timeout=30)
+
+
+def test_scan_continues_after_fetch_timeout() -> str:
+    """Known-bad reference: this exact TimeoutExpired used to end the run at repo A."""
+    dispatch, seen = _make_scan_dispatch(["fetch"], _timeout(["fetch"]))
+    out, code = _run_scan(dispatch)
+    if _REPO_B not in seen:
+        raise AssertionError(f"repo B was never reached\n{out}")
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out:
+        raise AssertionError(f"summary does not name the timed-out repo\n{out}")
+    if "fetch failed in" in out:
+        raise AssertionError(f"a timeout was folded into the failed count\n{out}")
+    if code:
+        raise AssertionError(f"exit {code}: a timed-out fetch stays a reported, non-fatal result")
+    return "repo B reached; summary reports repo A under 'fetch timed out'; exit 0"
+
+
+def test_scan_continues_after_discovery_timeout() -> str:
+    """origin/HEAD unset and the ls-remote fallback hangs: the same path, with no second wait."""
+    dispatch, seen = _make_scan_dispatch(["ls-remote"], _timeout(["ls-remote"]), origin_head=False)
+    out, _code = _run_scan(dispatch)
+    if _REPO_B not in seen:
+        raise AssertionError(f"repo B was never reached\n{out}")
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out:
+        raise AssertionError(f"summary does not name the timed-out repo\n{out}")
+    return "repo B reached; a hung ls-remote is reported as a timed-out fetch"
+
+
+def test_scan_reports_failed_and_timed_out_separately() -> str:
+    def dispatch(args, cwd=None, **_kwargs):
+        if args[1:2] == ["fetch"]:
+            if cwd == _REPO_A:
+                raise _timeout(["fetch"])
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: nope")
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:owner/repo.git\n")
+        if args[1:2] == ["symbolic-ref"]:
+            return _ok("refs/remotes/origin/main\n")
+        if args[1:3] == ["worktree", "list"]:
+            return _ok("worktree /FAKE_PRIMARY\nHEAD abc\nbranch refs/heads/main\n\n")
+        return _ok()
+
+    out, _code = _run_scan(dispatch)
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out or f"fetch failed in 1 repo(s): {_REPO_B}" not in out:
+        raise AssertionError(f"each repo should be under its own label\n{out}")
+    return "timed-out and failed repos each listed under their own label"
+
+
+def test_scan_continues_after_unexpected_error() -> str:
+    """Any other exception from one repo: the next repo still runs, and the exit code says so."""
+    for exception in (_timeout(["worktree", "list"]), OSError("boom")):
+        dispatch, seen = _make_scan_dispatch(["worktree", "list"], exception)
+        out, code = _run_scan(dispatch)
+        if _REPO_B not in seen:
+            raise AssertionError(f"{exception!r}: repo B was never reached\n{out}")
+        if f"error in 1 repo(s): {_REPO_A}" not in out:
+            raise AssertionError(f"{exception!r}: summary does not name the errored repo\n{out}")
+        if " errors=1" not in out.splitlines()[-1]:
+            raise AssertionError(f"{exception!r}: the RESULT line should carry errors=1\n{out}")
+        if code != 1:
+            raise AssertionError(f"{exception!r}: exit {code}, expected 1")
+    return "repo B reached after a TimeoutExpired or OSError; summary names repo A; exit 1"
+
+
+def test_draft_squat_fetch_timeout_counts_as_not_pushed() -> str:
+    """_origin_ahead_count has its own fetch: a hang there means 'not provably pushed'."""
+    with unittest.mock.patch("subprocess.run", side_effect=_timeout(["fetch"])):
+        result = prune._origin_ahead_count("draft/2026-01-01", "/FAKE_REPO")
+    if result is not None:
+        raise AssertionError(f"expected None, got {result!r}")
+    return "a timed-out fetch returns None, the conservative park-only answer"
+
+
+# --- dev-env#1088: discover the default branch instead of assuming main ---------------------
+
+def _run_aged(repo: ThrowawayRepo, *args: str) -> subprocess.CompletedProcess:
+    """Run the script with every worktree's git state a week old, past the recent-activity guard."""
+    stamp = time.time() - 7 * 24 * 60 * 60
+    for admin in (repo.primary / ".git" / "worktrees").iterdir():
+        for path in (admin, *admin.iterdir()):
+            os.utime(path, (stamp, stamp))
+    return repo.run_script(_MODULE_PATH, *args)
+
+
+def test_real_non_main_with_origin_head_unset_is_fetched_and_pruned() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would remove" not in r.stdout:
+            raise AssertionError(f"--dry-run should fetch master and see a merged worktree\n{r.stdout}")
+        r = _run_aged(repo)
+        if repo.worktree.exists() or repo.branch_exists():
+            raise AssertionError(f"plain run should prune\n{r.stdout}\n{r.stderr}")
+    return "origin/HEAD unset, ls-remote finds master, the worktree is merged into origin/master and pruned"
+
+
+def test_real_origin_head_is_believed_without_asking_the_remote() -> str:
+    """origin/HEAD set: the remote is unreachable, yet the fetch names the local answer."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="trunk")
+        repo.set_origin_head("trunk")
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" not in r.stdout or "origin/trunk" not in r.stdout:
+            raise AssertionError(f"the warning should name origin/trunk\n{r.stdout}")
+        if "could not find" in r.stdout:
+            raise AssertionError(f"discovery should not have needed the remote\n{r.stdout}")
+    return "with origin/HEAD set, discovery stays local and the fetch failure names origin/trunk"
+
+
+def test_real_hostile_branch_name_is_not_a_fetch_option() -> str:
+    """Known-bad: `git fetch origin --upload-pack=echo` runs echo, and the protocol then breaks."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        hostile = "refs/heads/--upload-pack=echo"
+        repo._git(repo.origin, "update-ref", hostile, "main")
+        repo._git(repo.origin, "symbolic-ref", "HEAD", hostile)
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "protocol error" in r.stdout:
+            raise AssertionError(f"the branch name was read as an option\n{r.stdout}")
+        if "would remove" not in r.stdout:
+            raise AssertionError(f"the branch should be fetched as a ref and compared against\n{r.stdout}")
+    return "a default branch named --upload-pack=echo is fetched as refs/heads/..., not run"
+
+
+def test_real_stale_origin_head_asks_the_remote() -> str:
+    """origin/HEAD still names a branch the remote renamed: fetch fails, the remote is asked."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.set_origin_head("renamed-away")
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would remove" not in r.stdout:
+            raise AssertionError(f"should fall back to the remote's master\n{r.stdout}")
+    return "a stale origin/HEAD falls back to ls-remote, fetches master and sees the merged worktree"
+
+
+def test_real_discovery_failure_still_protects_master() -> str:
+    """Branch unknown: the fallback guess is main, but a worktree on master is still protected."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.git("checkout", "--detach")
+        repo.add_worktree_on_default_branch()
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run", "--include-named")
+        repo.assert_targets_repo(r)
+        if "on the default branch 'master'" not in r.stdout:
+            raise AssertionError(f"the master worktree should be skipped as the default branch\n{r.stdout}")
+    return "with discovery failed, a worktree on master is skipped as a default branch"
+
+
+def test_real_discovery_failure_lands_in_fetch_failed() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if r.returncode != 0 or "could not find" not in r.stdout or "fetch failed" not in r.stdout:
+            raise AssertionError(f"exit {r.returncode}, should report and carry on\n{r.stdout}\n{r.stderr}")
+    return "origin/HEAD unset and remote gone: reported as fetch failed, exit 0"
+
+
+def test_real_non_main_squatter_is_parked_and_default_branch_survives() -> str:
+    """Primary off master, a worktree holding master: parked, even with --include-named."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.git("checkout", "-b", "elsewhere")
+        squat = repo.add_worktree_on_default_branch()
+        r = _run_aged(repo, "--dry-run", "--include-named")
+        repo.assert_targets_repo(r)
+        r = _run_aged(repo, "--include-named")
+        if not squat.exists() or not repo.branch_exists("master"):
+            raise AssertionError(f"master or its worktree was removed\n{r.stdout}\n{r.stderr}")
+        if repo.current_branch(squat) == "master":
+            raise AssertionError(f"the squatter was not parked off master\n{r.stdout}")
+    return "the worktree moved to its own branch; master and the worktree both survive"
+
+
+def test_real_default_branch_worktree_under_detached_primary_is_kept() -> str:
+    """Known-bad: merged by definition, so --include-named would delete the default branch."""
+    for default_branch in ("main", "master"):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp), default_branch=default_branch)
+            repo.git("checkout", "--detach")
+            home = repo.add_worktree_on_default_branch()
+            r = _run_aged(repo, "--dry-run", "--include-named")
+            repo.assert_targets_repo(r)
+            r = _run_aged(repo, "--include-named")
+            if not home.exists() or not repo.branch_exists(default_branch):
+                raise AssertionError(f"{default_branch} or its worktree was removed\n{r.stdout}\n{r.stderr}")
+            if "default branch" not in r.stdout:
+                raise AssertionError(f"{default_branch}: no skip reason\n{r.stdout}")
+            if repo.worktree.exists():
+                raise AssertionError(f"control: the merged worktree should still go\n{r.stdout}")
+    return "main and master each keep their worktree; the merged claude/* worktree beside it still goes"
+
+
 # --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
 # The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
 # network, because is_merged() skips its `gh` fallback for a commit with no branch name.
@@ -999,6 +1256,19 @@ def test_scan_unreadable_scan_dir_fails() -> str:
 
 def main() -> int:
     tests = [
+        ("scan: fetch timeout -> next repo reached, reported as timed out", test_scan_continues_after_fetch_timeout),
+        ("scan: discovery timeout -> next repo reached, reported as timed out", test_scan_continues_after_discovery_timeout),
+        ("scan: failed and timed-out fetches listed separately", test_scan_reports_failed_and_timed_out_separately),
+        ("scan: unexpected error -> next repo reached, named, exit 1", test_scan_continues_after_unexpected_error),
+        ("draft squat: fetch timeout -> not provably pushed", test_draft_squat_fetch_timeout_counts_as_not_pushed),
+        ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),
+        ("real repo: origin/HEAD set -> believed without the remote", test_real_origin_head_is_believed_without_asking_the_remote),
+        ("real repo: discovery failure -> fetch failed, run carries on", test_real_discovery_failure_lands_in_fetch_failed),
+        ("real repo: hostile branch name is not a fetch option", test_real_hostile_branch_name_is_not_a_fetch_option),
+        ("real repo: stale origin/HEAD -> asks the remote", test_real_stale_origin_head_asks_the_remote),
+        ("real repo: discovery failure still protects master", test_real_discovery_failure_still_protects_master),
+        ("real repo: non-main squatter parked, default branch survives", test_real_non_main_squatter_is_parked_and_default_branch_survives),
+        ("real repo: default-branch worktree under detached primary kept", test_real_default_branch_worktree_under_detached_primary_is_kept),
         ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
         ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
         ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
