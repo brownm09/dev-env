@@ -126,7 +126,7 @@ sessions had created minutes earlier.
 its own git state written within the same `--liveness-window-min` window (24h). The check sits right
 after the transcript check, so it also spares a recently used worktree from parking. Unlike the transcript
 check, it fails toward keeping the worktree: one that exists but whose state can't be read may be in use.
-`reclaim-worktree-disk.py` is unchanged.
+`reclaim-worktree-disk.py` doesn't use the new guard: stripping `node_modules` is self-healing, as above.
 
 **Measured property.** The newest mtime among `index`, `HEAD`, `FETCH_HEAD` and `ORIG_HEAD` in the
 worktree's admin folder, found through its `.git` file.
@@ -147,7 +147,7 @@ the preview's end (23:51 on 2026-11-06). 3 were gone by then, leaving 96.
 |---|-------|-------|-----------------------------------|----------------|
 | 1 | Known bad, in use: `issue-dup-retrieval` | 1 | 0.2h | Skipped |
 | 2 | Known bad, in use: `fix-prune-unknown-flags`, `issue-dup-rerun-1282` | 2 | Under 0.2h, from `HEAD` (their other files were rewritten after the preview) | Skipped |
-| 3 | Created minutes before the preview and used after it: `1309-testing-index-merge` | 1 | About 0.1h, from its `.git` file, because its four signal files were rewritten after the preview | Skipped |
+| 3 | Created minutes before the preview and used after it: `1309-testing-index-merge` | 1 | About 0.1h at most. Its four signal files were rewritten after the preview, so this is inferred: its `.git` file shows it was created 0.1h before the preview, and `git worktree add` writes `index` and `HEAD` at creation, so at the preview they were no older | Skipped |
 | 4 | Known good: pull request merged over 7 days before the preview | 17 | Youngest is 169.5h | 17 of 17 removable |
 | 5 | Pull request merged over 24h before the preview | 50 (includes row 4) | | 49 of 50 removable |
 | 6 | Written after the preview with no earlier value left to read | 3 | Unknown | Not counted |
@@ -172,9 +172,8 @@ simply go a day later.
 
 **A dry run must not renew the signal.** A plain `git status` can rewrite the index, as the probe showed,
 and that made a dry run followed by a real run skip the worktree. `is_dirty()` in this script now uses
-`git --no-optional-locks`. `reclaim-worktree-disk.py` still runs a plain `git status` on each worktree.
-That only rewrites the index when a tracked file's cached stat data is stale, and old merged worktrees kept
-indexes hundreds of hours old on this machine, so it hasn't kept them alive here.
+`git --no-optional-locks`, and so does `reclaim-worktree-disk.py`'s, which runs on the same worktrees every
+6 hours.
 
 **A zero-commit branch still counts as merged.** This repeats the decision above, now with data: 7 of the
 worktrees are at 0 commits ahead with no merged pull request and were idle at least 27.9h at the preview.

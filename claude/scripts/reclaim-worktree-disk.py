@@ -168,7 +168,9 @@ def commits_ahead(branch: str, repo: str) -> int | None:
 def is_dirty(path: str) -> bool:
     if not Path(path).exists():
         return True
-    r = run(["git", "status", "--porcelain"], cwd=path)
+    # --no-optional-locks: a plain status can rewrite the index, which the prune reads as recent
+    # activity in the worktree (ADR-051 Amendment 1).
+    r = run(["git", "--no-optional-locks", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
 
 

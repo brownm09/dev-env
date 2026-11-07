@@ -462,18 +462,22 @@ def test_detached_head_unmerged_commit_skipped() -> str:
     actually skipped for a resolved SHA (skip_pr_fallback=True): the dispatch's ["pr", "list"]
     branch would return a non-empty match here if it were ever called, so a pass here means
     is_merged() genuinely never issued that call for the detached path."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (detached commit is not merged), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + not-merged detached), got {skipped_count}"
+    assert ": not merged into origin/main\n" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned, gh pr list fallback skipped"
 
 
@@ -481,18 +485,22 @@ def test_detached_head_rev_parse_failure_skipped() -> str:
     """When the detached worktree's own `git rev-parse HEAD` itself fails (e.g. a corrupted
     worktree), the fix must fail safe -- skip with a distinct reason -- rather than crash or
     silently fall through to a misleading generic message (dev-env#979)."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True, rev_parse_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (commit unresolvable), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + unresolvable), got {skipped_count}"
+    assert "commit unresolvable" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, rev-parse HEAD itself fails: fails safe (skipped, reason distinct), no crash"
 
 
