@@ -81,7 +81,7 @@ This is a workflow rule other CLAUDE.md files reference, so it is recorded as an
 
 ## Amendment (2026-11-06) — Read-back from a desktop session doesn't prove an `HKCU` write
 
-Rule 4 assumed a read sees what the rest of the system sees. From a Claude desktop session it doesn't for `HKCU`: the app is packaged, [Windows copies its `HKCU` writes to a private per-app location](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes), and processes under it inherit that. A session's read-back therefore passes for a change Windows never received, which is how [win11-init-tools#107](https://github.com/brownm09/win11-init-tools/issues/107) found it. Rule 4 still stands, but for `HKCU` the read-back has to come from a process Task Scheduler started. The evidence and the route are in `claude/CLAUDE.md` → *Platform & Environment* ([dev-env#1287](https://github.com/brownm09/dev-env/issues/1287)).
+Rule 4 assumed a read sees what the rest of the system sees. From a Claude desktop session it doesn't for `HKCU`: the app is packaged, [Windows copies its `HKCU` writes to a private per-app location](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes), and a session's shells inherit that. A session's read-back therefore passes for a change Windows never received, which is how [win11-init-tools#107](https://github.com/brownm09/win11-init-tools/issues/107) found it. Rule 4 still stands, but for `HKCU` the read-back has to come from a process Task Scheduler started. The evidence and the route are in `claude/CLAUDE.md` → *Platform & Environment* ([dev-env#1287](https://github.com/brownm09/dev-env/issues/1287)).
 
 ---
 
