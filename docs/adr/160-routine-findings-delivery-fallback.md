@@ -4,7 +4,7 @@
 **Status:** Accepted
 **Closes:** [dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)
 **Tags:** routines, push-notification, remote-control, hooks, user-prompt-submit, observability
-**Related:** [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-095](095-session-boundary-summaries-and-idle-refresher.md), [ADR-098](098-dev-env-sync-advisories-to-stdout.md), [ADR-106](106-hook-liveness-heartbeat.md)
+**Related:** [ADR-027](027-userpromptsubmit-blocking-hook-conventions.md), [ADR-095](095-session-boundary-summaries-and-idle-refresher.md), [ADR-098](098-dev-env-sync-advisories-to-stdout.md), [ADR-106](106-hook-heartbeat-liveness-ledger.md)
 
 ---
 
