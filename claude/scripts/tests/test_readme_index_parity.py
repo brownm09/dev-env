@@ -147,10 +147,11 @@ SPECS = [
         label="claude/scripts/tests",
         directory="claude/scripts/tests",
         readme="claude/scripts/tests/README.md",
-        # _hook_wiring.py and _heartbeat_isolation.py are test-support infrastructure, not
-        # tests, so they are indexed in the SECOND column (with a "--" first cell) rather
-        # than as test files. Check 3 still requires each to appear somewhere in the README.
-        exemptions={"_hook_wiring.py", "_heartbeat_isolation.py"},
+        # _hook_wiring.py, _heartbeat_isolation.py and _throwaway_repo.py are test-support
+        # infrastructure, not tests, so they are indexed in the SECOND column (with a "--" first
+        # cell) rather than as test files. Check 3 still requires each to appear somewhere in
+        # the README.
+        exemptions={"_hook_wiring.py", "_heartbeat_isolation.py", "_throwaway_repo.py"},
         count_checks=[
             ("test_*.py",
              re.compile(r"(\d+) `test_\*\.py` files"),
