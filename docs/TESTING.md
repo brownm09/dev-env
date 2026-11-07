@@ -556,8 +556,10 @@ For a one-line navigational map of the older tests, see
     become `-`), the recency boundary (incl. unknown and future mtimes), exact-slug and basename-suffix
     transcript-dir resolution, recursive newest-`.jsonl` mtime (incl. `subagents/`), the live/stale/no-session
     verdicts that stop prune/reclaim from severing an active session, and the prune=24h / reclaim=6h default
-    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). The git-driven prune/reclaim loops are
-    exercised by `--dry-run` in the PR, not here.
+    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). Also pins `git_activity_skip_reason()` against
+    real throwaway worktrees: work in the worktree reads as active, while `git gc` and a fetch in the primary
+    don't, and unreadable git state keeps the worktree ([ADR-051 Amendment 1](adr/051-worktree-liveness-guard.md#amendment-1-2026-11-07-a-worktrees-own-git-state),
+    dev-env#1330). The git-driven prune/reclaim loops are exercised by `--dry-run` in the PR, not here.
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_liveness.py

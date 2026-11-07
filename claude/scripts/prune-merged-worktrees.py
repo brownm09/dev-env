@@ -58,8 +58,9 @@ Usage:
                ~/.claude/scratch/last-run/prune-merged-worktrees.json). --dry-run compares
                against it but doesn't update it.
   --liveness-window-min N
-               Skip any worktree whose Claude transcript was written within the last N
-               minutes (an active session). Defaults to 1440 (24h). See ADR-051.
+               Skip any worktree whose Claude transcript, or whose own git state (index,
+               HEAD, FETCH_HEAD, ORIG_HEAD), was written within the last N minutes.
+               Defaults to 1440 (24h). See ADR-051 and its Amendment 1.
   --include-named
                Opt-in. Off by default (zero behavior change for existing callers). When
                passed, a worktree whose branch does NOT start with claude/ is no longer
@@ -93,7 +94,7 @@ from pathlib import Path
 
 from _last_run import STATE_DIR, LastRun
 from _repo_scan import find_git_repos
-from _worktree_liveness import liveness_minutes_arg, worktree_session_is_live
+from _worktree_liveness import git_activity_skip_reason, liveness_minutes_arg, worktree_session_is_live
 from _worktree_topology import (
     DETACHED,
     DRAFT_BRANCH_RE,
@@ -153,8 +154,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                         help="target every git repo directly under DIR")
     parser.add_argument("--liveness-window-min", metavar="N", dest="liveness_window_seconds",
                         type=liveness_minutes_arg, default=LIVENESS_WINDOW_SECONDS,
-                        help="skip worktrees with a Claude transcript written in the last N minutes "
-                             f"(default: {LIVENESS_WINDOW_SECONDS // 60})")
+                        help="skip worktrees with a Claude transcript or their own git state written "
+                             f"in the last N minutes (default: {LIVENESS_WINDOW_SECONDS // 60})")
     parser.add_argument("--include-named", action="store_true",
                         help="also prune merged worktrees on branches outside claude/*")
     parser.add_argument("--full", action="store_true",
@@ -225,7 +226,9 @@ def resolve_detached_head(path: str, repo: str) -> "str | None":
 def is_dirty(path: str) -> bool:
     if not Path(path).exists():
         return True
-    r = run(["git", "status", "--porcelain"], cwd=path)
+    # --no-optional-locks: a plain status can rewrite the index, and the index's mtime is what
+    # git_activity_skip_reason reads, so a dry run would otherwise delay the next real run.
+    r = run(["git", "--no-optional-locks", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
 
 
@@ -453,6 +456,13 @@ def prune_one(
         # only ever adds a skip, never removes more than the merged/clean checks below.
         if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
             skipped.append((path, SKIP_LIVE_SESSION))
+            continue
+
+        # The transcript check above can't see a session started in another folder that works
+        # here through `git worktree add` or `git -C` (dev-env#1330, ADR-051 Amendment 1).
+        activity = git_activity_skip_reason(path, window_seconds=liveness_window_seconds)
+        if activity:
+            skipped.append((path, activity))
             continue
 
         # Non-primary worktree squatting main: park it back onto its own claude/<slug>

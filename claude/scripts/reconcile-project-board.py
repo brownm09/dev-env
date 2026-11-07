@@ -3,9 +3,10 @@
 
 Backstop for the gap ADR-053 documents: the `post-tool-use.py` PostToolUse hook
 auto-adds each newly-created issue to the configured project board and prompts for
-its required fields (Impact / Why on dev-env's board #3) — but PostToolUse hooks are
-inert in background / SDK-launched sessions, so issues filed from such
-a session are silently never added to the board, missing their Impact, Why, and the
+its required fields (Impact / Why on dev-env's board #3) — but it only runs when
+PostToolUse runs for the create call (a chain that exits non-zero runs none, and
+in the rare inert session none run at all; ADR-053's 2026-11-07 amendment), so
+issues filed that way are silently never added to the board, missing their Impact, Why, and the
 Status workflow entirely (motivating instance: dev-env #434/#435/#436, filed by the
 background memory-audit session #363).
 
