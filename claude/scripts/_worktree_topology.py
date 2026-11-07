@@ -157,8 +157,11 @@ def park_branch_for(path: "str | Path") -> str:
     return "claude/" + Path(str(path)).name
 
 
-def main_squatter(worktrees: "list[dict]") -> "dict | None":
+def main_squatter(worktrees: "list[dict]", default_branch: str = "main") -> "dict | None":
     """The first NON-canonical worktree checked out on ``main``, or ``None``.
+
+    ``default_branch`` names the branch to treat as ``main`` here, for a repo whose default
+    branch has another name (dev-env#1088).
 
     Git checks ``main`` out in at most one worktree, so if it's the canonical there's no
     squatter. A non-canonical worktree on ``main`` is an *anomalous* squatter only when the
@@ -173,11 +176,11 @@ def main_squatter(worktrees: "list[dict]") -> "dict | None":
     if canonical is None:
         return None
     cbranch = canonical["branch"]
-    if not cbranch or cbranch == "main" or cbranch == DETACHED:
+    if not cbranch or cbranch == default_branch or cbranch == DETACHED:
         return None
     canonical_path = _norm(canonical["path"])
     for wt in worktrees[1:]:
-        if wt["branch"] == "main" and _norm(wt["path"]) != canonical_path:
+        if wt["branch"] == default_branch and _norm(wt["path"]) != canonical_path:
             return wt
     return None
 

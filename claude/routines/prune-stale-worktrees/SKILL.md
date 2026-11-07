@@ -51,6 +51,8 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 **Constraints:**
 - Script uses `git branch -d` (not `-D`) and `git worktree remove` (no `--force`) — safe by default
 - A repo whose GitHub remote can't be read is skipped, and reported when that first happens (`new_remote_failed`)
+- Each repo's default branch is discovered, so `origin/main` and `main` above stand for that branch in a repo that names it differently. A worktree on the default branch is never removed
+- A fetch that timed out counts in `fetch_failed` like one that failed; the total line names them separately as `fetch failed` and `fetch timed out`. A repo stopped by an unexpected error is named under `error` and adds `errors=N` to the `RESULT:` line, and the script exits 1 after the other repos have run, so step 3 applies
 - Never remove the current session's worktree, regardless of branch name
 - With `--include-named`, a hand-named branch is held to the exact same merged/dirty/liveness bar as a `claude/*` branch — no looser check is applied (ADR-078)
 - Never remove a worktree with an active Claude session — transcript activity within 24h. This routine runs out-of-process and cannot see other sessions via cwd, so the script's transcript-mtime guard is what protects them (ADR-051). A session whose transcript is under another folder is covered by a second guard on the worktree's own git state, over the same 24h (ADR-051 Amendment 1)
