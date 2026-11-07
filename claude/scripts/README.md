@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **113 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **114 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -40,6 +40,7 @@ the one place all 22 are listed together. Each has its own test file in
 |---|---|---|
 | `_auto_resume.py` | Auto-resume for desktop sessions cut off mid-turn: the opt-in config (`~/.claude/auto-resume.json`, fail closed), transcript-tail classification, the app's session files, the attempt cap and the JSONL log. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) | `session-start-auto-resume.py`, `auto-resume-launcher.py` |
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
+| `_closing_negation.py` | The one definition of a closing keyword a PR body negates ("doesn't close #12"), which GitHub honors anyway (`closing_mentions`, `says_it_does_not_close`, `accidental_closes`, dev-env#1300). | `pre-merge-findings-gate.py`, `deferred-followup-sweep.py` |
 | `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
 | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (`repo_from_issue_url`, `issue_number_from_url`, `issue_states_from_rows`, `should_stop_paging`, `is_closed`, `check_issue_state`) extracted from `reconcile-pending-tiles.py`: strict URL validation, PR-vs-issue row filtering, and `state` case normalization. | `reconcile-pending-tiles.py`, `retro-chain-status.py` |
 | `_gh_project.py` | `gh project item-add` subprocess wrapper (`add_to_project`), UTF-8-safe, plus a best-effort project-scoped item-ID cache (`write_item_cache_entry`/`write_item_cache_entries`/`lookup_cached_item_id`/`evict_item_cache_entry`, dev-env#1057, ADR-141) that lets a later lookup skip its live query. | `post-tool-use.py`, `reconcile-project-board.py`, `get-project-item.sh`, `post-pr-merge-project.py` |
