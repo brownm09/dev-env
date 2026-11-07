@@ -107,7 +107,7 @@ classification stays.
   and self-correcting (the next run protects a now-active worktree); a lock file was rejected as
   disproportionate for a periodic maintenance routine.
 - A negative `--liveness-window-min` would make `is_recent()` false for every real transcript and
-  silently disable the guard, so `parse_liveness_window_seconds` rejects it (`>= 0` only); `0` is
+  silently disable the guard, so `liveness_minutes_arg` rejects it (`>= 0` only); `0` is
   allowed as an explicit opt-out.
 - The two-window split is observable: in the verification dry-run, a worktree active within 24h but
   not 6h was protected by prune yet eligible for reclaim — the design working as intended.

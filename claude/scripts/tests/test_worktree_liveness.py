@@ -9,7 +9,7 @@ reclaim-worktree-disk.py from severing an active Claude session (dev-env#384, AD
   3. transcript_dirs_for()  — exact-slug match (alone) + unique-basename suffix fallback + miss,
                               plus the newest-across-all-matches safety property.
   4. newest_jsonl_mtime()   — recursive newest *.jsonl (incl. subagents/), ignores non-.jsonl.
-  5. parse_liveness_window_seconds() — default/valid/missing/non-numeric/negative (pure).
+  5. liveness_minutes_arg() — valid/zero/non-numeric/non-finite/negative (pure).
   6. worktree_session_is_live() — live / stale / no-session verdicts (now + root injected).
   7. The per-script default windows: prune = 24h, reclaim = 6h.
 
@@ -22,6 +22,7 @@ Usage:
 
 Exit 0 = all pass.
 """
+import argparse
 import importlib.util
 import os
 import sys
@@ -319,29 +320,26 @@ def test_session_is_live_still_detects_other_session_when_excluding_self() -> st
     return "excluding own session_id still detects a genuinely different concurrent session"
 
 
-def test_parse_liveness_window_seconds() -> str:
-    DEF = 999  # sentinel default so "absent -> default" is unambiguous
-    # Absent flag -> default.
-    if wl.parse_liveness_window_seconds(["--scan-dir", "X"], DEF) != DEF:
-        raise AssertionError("absent flag must return the default")
+def test_liveness_minutes_arg() -> str:
     # Valid minutes -> seconds.
-    if wl.parse_liveness_window_seconds(["--liveness-window-min", "30"], DEF) != 1800:
+    if wl.liveness_minutes_arg("30") != 1800:
         raise AssertionError("30 min must parse to 1800s")
     # Zero is allowed (explicit near-disable).
-    if wl.parse_liveness_window_seconds(["--liveness-window-min", "0"], DEF) != 0:
+    if wl.liveness_minutes_arg("0") != 0:
         raise AssertionError("0 must be accepted as 0s")
-    # Missing argument, non-numeric, and negative each raise ValueError.
+    # Non-numeric, non-finite, and negative each raise ArgumentTypeError.
     for bad, label in (
-        (["--liveness-window-min"], "missing argument"),
-        (["--liveness-window-min", "abc"], "non-numeric"),
-        (["--liveness-window-min", "-5"], "negative (would silently disable the guard)"),
+        ("abc", "non-numeric"),
+        ("nan", "non-finite"),
+        ("inf", "non-finite"),
+        ("-5", "negative (would silently disable the guard)"),
     ):
         try:
-            wl.parse_liveness_window_seconds(bad, DEF)
-        except ValueError:
+            wl.liveness_minutes_arg(bad)
+        except argparse.ArgumentTypeError:
             continue
-        raise AssertionError(f"expected ValueError for {label}: {bad}")
-    return "parser: absent->default, 30->1800, 0 ok; missing/non-numeric/negative raise"
+        raise AssertionError(f"expected ArgumentTypeError for {label}: {bad}")
+    return "30->1800, 0 ok; non-numeric/non-finite/negative raise"
 
 
 def test_script_default_windows() -> str:
@@ -376,7 +374,7 @@ def main() -> int:
         ("session not live without transcript", test_session_not_live_without_transcript),
         ("session_is_live excludes own session_id", test_session_is_live_excludes_own_session_id),
         ("session_is_live still detects other session when excluding self", test_session_is_live_still_detects_other_session_when_excluding_self),
-        ("parse --liveness-window-min (default/valid/error)", test_parse_liveness_window_seconds),
+        ("liveness_minutes_arg (valid/error)", test_liveness_minutes_arg),
         ("prune=24h / reclaim=6h default windows", test_script_default_windows),
     ]
     failed = 0

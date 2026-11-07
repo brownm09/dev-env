@@ -81,7 +81,7 @@ import sys
 from pathlib import Path
 
 from _repo_scan import find_git_repos
-from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
+from _worktree_liveness import liveness_minutes_arg, worktree_session_is_live
 from _worktree_topology import (
     DETACHED,
     DRAFT_BRANCH_RE,
@@ -104,6 +104,13 @@ BRANCH_PREFIX = "claude/"
 LIVENESS_WINDOW_SECONDS = 24 * 60 * 60
 
 
+def _nonempty(value: str) -> str:
+    """Reject an empty path: an unset shell variable must not select a repo nobody named."""
+    if not value:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse the command line, exiting on --help or on anything undefined (dev-env#1310).
 
@@ -117,22 +124,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         allow_abbrev=False,
     )
     parser.add_argument("--dry-run", action="store_true", help="report what would change, change nothing")
-    parser.add_argument("--repo-path", metavar="PATH", help="target this repo (default: the dev-env repo)")
-    parser.add_argument("--scan-dir", metavar="DIR", help="target every git repo directly under DIR")
-    parser.add_argument("--liveness-window-min", metavar="N",
-                        help="skip worktrees with a Claude transcript written in the last N minutes (default: 1440)")
+    parser.add_argument("--repo-path", metavar="PATH", type=_nonempty,
+                        help="target this repo (default: the dev-env repo)")
+    parser.add_argument("--scan-dir", metavar="DIR", type=_nonempty,
+                        help="target every git repo directly under DIR")
+    parser.add_argument("--liveness-window-min", metavar="N", dest="liveness_window_seconds",
+                        type=liveness_minutes_arg, default=LIVENESS_WINDOW_SECONDS,
+                        help="skip worktrees with a Claude transcript written in the last N minutes "
+                             f"(default: {LIVENESS_WINDOW_SECONDS // 60})")
     parser.add_argument("--include-named", action="store_true",
                         help="also prune merged worktrees on branches outside claude/*")
     return parser.parse_args(argv)
-
-
-def _liveness_window_seconds(minutes: str | None) -> int:
-    if minutes is None:
-        return LIVENESS_WINDOW_SECONDS
-    try:
-        return parse_liveness_window_seconds(["--liveness-window-min", minutes], LIVENESS_WINDOW_SECONDS)
-    except ValueError as exc:
-        sys.exit(str(exc))
 
 
 def run(args: list[str], cwd: str, check: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -496,7 +498,7 @@ def main() -> None:
     args = _parse_args(sys.argv[1:])
     dry_run = args.dry_run
     scan_dir = str(Path(args.scan_dir).resolve()) if args.scan_dir is not None else None
-    liveness_window_seconds = _liveness_window_seconds(args.liveness_window_min)
+    liveness_window_seconds = args.liveness_window_seconds
     include_named = args.include_named
 
     if dry_run:
