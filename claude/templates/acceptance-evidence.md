@@ -1,13 +1,15 @@
 # Acceptance-criteria evidence table — shared schema
 
 This file is the single definition of how acceptance criteria are read from an issue and how the
-per-criterion evidence for them is recorded. Two consumers rely on it, and neither may redefine
+per-criterion evidence for them is recorded. Three consumers rely on it, and none may redefine
 any part of it locally:
 
 - dev-env `/review` Step 2g (`claude/skills/review/SKILL.md`), which writes the table into the
   review comment.
 - The Switchyard Definition-of-Done gate ([switchyard#7](https://github.com/brownm09/switchyard/issues/7)),
   which reads the table from a PR body.
+- `claude/scripts/deferred-followup-sweep.py`, which reads the Evidence cell of `not verifiable` rows
+  from merged PRs' blocks. Its regexes must change with the block's format.
 
 Everything below is specified precisely enough that a plain-text parser can apply it.
 

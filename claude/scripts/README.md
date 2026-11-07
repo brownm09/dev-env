@@ -75,7 +75,7 @@ the utility scripts that serve the same workflow area — mirroring
 **Event** names the hook registration(s) from `settings.shared.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (25)
+### Engineering journal & stub workflow (24)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -103,12 +103,12 @@ invocation instead.
 | `journal-project-repo-map.py` | `py -3 journal-project-repo-map.py <engineering-journal-root> [--json <outfile>]` | Resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug for `/journal-compose` Step 8a Source 3. Reads the root README's canonical `**Repo:**`+`**Journal:**` pairing, falling back to the project README's `Repo:`/`Repository:` line; shape-validates every slug before it reaches a `gh` command line, and names every project it could not resolve (`SOURCE3_SKIP`) so a mapping drift is loud rather than an empty dashboard. [ADR-032 Amendment 1](../../docs/adr/032-journal-start-here-dashboard.md) |
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 | `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo ...] [--journal-repo PATH]` | Read-only per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL; never mutates anything, a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry. Engine behind the `retro-chain-refill` skill. |
-| `deferred-followup-sweep.py` | `py -3 deferred-followup-sweep.py --pr <owner/repo#N> \| --repo <owner/repo> [--closed-since YYYY-MM-DD]` | Report-only: reads merged PRs' deferred acceptance criteria and reports a follow-up closed after the merge as not planned, or by a PR whose body says it doesn't close it. Run by `biweekly-retro` Step 3.5 (dev-env#1292, ADR-153). |
 
-### PR / merge workflow (19)
+### PR / merge workflow (20)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
+| `deferred-followup-sweep.py` | `py -3 deferred-followup-sweep.py --pr <owner/repo#N> \| --repo <owner/repo> [--closed-since YYYY-MM-DD]` | Report-only: reads merged PRs' deferred acceptance criteria and reports a follow-up closed after the merge as not planned or a duplicate, or by a PR whose body says it doesn't close it. Run by `biweekly-retro` Step 3.5 (dev-env#1292, ADR-153). |
 | `pre-commit-branch-check.py` | PreToolUse (Bash), `git commit` | Shows the current branch as a checkpoint before commit, plus a drift warning against the last-recorded Bash state. |
 | `pre-pr-create-check.py` | PreToolUse (Bash), `gh pr create` | Emits the test/doc-reconciliation/baseline checklist plus branch + drift warning before PR creation. |
 | `pre-merge-message-check.py` | PreToolUse (Bash), `gh pr merge` | Blocks the merge if `merge-queue.md` has queued user feedback to act on first. |

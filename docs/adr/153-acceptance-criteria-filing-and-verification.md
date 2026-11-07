@@ -395,9 +395,9 @@ that closed after the merge in one of two ways: as not planned or a duplicate, o
 says it doesn't close that issue. Everything else counts as "not judged". It never blocks and never
 writes to GitHub. A person reads each line and reopens the issue or records why the work was dropped.
 
-**Why build anything: the numbers.** Across 2,032 merged PRs in 7 repos, 67 follow-up references
-closed after their deferring PR merged. All 27 closures with an unusual shape were labelled, plus 15
-of the other 40 picked at random. A separate agent labelled the 42 entries from diffs and code. One
+**Why build anything: the numbers.** Across 2,032 merged PRs in 7 repos, an exploratory extractor,
+wider than the shipped one, found 67 follow-up references closed after their deferring PR merged. All
+27 closures with an unusual shape were labelled, plus 15 of the other 40 picked at random. A separate agent labelled the 42 entries from diffs and code. One
 is a duplicate of another under a renamed repo, and 8 weren't real deferrals, which leaves 33:
 
 | # | Label | Count | Issues |
@@ -433,13 +433,24 @@ click-through only indirectly, so #106 stays the known-good reference on that we
 | 3 | Delivered (26) | 1 | lifting-logbook#480, closed as not planned as a duplicate of #768, and delivered under #768 |
 
 - **The worst known-good observation** is that #480 report, which costs a person one read.
-- **Across all 7 repos** it reports 5 follow-ups: #12, #468, #480, #1266 and #356. It leaves 77 closures
-  not judged.
+- **Across all 7 repos** (2,038 merged PRs when last run) it reports 5 follow-ups: #12, #468, #480,
+  #1266 and #356. It leaves 41 closures not judged.
 - **The negation pattern is in-sample.** It was written after reading #12 and #468, and no held-out
-  case exists. It requires the negation right before the keyword and this issue's number, so "doesn't
-  block closing #388" and "not blocked" followed by a `Closes` line don't match.
+  case exists. It requires the negation right before the keyword and this issue's number, and every
+  keyword naming the issue must be negated, table rows aside. So "doesn't block closing #388", and
+  "did not fix #12" followed by a `Closes #12` line, don't match. Two fixes came from these same
+  references: PR 21 also has a table row "fixed: #12 is amended", and PR 510 also says "**Not**
+  `Closes #468`".
 - **Extraction:** the script prints the number of deferrals it found and warns at zero, so an empty
-  extraction can't read as a clean run. It found 147.
+  extraction can't read as a clean run. It found 102, 9 of them from evidence tables, and printing that
+  split means an evidence path gone empty can't hide behind the prose path. The shipped extractor is
+  narrower than the one that built the corpus. It drops 6 of the 8 labelled non-deferrals, and also 8 of
+  the 26 delivered follow-ups and dev-env#1120, all of whose lines use other wording. All 4 silent drops
+  are still extracted, and the reported set didn't change. A silent drop worded like those 8 would be
+  missed.
+- **Read by anyone.** Evidence blocks are read from comments by any author, and three swept repos are
+  public. A forged block can only add a line a person reads, and a reference to nothing is counted as
+  unresolved instead of stopping the run, so neither can silence the report.
 - **The references** from this issue hold: switchyard PR 13 reports #12, and lifting-logbook PR 115
   reports nothing and counts #106 as not judged. Unit fixtures pin both, because a live run of PR 13
   would change if #12 is reopened.
@@ -451,7 +462,7 @@ journal rather than here.
 
 | # | Alternative | Why rejected |
 |---|---|---|
-| 1 | Do nothing, and record why | About 1 in 8 labelled deferrals dropped silently, and #12 happened within days of the schema. The sweep is about 200 lines and spends no model tokens |
+| 1 | Do nothing, and record why | About 1 in 8 labelled deferrals dropped silently, and #12 happened within days of the schema. The sweep is about 300 lines and spends no model tokens |
 | 2 | A step when a follow-up issue closes (a hook on `gh issue close`) | It can't see #12 or #468: both closed through a merge keyword, with no such command. A workflow on GitHub's `issues.closed` event would see them, but needs deploying per repo and still couldn't judge the work |
 | 3 | Report any closure with unticked boxes | It can't separate #12 from #106, and 72 of 75 closed checklists were unticked when ADR-153 was written |
 | 4 | Report every docs-only closing PR | 2 undone among the 9 real deferrals closed that way. Too noisy without a person reading diffs |

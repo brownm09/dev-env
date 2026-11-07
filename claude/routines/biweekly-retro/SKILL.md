@@ -131,18 +131,26 @@ and continue with a partial report.
 `/review` can't see a follow-up that closes after the PR merged, so this run looks for them
 ([ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292):
 
+The window starts at the previous retro's date rather than `WINDOW_START`, so each closure is read
+once and a skipped run loses nothing. Set it in this same block, because shell state doesn't carry
+over from earlier steps:
+
 ```bash
-py -3 ~/.claude/scripts/deferred-followup-sweep.py --closed-since "$WINDOW_START" \
+PREVIOUS_RETRO=$(ls C:/Users/brown/Git/engineering-journal/sessions/meta/retro | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}-retro\.md$' | sort | tail -1 | cut -c1-10)
+CLOSED_SINCE=${PREVIOUS_RETRO:-$(date -d "28 days ago" +%Y-%m-%d)}
+py -3 ~/.claude/scripts/deferred-followup-sweep.py --closed-since "$CLOSED_SINCE" \
   --repo brownm09/dev-env --repo brownm09/career-playbook --repo merickvaughn/lifting-logbook \
   --repo brownm09/switchyard --repo brownm09/win11-init-tools --repo brownm09/cover-letter-runtime \
   --repo brownm09/tech-leadership-reference
 ```
 
-Add each reported line to the §2 action-item checklist of the deferring PR's repo: "Read this
-follow-up. Reopen it if the work is still wanted, or say on the issue why it was dropped." Step 6's
-dedup guard covers a line that also appeared in the previous run. Put the summary line in §1, since
-"not judged" counts closures nobody has checked. If the script exits non-zero, note the gap in §1 and
-continue, as with a failed subagent above. Don't reopen or comment on anything from this routine.
+Add each reported line to the §2 action-item checklist of the deferring PR's repo, creating that
+repo's §2 subsection if it was otherwise silent: "Read this follow-up. Reopen it if the work is still
+wanted, or say on the issue why it was dropped." Put the summary line in §1, since "not judged" counts
+closures nobody has checked. If it prints `WARNING: no deferral was found`, note in §1 that the sweep
+checked nothing, and don't file that line as an action item. If the script exits non-zero, keep the
+lines it printed, name the repos in its `TOOL ERROR` lines as a gap in §1, and continue, as with a
+failed subagent above. Don't reopen or comment on anything from this routine.
 
 ---
 
@@ -156,7 +164,7 @@ concrete dates / PR numbers / ADRs. This is the canonical structure — match it
 **Global action items** checklist — these route to dev-env in Step 6.
 
 **§2 — Per-repo sections.** One subsection per repo *with activity in the window* (skip silent
-repos). Each: a 2–4 line recap (work streams, friction, incidents) **and its own action-item
+repos, unless Step 3.5 reported a line for one). Each: a 2–4 line recap (work streams, friction, incidents) **and its own action-item
 checklist** — these route to that repo in Step 6.
 
 **§3 — Process-to-product ratio (tracked metric).** Estimate the share of effort on
@@ -234,7 +242,7 @@ checklist, file one consolidated issue **in that repo**; the §1 global checklis
 **Routing rule (where a finding's issue is filed):**
 - **A per-repo §2 finding** → that repo's own tracker, when the repo has a GitHub remote with Issues
   enabled (lifting-logbook, career-playbook, dev-env, tech-leadership-reference, win11-init-tools,
-  brownm09, job-search-agent, gas-lifting-logbook all qualify).
+  brownm09, job-search-agent, gas-lifting-logbook, switchyard, cover-letter-runtime all qualify).
 - **§1 global / cross-cutting findings** → **dev-env**.
 - **engineering-journal / meta** findings → **dev-env** (engineering-journal declares no issue
   tracker by convention).

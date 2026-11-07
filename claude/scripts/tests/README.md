@@ -1,7 +1,7 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 103 `test_*.py` files, 12 bash gates, and
-two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 117 files total, indexed per file below
+This directory holds the dev-env hook/script test suite: 104 `test_*.py` files, 12 bash gates, and
+two shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`) — 118 files total, indexed per file below
 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
 row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
 
