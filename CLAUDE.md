@@ -20,18 +20,24 @@ Items 1 to 118 keep their numbers because other documents cite them, and the lis
 ones. The global "Test before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this
 section.
 
-**To add a test, edit only the test file.** Put a `Required when ...` line and a `Run: ...` line
-in its first 10 lines, and add nothing to this section, `docs/TESTING.md` or
-`claude/scripts/tests/README.md`, so two PRs that each add a test can't conflict
-([ADR-074 Amendment 1](docs/adr/074-pre-merge-numbering-collision-check.md)). Cite a newer test
-by its file name. Items 76 and 84 enforce this. To find the test for a script:
-`git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`.
+**To add a test, edit only the test file.** Put a `Required when ...` line naming what it covers
+and a `Run: ...` line naming the file in its first 10 lines, each starting its own line, and add
+nothing to this section, `docs/TESTING.md` or `claude/scripts/tests/README.md`, so two PRs that
+each add a test can't conflict
+([ADR-074 Amendment 1](docs/adr/074-pre-merge-numbering-collision-check.md)). A new check must be
+such a file, so the runner finds it, not an inline command. Cite a newer test by its file name.
+Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, or a test in
+`claude/scripts/tests/` with neither a row nor an entry; nothing gates `claude/hooks/tests/`. To
+find the tests for a script, from the repo root:
+`git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
+test, because a test may cover a script without naming it.
 
 **Run the whole suite** with `py -3 claude/scripts/run-hook-tests.py` — it glob-discovers
-every test below (plus `claude/hooks/tests/`) and is exactly what
+every test in those two directories and is exactly what
 `.github/workflows/hook-tests.yml` runs on `windows-latest` for every `pull_request`
 ([ADR-103](docs/adr/103-shared-hookout-emitter.md)). When changing a script, also run its
-own item's command below before `gh pr create`.
+item's command below, or the `Run:` line of each test that `git grep` finds, before
+`gh pr create`.
 
 **Full per-item behavioral detail** — what each test pins, deliberate scope gaps, incident
 history — lives in [docs/TESTING.md](docs/TESTING.md) under the **same item numbers**
@@ -114,7 +120,7 @@ older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py` or the six hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py`). Run: `py -3 claude/scripts/tests/test_repo_target.py`
 74. **session-mode-report test** — required when changing `claude/scripts/session-mode-report.py`. Run: `py -3 claude/scripts/tests/test_session_mode_report.py`
 75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching `claude/scripts/*.py` or `claude/scripts/tests/*.py`. Run: `bash claude/scripts/tests/run-pylint-unreachable.sh`
-76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), and no item past 118. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
+76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), no numbered line past 118, and no number used twice. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
 77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
 78. **worktree-recovery recipe + runbook-parity gate** — required when changing `claude/scripts/_worktree_recovery.py`, the orphan block message in `claude/scripts/pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
 79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
@@ -122,7 +128,7 @@ older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — required when changing `claude/scripts/new-day-journal-check.py` or `claude/scripts/_journal_late.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
 82. **composed-output stray-terminal-scan test** — required when changing `claude/scripts/_composed_output_scan.py` or `claude/scripts/validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
 83. **journal-compose-replay conflict-recovery test** — required when changing `claude/scripts/journal-compose-replay.sh` or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md`. Run: `bash claude/scripts/tests/test-journal-compose-replay.sh`
-84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, or a new test's own entry; orphan rows; `claude/scripts/README.md`'s header and section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
+84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, or a new test's own entry; no new row in the tests README; orphan rows; `claude/scripts/README.md`'s header and section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
 85. **skill-file-size-guard test** — required when changing `claude/scripts/pre-tool-use-skill-file-size-guard.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_guard.py`
 86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
 87. **`_skill_file_size` shared-module test** — required when changing `claude/scripts/_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`

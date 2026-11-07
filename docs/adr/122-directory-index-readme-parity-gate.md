@@ -126,8 +126,8 @@ number against `origin/main` at merge.
 
 Every new test changed `claude/scripts/tests/README.md`'s counts, so any two test-adding PRs conflicted
 on that line. Those counts and check 6 (component completeness, which existed only to support them) are
-gone, and a new test there may carry its own entry instead of a row (check 1). `claude/scripts/README.md`
-is unchanged. Decision and alternatives: [ADR-074 Amendment 1](074-pre-merge-numbering-collision-check.md).
+gone. A new test there carries its own entry instead of a row (check 1), and a new check refuses a new
+row, since a row conflicts as a count does (`FROZEN_TEST_ROWS`). `claude/scripts/README.md` is unchanged. Decision and alternatives: [ADR-074 Amendment 1](074-pre-merge-numbering-collision-check.md).
 
 ## References
 

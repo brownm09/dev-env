@@ -184,11 +184,21 @@ Two gates hold this, both in CI:
 
 - `test_testing_index_parity.py` (item 76) refuses any item past `LAST_NUMBERED_ITEM`. That constant
   is 118, the last number on `origin/main` when the list was frozen. The check is exact, so there's
-  no margin to tune. Known good: `main`. Known bad: one more numbered item, as
-  [PR #1284](https://github.com/brownm09/dev-env/pull/1284) adds.
+  no margin to tune. It counts any numbered line past that, and also refuses a number used twice.
+  Known good: the two real lists, with no such line and no repeat among their 118 items. Known bad:
+  one more numbered item, as [PR #1284](https://github.com/brownm09/dev-env/pull/1284) adds, plus
+  the same item indented or without bold, and a second item 118. Before these checks, all but the
+  first passed.
 - `test_readme_index_parity.py` (item 84) requires each file in `claude/scripts/tests/` to have a row
-  or its own entry. Known good: `test_testing_index_merge.py`. Known bad: a test with neither, which
-  that same test builds and expects to fail.
+  or its own entry, and refuses a README with more than the 118 first-column names it had when
+  frozen. That number is a measured count and a ceiling, so removing a test leaves room for one row;
+  the check also fails on zero rows. Known good: the real README, and
+  `test_testing_index_merge.py`. Known bad: a test with neither, and a new row, which that same test
+  builds and expects to fail. The shape of an entry has its own 8 accepted and 13 refused cases in
+  that gate's `TestHasOwnEntry`.
+
+`claude/hooks/tests/` has neither gate, because its README coverage is out of scope
+([dev-env#314](https://github.com/brownm09/dev-env/issues/314)).
 
 This pre-merge check stays. It still covers the ADR table, which is unchanged, and it still catches a
 Testing number that reaches a merge. Its message now tells a Testing collision not to renumber.
@@ -225,13 +235,16 @@ on throwaway refs since deleted, cut from this change:
 | 3 | Numbered item A, then numbered item B | 201 Created | 409 Conflict |
 
 Row 3 is the known-bad reference, showing the endpoint reports a conflict for the old way.
-`test_testing_index_merge.py` repeats the check on every CI run with `git merge`, and with
-`git merge-tree` in a bare clone.
+`test_testing_index_merge.py` records the same outcomes on every CI run with `git merge`, and with
+`git merge-tree` in a bare clone. Its clean merges can't fail from a change to this repository,
+because those branches have no text to merge, so what holds the rule is the old way's conflict and
+the gates' refusals.
 
 **Consequences.**
 
 - `CLAUDE.md` loads in every session, and it no longer lists every test. A session finds a newer test
-  with `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. The list stops growing
+  with `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`, which finds only a test
+  that names the script, so the entry's `Required when` line is expected to. The list stops growing
   in the always-loaded file, which is the direction [ADR-114](114-slim-testing-section-index.md) set.
 - An open PR that adds a numbered item fails item 76 once this merges, and the failure says what to
   change.

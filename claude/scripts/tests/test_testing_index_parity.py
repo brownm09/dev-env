@@ -21,6 +21,14 @@ ITEM_RE = re.compile(r"^(\d+)\.\s+\*\*(.+?)\*\*", re.MULTILINE)
 # The numbered list stops here (dev-env#1309, ADR-074 Amendment 1): other documents cite
 # these numbers, and appending to the list made every pair of test-adding PRs conflict.
 LAST_NUMBERED_ITEM = 118
+# Any numbered line, bold or not, indented or not. Detail items hold numbered sub-lists,
+# so this only ever counts against numbers past the last item.
+ANY_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\.\s", re.MULTILINE)
+FREEZE_REMEDY = (
+    "a new test takes no number. Remove the item from both files and the README row, and "
+    "put `Required when ...` and `Run: ...` lines in the test file's first 10 lines "
+    "instead (dev-env#1309)"
+)
 
 
 def extract_section(text, heading):
@@ -43,8 +51,10 @@ class TestTestingIndexParity(unittest.TestCase):
     def setUpClass(cls):
         claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
         testing_md = (REPO_ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
-        cls.index = items_of(extract_section(claude_md, "Testing"))
-        cls.detail = items_of(testing_md)
+        cls.index_text = extract_section(claude_md, "Testing")
+        cls.detail_text = testing_md
+        cls.index = items_of(cls.index_text)
+        cls.detail = items_of(cls.detail_text)
 
     def test_both_files_have_items(self):
         self.assertTrue(self.index, "CLAUDE.md ## Testing index parsed to zero items")
@@ -58,14 +68,29 @@ class TestTestingIndexParity(unittest.TestCase):
                              f"{name} numbering not contiguous from 1: {nums}")
 
     def test_no_new_numbered_items(self):
+        for name, text in (("CLAUDE.md index", self.index_text),
+                           ("docs/TESTING.md", self.detail_text)):
+            new = sorted(int(n) for n in ANY_NUMBERED_LINE_RE.findall(text)
+                         if int(n) > LAST_NUMBERED_ITEM)
+            self.assertEqual(new, [],
+                             f"{name} has numbered lines past {LAST_NUMBERED_ITEM}: "
+                             f"{FREEZE_REMEDY}")
+
+    def test_no_item_number_is_used_twice(self):
+        # items_of builds a dict, so a second item with the same number would vanish from
+        # every other check here.
+        for name, text in (("CLAUDE.md index", self.index_text),
+                           ("docs/TESTING.md", self.detail_text)):
+            nums = [int(m.group(1)) for m in ITEM_RE.finditer(text)]
+            repeated = sorted(n for n in set(nums) if nums.count(n) > 1)
+            self.assertEqual(repeated, [],
+                             f"{name} uses these item numbers twice: {FREEZE_REMEDY}")
+
+    def test_last_item_is_the_frozen_one(self):
         for name, items in (("CLAUDE.md index", self.index),
                             ("docs/TESTING.md", self.detail)):
-            new = sorted(n for n in items if n > LAST_NUMBERED_ITEM)
-            self.assertEqual(new, [],
-                             f"{name} has items past {LAST_NUMBERED_ITEM}: a new test takes no "
-                             "number. Remove the item from both files and the README row, and "
-                             "put `Required when ...` and `Run: ...` lines in the test file's "
-                             "first 10 lines instead (dev-env#1309)")
+            self.assertEqual(max(items), LAST_NUMBERED_ITEM,
+                             f"{name} doesn't end at the frozen item {LAST_NUMBERED_ITEM}")
 
     def test_item_sets_match(self):
         only_index = sorted(set(self.index) - set(self.detail))
