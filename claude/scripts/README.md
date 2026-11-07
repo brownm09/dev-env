@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **113 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **114 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -51,6 +51,7 @@ the one place all 22 are listed together. Each has its own test file in
 | `_hookutil.py` | Sentinel-file helpers, transcript-locate, transcript-record readers, and `record_heartbeat()` (called first-thing by every wired hook's `main()`). | Most Stop/UserPromptSubmit hooks |
 | `_journal_canon.py` | Shared engineering-journal canonical-path resolution (`resolve_journal_path`, `normalize_journal_path`) — env-override-or-default plus one canonical comparison normalization, single-sourcing what four hooks each independently duplicated. | `pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py` |
 | `_journal_compose_force.py` | Marker read/write/freshness helpers behind `/journal-compose`'s mechanical `--force` enforcement. | `journal-compose-force-resolve.py` (writer), `pre-tool-use-journal-compose-force-guard.py` (reader) |
+| `_last_run.py` | Stored findings of a `--scan-dir` run, so a repeat run prints only what changed (`LastRun`, ADR-161); `py -3 _last_run.py commit <state-file>` promotes a run's pending findings once the routine has notified. | `prune-merged-worktrees.py`, `reconcile-project-board.py` |
 | `_journal_late.py` | What counts as a late commit on a journal draft branch (`late_commits`), plus the reconciled-tag prefix and branch-name pattern, so the warning and the script that acts on it can't disagree. | `new-day-journal-check.py`, `reconcile-late-stubs.py` |
 | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema + validation. Presence checks (`missing_required_fields`, `missing_open_pr_fields`, `missing_tile_fields`) and *shape* checks for a present-but-wrong value (`malformed_manifest_fields` — `tokens`; `malformed_tile_fields` — `cwd`/`stub`/`task_id`), plus `parse_manifest_text` / `decode_shard_bytes`. | `validate-manifest.py`, `journal-shard-write-advisory.py`, `stub-push-archive-reminder.py` |
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
@@ -136,7 +137,7 @@ invocation instead.
 |---|---|---|
 | `post-tool-use.py` | PostToolUse (Bash/PowerShell), `gh issue create`/`gh pr create` | Auto-adds the item to the configured GitHub Project and prints the `required_fields` commands to run. |
 | `post-pr-merge-project.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Auto-moves the linked issue (`Closes #N`) to Done on the configured board. |
-| `reconcile-project-board.py` | `py -3 reconcile-project-board.py [--repo-root\|--scan-dir] [--dry-run]` | Finds open issues missing from the board and open board items missing a required field; add-only, never guesses a value. |
+| `reconcile-project-board.py` | `py -3 reconcile-project-board.py [--repo-root\|--scan-dir] [--dry-run] [--full]` | Finds open issues missing from the board and open board items missing a required field; add-only, never guesses a value. |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> ...)` | Resolves a GitHub Project item node ID from an issue/PR number. |
 
 ### Worktrees & disk management (7)
@@ -147,7 +148,7 @@ invocation instead.
 | `worktree-npm-install.py` | UserPromptSubmit | Auto-runs `npm ci`/`install` in a worktree missing `node_modules`; gates on free space, refuses below a 5 GB floor. Also audits a present-but-truncated tree once per session and repairs it with a gated `npm ci`. |
 | `pre-tool-use-worktree-path-check.py` | PreToolUse (Write/Edit/NotebookEdit) | Blocks a write whose absolute path escapes to the canonical root, or any write from an orphaned worktree. |
 | `multi-worktree-alert.py` | UserPromptSubmit | Lists active worktrees in `repo:branch` format when ≥2 are open. |
-| `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path\|--scan-dir] [--include-named]` | Removes merged/idle worktrees and parks any squatting `main`; engine behind the `prune-stale-worktrees` routine. |
+| `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path\|--scan-dir] [--include-named] [--full]` | Removes merged/idle worktrees and parks any squatting `main`; engine behind the `prune-stale-worktrees` routine. |
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 

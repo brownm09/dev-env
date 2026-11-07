@@ -36,7 +36,7 @@ correctly in any repo — not just brownm09/dev-env.
 
 Usage:
   python claude/scripts/prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo]
-  python claude/scripts/prune-merged-worktrees.py [--dry-run] --scan-dir /path/to/dir
+  python claude/scripts/prune-merged-worktrees.py [--dry-run] [--full] [--state-file PATH] --scan-dir /path/to/dir
 
   An undefined flag or stray argument exits 2 before any git command; --help prints usage
   and exits 0 (dev-env#1310).
@@ -46,6 +46,17 @@ Usage:
   --scan-dir   Discover and prune all git repos directly under the given directory.
                Skips repos with no GitHub remote or no claude/* worktrees.
                Example: --scan-dir C:/Users/brown/Git
+               Lists only the skipped worktrees and fetch failures that are new or changed
+               since the last --scan-dir run; a missing or unreadable state file gives the
+               full report. Skips for the primary or current worktree or a live session are
+               counted but not listed, since they come and go without being a finding
+               (dev-env#1307, ADR-161).
+  --full       With --scan-dir: print the full report, and neither read nor update the
+               stored state.
+  --state-file PATH
+               With --scan-dir: where the last run's findings are stored (default:
+               ~/.claude/scratch/last-run/prune-merged-worktrees.json). --dry-run compares
+               against it but doesn't update it.
   --liveness-window-min N
                Skip any worktree whose Claude transcript, or whose own git state (index,
                HEAD, FETCH_HEAD, ORIG_HEAD), was written within the last N minutes.
@@ -81,6 +92,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _last_run import STATE_DIR, LastRun
 from _repo_scan import find_git_repos
 from _worktree_liveness import git_activity_skip_reason, liveness_minutes_arg, worktree_session_is_live
 from _worktree_topology import (
@@ -103,6 +115,17 @@ BRANCH_PREFIX = "claude/"
 # window: `git worktree remove` is destructive, so the long guard is warranted; the only
 # cost is a merged worktree lingering up to a day longer. Override with --liveness-window-min.
 LIVENESS_WINDOW_SECONDS = 24 * 60 * 60
+
+DEFAULT_STATE_FILE = STATE_DIR / "prune-merged-worktrees.json"
+SKIPPED_SECTION = "skipped"
+FETCH_SECTION = "fetch"
+REMOTE_SECTION = "remote"
+
+SKIP_PRIMARY_OR_CURRENT = "primary or current worktree"
+SKIP_LIVE_SESSION = "active Claude session (recent transcript activity)"
+# Which worktree is current changes every run, and a session's worktree is live for a day and
+# then isn't. Neither says anything about the worktree, so neither counts as a change.
+_PASSING_SKIPS = frozenset({SKIP_PRIMARY_OR_CURRENT, SKIP_LIVE_SESSION})
 
 
 def _nonempty(value: str) -> str:
@@ -135,6 +158,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                              f"in the last N minutes (default: {LIVENESS_WINDOW_SECONDS // 60})")
     parser.add_argument("--include-named", action="store_true",
                         help="also prune merged worktrees on branches outside claude/*")
+    parser.add_argument("--full", action="store_true",
+                        help="with --scan-dir: print the full report, and neither read nor update the "
+                             "stored state (by default only what changed since the last run is listed)")
+    parser.add_argument("--state-file", metavar="PATH", type=_nonempty, default=str(DEFAULT_STATE_FILE),
+                        help="with --scan-dir: where the last run's findings are stored")
     return parser.parse_args(argv)
 
 
@@ -300,8 +328,40 @@ def primary_worktree_path(worktrees: list[dict]) -> str:
     return str(Path(worktrees[0]["path"]).resolve()) if worktrees else ""
 
 
+def skip_findings(skipped: list[tuple[str, str]], prior: dict) -> dict:
+    """{path: reason} for the last-run state. A passing skip isn't a finding, but it says
+    nothing new either, so a path already on record keeps its entry: a not-merged worktree
+    that gets a session for a day isn't resolved, and isn't new again the day after."""
+    findings = {}
+    for path, reason in skipped:
+        if reason not in _PASSING_SKIPS:
+            findings[path] = reason
+        elif path in prior:
+            findings[path] = prior[path]
+    return findings
+
+
+def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_run: bool,
+                last_run: "LastRun | None") -> str:
+    """The machine-readable last line of a --scan-dir run, which the routine reads."""
+    line = (
+        f"RESULT: repos_scanned={repos} pruned={pruned} skipped={skipped} "
+        f"fetch_failed={fetch_failed} dry_run={'true' if dry_run else 'false'}"
+    )
+    if last_run is not None:
+        line += (
+            f" new_skipped={last_run.changed[SKIPPED_SECTION]}"
+            f" no_longer_skipped={last_run.gone[SKIPPED_SECTION]}"
+            f" new_fetch_failed={last_run.changed[FETCH_SECTION]}"
+            f" new_remote_failed={last_run.changed[REMOTE_SECTION]}"
+            f" baseline={'true' if last_run.is_baseline else 'false'}"
+        )
+    return line
+
+
 def prune_one(
-    repo: str, dry_run: bool, liveness_window_seconds: int, include_named: bool = False
+    repo: str, dry_run: bool, liveness_window_seconds: int, include_named: bool = False,
+    last_run: "LastRun | None" = None,
 ) -> tuple[int, int, bool]:
     """Prune merged claude/* worktrees in a single repo. Returns (pruned, skipped, fetch_failed).
 
@@ -310,12 +370,24 @@ def prune_one(
     falls through to the same is_merged()/ephemeral-diff/is_dirty() checks claude/* branches
     already go through. Default False preserves the exact pre-existing behavior for every
     caller that doesn't pass --include-named. See ADR-078.
+
+    last_run: when given and not a baseline, print only what changed since the last run, with
+    no per-repo header or summary, so a repo with nothing new prints nothing (dev-env#1307).
+    Every line that can still print names a full path or the repo, so no header is needed. A
+    repo whose GitHub remote can't be read is a finding of its own; one that returns early
+    after that keeps its stored findings.
     """
+    verbose = last_run is None or last_run.is_baseline
+
     try:
         gh_repo = detect_gh_repo(repo)
     except RuntimeError as exc:
-        print(f"  SKIP {repo}: {exc}")
+        remote_new = last_run.record(repo, REMOTE_SECTION, {"origin": str(exc)})[0] if last_run else []
+        if verbose or remote_new:
+            print(f"  SKIP {repo}: {exc}")
         return 0, 0, False
+    if last_run is not None and last_run.record(repo, REMOTE_SECTION, {})[1] and not verbose:
+        print(f"  GitHub remote resolves again: {repo}")
 
     # Read once per repo, not once per worktree — every not-yet-merged claude/* worktree in
     # this repo would otherwise re-read and re-validate the same config file (the repos this
@@ -323,18 +395,25 @@ def prune_one(
     # largest).
     ephemeral_patterns = load_ephemeral_patterns(repo)
 
-    print(f"\nRepo: {gh_repo} ({repo})")
+    if verbose:
+        print(f"\nRepo: {gh_repo} ({repo})")
 
     # Fetch origin/main so merge checks are accurate
-    fetch_failed = False
     r = run(["git", "fetch", "origin", "main"], cwd=repo)
-    if r.returncode != 0:
-        fetch_failed = True
-        print(f"  WARNING: fetch failed — merge checks may use stale origin/main: {r.stderr.strip()}")
+    fetch_failed = r.returncode != 0
+    fetch_new = fetch_back = []
+    if last_run is not None:
+        fetch_new, fetch_back = last_run.record(
+            repo, FETCH_SECTION, {"origin main": "failed"} if fetch_failed else {}
+        )
+    if fetch_failed and (verbose or fetch_new):
+        print(f"  WARNING: fetch failed in {repo} — merge checks may use stale origin/main: {r.stderr.strip()}")
+    if fetch_back and not verbose:
+        print(f"  fetch works again: {repo}")
 
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
-        print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
+        print(f"  ERROR: git worktree list failed in {repo}: {result.stderr}", file=sys.stderr)
         return 0, 0, fetch_failed
 
     worktrees = parse_worktree_porcelain(result.stdout)
@@ -367,7 +446,7 @@ def prune_one(
 
         # Always skip the primary worktree and wherever this process is running
         if path == primary or path == cwd:
-            skipped.append((path, "primary or current worktree"))
+            skipped.append((path, SKIP_PRIMARY_OR_CURRENT))
             continue
 
         # Skip a worktree with a live Claude session (recent transcript activity). The
@@ -376,7 +455,7 @@ def prune_one(
         # live worktree severs the session mid-task (dev-env#383, ADR-051). Additive: this
         # only ever adds a skip, never removes more than the merged/clean checks below.
         if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
-            skipped.append((path, "active Claude session (recent transcript activity)"))
+            skipped.append((path, SKIP_LIVE_SESSION))
             continue
 
         # The transcript check above can't see a session started in another folder that works
@@ -490,16 +569,30 @@ def prune_one(
         r = run(["git", "branch", "-d", branch], cwd=repo)
         if r.returncode != 0:
             # Worktree already gone; branch delete failure is non-fatal
-            print(f"  WARNING: branch delete failed for {branch}: {r.stderr.strip()}")
+            print(f"  WARNING: branch delete failed for {branch} in {repo}: {r.stderr.strip()}")
 
         pruned.append(path)
         print(f"  pruned: {path} ({branch})")
 
-    suffix = " [fetch failed — results may use stale origin/main]" if fetch_failed else ""
-    print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}{suffix}")
-    if skipped:
-        for path, reason in skipped:
-            print(f"    skipped {path}: {reason}")
+    skip_new: list[str] = []
+    skip_gone: list[str] = []
+    if last_run is not None:
+        skip_new, skip_gone = last_run.record(
+            repo, SKIPPED_SECTION, skip_findings(skipped, last_run.prior(repo, SKIPPED_SECTION))
+        )
+
+    if verbose:
+        suffix = " [fetch failed — results may use stale origin/main]" if fetch_failed else ""
+        print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}{suffix}")
+        if skipped:
+            for path, reason in skipped:
+                print(f"    skipped {path}: {reason}")
+    else:
+        reasons = dict(skipped)
+        for path in skip_new:
+            print(f"    skipped {path}: {reasons[path]}")
+        for path in skip_gone:
+            print(f"    no longer skipped: {path}")
 
     return len(pruned), len(skipped), fetch_failed
 
@@ -515,23 +608,35 @@ def main() -> None:
         print("[dry-run] no changes will be made")
 
     if scan_dir:
+        last_run = None if args.full else LastRun(args.state_file)
         repos = find_git_repos(scan_dir)
+        if repos is None:
+            # find_git_repos already printed the WARNING with the underlying OSError.
+            print(f"Scan of {scan_dir} failed - nothing was pruned")
+            print(scan_result(0, 0, 0, 0, dry_run, last_run))
+            sys.exit(1)
         if not repos:
             print(f"No git repos found under {scan_dir}")
+            print(scan_result(0, 0, 0, 0, dry_run, last_run))
             sys.exit(0)
         print(f"Found {len(repos)} repos under {scan_dir}")
         total_pruned = total_skipped = 0
         fetch_failed_repos: list[str] = []
         for repo in repos:
-            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds, include_named)
+            p, s, ff = prune_one(repo, dry_run, liveness_window_seconds, include_named, last_run)
             total_pruned += p
             total_skipped += s
             if ff:
                 fetch_failed_repos.append(repo)
         summary = f"\nTotal — pruned {total_pruned}, skipped {total_skipped}"
         if fetch_failed_repos:
-            summary += f", fetch failed in {len(fetch_failed_repos)} repo(s): {', '.join(fetch_failed_repos)}"
+            summary += f", fetch failed in {len(fetch_failed_repos)} repo(s)"
+            if last_run is None or last_run.is_baseline:
+                summary += f": {', '.join(fetch_failed_repos)}"
         print(summary)
+        if last_run is not None and not dry_run:
+            last_run.save()
+        print(scan_result(len(repos), total_pruned, total_skipped, len(fetch_failed_repos), dry_run, last_run))
     else:
         repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
         prune_one(repo, dry_run, liveness_window_seconds, include_named)
