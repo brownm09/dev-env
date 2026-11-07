@@ -111,6 +111,11 @@ _DURATION_ARMED: set[str] = set()
 MAX_AGE_DAYS = 30
 DEFAULT_REVERSE_CHUNK_SIZE = 65536  # 64 KiB
 
+# Automated triggers (scheduled tasks, CI monitors) send XML-tagged prompts; a person's
+# prompt never starts with a lowercase <tag>. Shared by idle-refresher, session-mode-prompt,
+# session-mode-report and routine-findings, which each kept a copy before dev-env#1308.
+AUTOMATED_PROMPT = re.compile(r"^\s*<[a-z]")
+
 
 def cleanup_stale_sentinels(
     prefix: str,

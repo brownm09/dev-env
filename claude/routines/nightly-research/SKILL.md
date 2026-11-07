@@ -6,6 +6,14 @@ schedule: "0 8 * * *"
 # CST (Nov–Mar): 0 9 * * *   → 3:00 AM local
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-nightly-research-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine nightly-research --file C:/Users/brown/.claude/scratch/routine-finding-nightly-research-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Research pending topics from the queue file. Run fully autonomously — never call AskUserQuestion.
 
 > **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended

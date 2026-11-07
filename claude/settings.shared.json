@@ -287,6 +287,11 @@
           },
           {
             "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/routine-findings.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/dev-env-sync.py",
             "timeout": 30
           },
