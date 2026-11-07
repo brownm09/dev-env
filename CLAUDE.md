@@ -9,7 +9,7 @@ guidelines, and journal conventions are defined there and apply to every project
 | Doc | Purpose |
 |---|---|
 | [README.md](README.md) | Quick-reference tables for skills, hooks, and routines |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, and ADR links |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Detailed descriptions, invocation syntax, config options, ADR links, and the reasoning behind each global rule (Instruction Detail) |
 | [docs/TESTING.md](docs/TESTING.md) | Per-item behavioral detail for the `## Testing` index (what each test pins, scope gaps, incident history) |
 | [docs/adr/](docs/adr/) | Design decisions behind rules in `claude/CLAUDE.md` |
 
@@ -41,7 +41,7 @@ the item). A one-line navigational map of the test directory is
 5. **Script path-hygiene lint** — required when adding or changing any `claude/scripts/*.sh` or `claude/hooks/*` shell script. Run: `bash claude/scripts/tests/check-script-path-hygiene.sh`
 6. **`get-project-item.sh` smoke test** — required when changing `claude/scripts/get-project-item.sh`. Run: `bash claude/scripts/tests/test-get-project-item.sh`
 7. **shellcheck gate** — recommended when changing any shell script. Run: `bash claude/scripts/tests/run-shellcheck.sh`
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`. Run: `py -3 claude/scripts/tests/test_usage_snapshot.py`
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py` or `Resolve-ClaudeExe` in `claude/scripts/keep-token-warm.ps1`. Run: `py -3 claude/scripts/tests/test_usage_snapshot.py`
 9. **worktree-npm-install gate test** — required when changing `claude/scripts/worktree-npm-install.py`. Covers both of the hook's decisions: the ADR-045 pre-install free-space gate and the ADR-142 node_modules-truncation audit (pure `classify_package_dir`/`truncation_verdict`/`is_staging_name`, plus temp-directory fixtures for `scan_node_modules`). Run: `py -3 claude/scripts/tests/test_worktree_npm_install.py`
 10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py`
 11. **memory-write-advisory test** — required when changing `claude/scripts/memory-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_memory_write_advisory.py`
@@ -148,7 +148,8 @@ the item). A one-line navigational map of the test directory is
 112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`, `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it (dev-env#1214, #1122, [ADR-154](docs/adr/154-token-attribution-and-shared-pricing.md)). Run: `py -3 claude/scripts/tests/test_token_attribution.py`
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
 114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd`. Runs both wrappers against fixture install directories to check which binary each one starts (dev-env#1142). Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
-115. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
+116. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
 
 ## Experiments
 

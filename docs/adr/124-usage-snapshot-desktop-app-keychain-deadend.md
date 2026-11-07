@@ -147,3 +147,20 @@ impossible remedy; the skip is fast and its message is true. npm-CLI installs ar
   wire-safety the advisory uses.
 - #355 / #357 — the original "surface a missing/expired token, don't fail silently" decision this
   extends with an *accurate* (not merely visible) message.
+
+## Amendment (2026-11-06, dev-env#1286) — the desktop app moved its binary
+
+The desktop app now installs its CLI under
+`%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\claude-code\<ver>\<hash>\claude.exe`. The `Packages`
+directory this ADR names no longer exists on this machine, so `resolve_claude_exe()` found nothing and
+`cli_auth_status()` returned `None`, which sent the missing-token branch to the refresh this ADR exists
+to skip. `resolve_claude_exe()` and `keep-token-warm.ps1`'s `Resolve-ClaudeExe` now search the current
+location first and keep `Packages` as a fallback, the same order as `bin/claude`. The string
+`keep-token-warm.ps1` shares with this script is now two paths, and `bin/claude` holds a third copy.
+
+With the probe working again, it did not report the dead-end. Measured on 2026-11-06 from inside a
+Claude Code session, it returned `in`, `~/.claude/.credentials.json` existed, and that day's merge of
+PR 1290 emitted a usage snapshot. So the Context above did not describe this machine that day. Why it
+changed, whether it holds outside a session, and what it means for the refresh's `claude -p` call are
+open in [dev-env#1294](https://github.com/brownm09/dev-env/issues/1294). The decision itself stands: an
+`out` result still skips the refresh.

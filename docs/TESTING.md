@@ -93,7 +93,14 @@ For a one-line navigational map of the test directory, see
    bash claude/scripts/tests/run-shellcheck.sh
    ```
 
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`.
+8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py` or
+   `Resolve-ClaudeExe` in `claude/scripts/keep-token-warm.ps1`. Both find the desktop app's binary the
+   same way, so both are pinned here against `LOCALAPPDATA` fixtures
+   ([dev-env#1286](https://github.com/brownm09/dev-env/issues/1286)): the `Claude-Data` location beats
+   the older `Packages` one, the newest version wins numerically at either depth, and a directory not
+   named like a version is skipped. The PowerShell cases parse the script and evaluate only that
+   function's text, because the script has no main guard and dot-sourcing it would run its
+   `claude -p ok` model call.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
    `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
    token now yields a user-facing advisory rather than the silent skip it did before
@@ -5193,7 +5200,24 @@ For a one-line navigational map of the test directory, see
      bash claude/scripts/tests/test-claude-wrappers.sh
      ```
 
-115. **duplicate-issue retrieval scorer test** — required when changing anything under
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in
+     `docs/REFERENCE.md` (dev-env#1216, ADR-159). The file loads in every session in every project, so the test fails
+     above a byte ceiling set about 5% over its size after the trim, with line endings normalized so a CRLF checkout
+     measures the same. It pins that the ceiling rejects the pre-trim sizes, 166,696 and 181,551 bytes, and that the
+     read isn't implausibly small. Rules now lean on links for their detail, so it also resolves every local link,
+     including same-file anchors and anchors into `docs/REFERENCE.md`, using GitHub's heading-to-anchor form with its
+     `-1` suffix for repeats, and checks a target's case, which `os.path.exists` ignores on Windows. Every
+     `Detail:` heading must have a link pointing to it. It requires more than 50 links, more than 20 detail links and
+     more than 20 detail headings, so a broken extraction can't pass on nothing. Fixtures show a missing file, a wrong
+     case, a titled link and a missing anchor being caught, and that fenced and inline code isn't read as a link or
+     heading. The literal target `url` is skipped, for the tile table's template row `[#N](url)`. Deliberately not
+     covered: whether a shortened rule kept its meaning, which is a review question.
+
+     ```bash
+     py -3 claude/scripts/tests/test_claude_md_size.py
+     ```
+
+116. **duplicate-issue retrieval scorer test** — required when changing anything under
      `experiments/2026-11-issue-dup-retrieval/`
      ([ADR-157](adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Pins the
      instrument behind the experiment's verdict: known-good rankers score 1.0 and known-bad ones

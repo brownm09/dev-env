@@ -277,8 +277,7 @@ Fresh corpus, by PR:
 - **Some verdicts depend on how the scorer reads the rule.** PR 13 blocks because #12 closed undone 35
   minutes after merge; judged at merge, it passes. A review run at merge would therefore have passed
   it. PR 48 would block under a stricter reading of a partly tested criterion. PR 212 would pass if
-  a near-match follow-up counted. [dev-env#1267](https://github.com/brownm09/dev-env/issues/1267)
-  tracks these readings.
+  a near-match follow-up counted. Round 4 below settles these readings, and PR 13 becomes a miss.
 - **The rule can be too strict on a single row.** lifting-logbook PR 115 deferred criteria 6 and 7
   to #106, and PR 132 later delivered them and closed #106. Both scorers still marked those rows
   `not met`, because #106 describes the destination screens rather than the click-through. The PR's
@@ -300,6 +299,89 @@ Fresh corpus, by PR:
 known-bad PRs caught. This supports keeping `not met` as Blocking, which the user chose on
 2026-11-06 knowing the limits above. It rests on one in-sample fix, so the demotion rule above
 still applies to the next false block.
+
+### Round 4 (2026-11-06, dev-env#1267: does "It names the work" falsely block a delivered deferral?)
+
+**Result: no false blocks, but the wording's false-block risk stays largely unmeasured.** The search
+found 2 known-good PRs of the shape the issue asks for, not 3, and in both the verdict didn't depend
+on the follow-up. The user chose on 2026-11-06 to amend the criterion to 2 and merge, knowing that
+and that switchyard PR 13 becomes a miss. The wording's core test stays.
+
+**Corpus.** A separate labeller confirmed delivery from the delivering diff or a recorded run. It
+searched about 66 review markers, scanned about 155 older lifting-logbook PRs, re-read the candidates
+earlier rounds excluded, and searched in reverse from follow-ups to the issues they came from. The
+reverse phrase search sampled 2 pages per phrase, so it isn't a census.
+
+| # | PR | Follow-up | Label | What the labeller found |
+|---|---|---|---|---|
+| 1 | lifting-logbook 800 | #798, via PR 805 | good, other words | Delivered. The deferred clause was only an "ideally" |
+| 2 | lifting-logbook 1069 | #1057, via PR 1074 | good, other words (weak) | Delivered. Only part of one criterion was deferred, and a comment names it |
+| 3 | switchyard 11 | #10, open | good, other words (weak) | Delivery can't be proven while #10 is open |
+| 4 | lifting-logbook 544 | #556, via PR 558 | ambiguous | Criterion 1 only partly delivered, because PR 558 is advisory |
+| 5 | lifting-logbook 655 | #659 and #660, via PRs 661 and 664 | good, control | Delivered. The follow-ups restate the criteria almost word for word |
+
+No fresh known-bad PR turned up. The distractors came from earlier rounds.
+
+**Scoring.** Labeller and scorers were separate agents, and each scorer saw only a list of URLs. One
+scorer ran on the text as it stood (`8fb1b75`) over rows 1 to 5 above, PR 115 and 4 known-bad PRs. Two
+more ran on the final text (`1b12aab`), over 19 PRs: rows 1 to 5, every other round-3 PR whose table
+has a deferred row, PR 284, and four known-bad PRs that block on a skipped check or an admitted gap
+(157, 213, 562, 709), as a guard on the new rule 5 sentence. After scoring, review changed rule 5's
+"any accepted form above" to "any accepted evidence form", because rule 8's accepted forms come
+below it. No scorer ran on that wording.
+
+| # | Text | Set | Blocked | Result |
+|---|---|---|---|---|
+| 1 | `8fb1b75` | Rows 1 to 5 above | 0 | None blocked |
+| 2 | `8fb1b75` | Known-bad (lifting-logbook 115, 165, 212, 562; switchyard 13) | 4 | 4 of 5 caught; PR 13 passed, judged at merge |
+| 3 | `1b12aab` | Known-good (lifting-logbook 655, 759, 800, 1069, 1112; dev-env 1198; win11-init-tools 75; switchyard 48; career-playbook 284) | 0 | 0 false blocks of 9 |
+| 4 | `1b12aab` | Weak or ambiguous (switchyard 11; lifting-logbook 544) | 0 | Both pass |
+| 5 | `1b12aab` | Known-bad (lifting-logbook 115, 157, 165, 212, 213, 562, 709; switchyard 13) | 7 | 7 of 8 caught; PR 13 passes |
+
+The other 20 round-3 PRs weren't re-scored. The issue requires re-scoring all of them only after a
+false block, and none occurred. They have no row that depends on a follow-up's wording or state. The
+rule 5 sentence could in principle clear a block on known-bad PRs 354, 367, 510, 686 or 2054; the
+four guards didn't move, but those five weren't run.
+
+**The three readings, now in the schema.**
+
+| # | Reading | Settled as | Why | Effect |
+|---|---|---|---|---|
+| 1 | When a follow-up's state is judged (switchyard PR 13) | A review judges it when it runs. A re-score judges the state as of the merge, but reads the follow-up's wording as it stands now | A re-score should measure the gate a reviewer had. Wording stays current because adding a comment is the finding's stated fix: win11-init-tools PR 75's naming comment came 33 seconds after merge | PR 13 now passes, so the catch rate falls. It is counted as a miss, not relabelled: #12 closed undone 35 minutes after merge, and nothing in this gate would notice |
+| 2 | A partly tested compound criterion (switchyard PR 48) | Each clause needs only the evidence it asks for. A stronger test the criterion didn't ask for isn't a skipped check | The accepted evidence forms already include a file path and line | PR 48 passes, row 4 `met` |
+| 3 | A near-match follow-up (lifting-logbook PR 212) | Other words count if they describe the same check or outcome. A narrower check doesn't | The single web-to-API trace is the point of that criterion, and #207 checks the API only | PR 212 blocks, row 4 `not met` |
+
+**Why the wording's core test stays.** The issue's trigger is a false block, and none was measured.
+The text gained a "When to judge" paragraph and a sentence on near-matches, for readings 1 and 3
+above, but "names this criterion's check or outcome" is unchanged. PR 115's rows 6 and 7 stay `not met` under every scorer who has read them, though
+PR 132 later delivered that work. On a PR with no other gap, that would block until someone added a
+comment to #106 naming the click-through, and that's what the finding asks for. A review can't see
+later delivery, so what it can check is whether anything tracks the work, and at merge nothing on
+#106 did. Loosening the test to pass PR 115 would also pass PR 212's near-match.
+
+**What these figures don't show.**
+
+- **The hard case was barely exercised.** PR 800's deferred clause was optional. PR 1069's row was
+  `met` on the developer glossary, so its follow-up didn't matter. Among rows that did reach the test
+  with a follow-up in other words, switchyard 11's was accepted, with delivery unproven, and PR 115's
+  were rejected. That is too few to give a rate.
+- **Known-good PRs remain one reading away from a block.** The closest are lifting-logbook PR 759,
+  whose #764 is an auto-filed alert with a comment promising to close once the run is green, and
+  switchyard PR 48, whose #10 names the sandbox run only in a comment worded "the other thing to
+  check". A stricter reading of "as something it will do" would block both.
+- **Readings outside this issue still flip verdicts.** The final-text scorers named 10 they thought
+  unsettled, for example whether an unticked click-through needing a live stack is `not met` (PR 213)
+  or `not verifiable`. PRs 544, 562, 655 and 709 also have one. These weren't in the issue's scope.
+- **Blinding was partial.** Bodies and comments on PRs 11, 13, 48, 75, 1112 and 1198 carried authors'
+  evidence tables, and #1196 mentions PR 284's false block. Scorers treated those as claims.
+- **Scorers vary on rows, not verdicts.** PR 115's row 2 was `met` for one scorer and `not met` for
+  another. It blocks either way.
+- **PR 544 is unresolved.** It passes, but its label is ambiguous, so it counts for neither side.
+
+**Verdict for the gate:** taking each PR's latest score across rounds 3 and 4, no false blocks in 23
+known-good PRs, and 12 of 14 known-bad PRs caught (PR 13 and PR 613 missed). This supports keeping `not met` as Blocking, with
+the demotion rule still in force. It says little about follow-ups in other words, for which the
+corpus barely exists.
 
 ## Consequences
 
