@@ -2,14 +2,24 @@
 """Tests for _docker_lifecycle.py, pre-tool-use-docker-start.py and
 docker-watchdog.py (dev-env#1278, ADR-158).
 
+Required when changing `_docker_lifecycle.py`, `pre-tool-use-docker-start.py`,
+`docker-watchdog.py` or `register-docker-watchdog.ps1`.
+Run: py -3 claude/scripts/tests/test_docker_lifecycle.py
+
 Nothing here touches real Docker: a FakeDocker answers every command and records
 what it was asked to run. `DOCKER_LIFECYCLE_DIR_OVERRIDE` keeps state in a temp
 directory and `HOOK_HEARTBEAT_DIR_OVERRIDE` keeps the heartbeat out of the real
-ledger. Live behaviour (a real start, a real stop, no console window) is checked
-by hand and recorded on the issue, since CI has no Docker Desktop.
+ledger. It pins which commands need the engine, the direct-start block under both
+shells, starting only through the scheduled task, every stop-decision state, wedge
+timing across ticks, leases, the lock, the once-per-boot hypervisor check, and
+deleting only AF_UNIX sockets.
 
-Usage:
-    py -3 claude/scripts/tests/test_docker_lifecycle.py
+Scope gap: the failure this exists for only reproduces on a real machine, inside the
+Claude app's process tree, and CI has no Docker Desktop. When changing how Docker is
+started or stopped, also check by hand: with the engine down, a session's `docker ps`
+succeeds; `py -3 claude/scripts/docker-watchdog.py --status` shows it as started by a
+session; after 15 to 20 minutes idle it has stopped and `wsl --list --running` lists
+no `docker-desktop`; and a later start shows no Inference manager error.
 
 Exit 0 = all pass.
 """

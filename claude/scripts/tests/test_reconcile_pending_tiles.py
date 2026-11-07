@@ -4,7 +4,7 @@
 `reconcile-pending-tiles.py` is a UserPromptSubmit hook that, once per session, walks the
 per-tile shards `sessions/<project>/tiles/<issue-number>.json`, unlinks the ones whose
 paired GitHub issue is CLOSED, and surfaces an index of what is still pending so a
-`spawn_task` chip lost to an app restart can be re-spawned.
+tile card that has lapsed can be re-spawned.
 
 Three properties carry real risk and get the most coverage here:
 

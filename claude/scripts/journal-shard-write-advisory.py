@@ -27,7 +27,7 @@ Three shard kinds are validated: manifest shards, open-PR shards, and — since 
 enforcement phase (dev-env#870) — **tile shards** `sessions/<project>/tiles/<issue>.json`.
 The tile kind is the one whose write is otherwise wholly unverified: a manifest or open-PR
 shard is written by a session that is also doing PR bookkeeping, while a tile shard is
-written immediately after a `spawn_task` call whose payload it exists to preserve. If it is
+written immediately after a tile proposal (`start_session`) whose payload it exists to preserve. If it is
 malformed, the failure is silent *and* delayed — `iter_numeric_shards` skips an unparseable
 shard without a word, so the loss surfaces only when someone needs the payload back after a
 crash, which is exactly when it cannot be reconstructed.
@@ -423,7 +423,7 @@ def format_advisory(problems: list[tuple[str, list[str]]]) -> str:
     )
     lines.append(
         '  tile schema:     {"issue":N,"url":"https://github.com/<owner>/<repo>/issues/N",'
-        '"title":"<chip label>","tldr":"<tooltip>","prompt":"<full spawn_task prompt>",'
+        '"title":"<chip label>","tldr":"<tooltip>","prompt":"<full tile prompt>",'
         '"cwd":"C:/Users/brown/Git/<target-repo>","spawned":"YYYY-MM-DD"}  '
         '(stub optional, must start with "sessions/<project>/"; no task_id key)'
     )

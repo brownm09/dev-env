@@ -1,31 +1,35 @@
 # Test Suite Index — `claude/scripts/tests/`
 
-This directory holds the dev-env hook/script test suite: 107 `test_*.py` files, 12 bash gates, and
-three shared test-support modules (`_hook_wiring.py`, `_heartbeat_isolation.py`, `_throwaway_repo.py`) — 122 files total, indexed per file below
-([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). The counts in this sentence and the
-row-coverage of the tables below are gated by `test_readme_index_parity.py` (Testing item 84).
+This directory holds the dev-env hook/script test suite: `test_*.py` files, bash gates, and shared
+test-support modules such as `_hook_wiring.py`. The tables below index each file that existed up to
+`## Testing` item 118 ([dev-env#822](https://github.com/brownm09/dev-env/issues/822)). A newer test
+has no row: its own first lines say when to run it and how
+([dev-env#1309](https://github.com/brownm09/dev-env/issues/1309)). `test_readme_index_parity.py`
+(Testing item 84) requires every file to have one or the other, and refuses a new row.
 
 **Not the only test directory.** `claude/hooks/tests/` is a second, much smaller test directory
 that `run-hook-tests.py` (below) also discovers and runs — e.g. `test-pre-push-lockfile.sh` lives
 there, not here. It's out of scope for this index (tracked separately in
 [dev-env#314](https://github.com/brownm09/dev-env/issues/314)); if a full suite run shows a file
-you can't find a row for below, that's why.
+you can't find a row for below, that's why, or it's a newer test with its own entry.
 
-**This file is a navigational map, not the authoritative behavioral description.** For exhaustive
-per-file detail — what each test pins, what's deliberately out of scope, incident history — see
-[`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file pair, sharing
-the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) → `## Testing`) and the
-linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md).
+**This file is a navigational map, not the authoritative behavioral description.** For per-file
+detail on tests up to item 118 — what each test pins, what's deliberately out of scope, incident
+history — see [`docs/TESTING.md`](../../../docs/TESTING.md) (numbered items, one per file or file
+pair, sharing the numbering of the index in the root [`CLAUDE.md`](../../../CLAUDE.md) →
+`## Testing`) and the linked ADRs in [`docs/adr/INDEX.md`](../../../docs/adr/INDEX.md). A newer test
+holds its own detail in its docstring or header comment.
 [`docs/REFERENCE.md`'s "Script verification suite"](../../../docs/REFERENCE.md#script-verification-suite)
 table covers a curated ~10-file subset with invocation strings and longer descriptions; this file
-covers all of them, one line each.
+covers each test up to item 118, one line each.
 
 **Running tests.** Every `test_*.py` runs as `py -3 claude/scripts/tests/<file>` from the repo
 root; every `*.sh` runs as `bash claude/scripts/tests/<file>`. To run everything at once:
 `py -3 claude/scripts/run-hook-tests.py` (add `--list` to see what would run without running it).
 Discovery is glob-based (`test_*.py` / `*.sh`, `_`-prefixed files excluded) — a new test file is
-picked up automatically by the runner. **This README is not.** Add a row below in the same PR
-that adds a test file.
+picked up automatically by the runner. To find the tests for a script, from the repo root:
+`git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
+test, because a test may cover a script without naming it.
 
 ---
 
@@ -83,8 +87,8 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_run_hook_tests.py` | `run-hook-tests.py` | Tests the pure discovery/classification helpers behind the test-suite runner itself — the engine behind `py -3 claude/scripts/run-hook-tests.py` and the `hook-tests` CI workflow. |
 | `test_sibling_hooks_hardened_io.py` | 12 of the 13 dev-env#1031/#1033 sibling hooks | AST gate against the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain (dev-env#1028's crash class) plus malformed-payload smoke tests driving each hook's `main()` end-to-end; `pre-tool-use-worktree-path-check.py`'s own coverage lives in `test_worktree_path_check.py` instead. |
 | `test_settings_hook_wiring.py` | `claude/settings.shared.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
-| `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule). |
-| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row (and every row a real file), and that header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
+| `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), no numbered line past 118, and no number used twice. |
+| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row or, for a new test, its own entry (and every row a real file), and that `claude/scripts/README.md`'s header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
 | `check-remote-read-hygiene.sh` | all `claude/**` | Lints for a `git show <ref>:<path>` paired with `2>/dev/null` — the MSYS path-mangling false-absent class where git's swallowed `fatal:` reads as "file absent" (dev-env#602/#877, ADR-120). |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
 | `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
@@ -159,12 +163,11 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 
 | Test file | Covers | Purpose |
 |---|---|---|
-| `test_docker_lifecycle.py` | `_docker_lifecycle.py`, `pre-tool-use-docker-start.py`, `docker-watchdog.py` | Docker Desktop lifecycle (ADR-158), against a fake `docker`: which commands need the engine, the direct-start block, starting only through the scheduled task, every stop-decision state, wedge timing across ticks, leases, the lock, the once-per-boot hypervisor check, and deleting only AF_UNIX sockets. |
 | `test_claude_md_size.py` | `claude/CLAUDE.md` | Caps the global instruction file's size and checks its local links resolve, including anchors into `docs/REFERENCE.md` (ADR-159). |
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
-| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts. |
+| `test_idle_refresher.py` | `idle-refresher.py` | Injects a "here's what we were doing" cue after a long idle gap between prompts, stating the context size re-cached and suggesting `/clear` with a hand-off. |
 | `test_memory_write_advisory.py` | `memory-write-advisory.py` | Flags a durable memory write that has no paired immortalization issue. |
 | `test_posttooluse_inert_advisory.py` | `posttooluse-inert-advisory.py` | Stop-hook safety net: detects a background/SDK-launched session where PostToolUse hooks never fired at all. |
 | `test_pre_bash_drift_check.py` | `pre-bash-drift-check.py` | Elapsed-time-gated repo/branch drift check on every Bash call, not just the three merge-adjacent checkpoints. |
@@ -179,7 +182,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_skill_file_size_advisory.py` | `skill-file-size-advisory.py` | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark, ahead of the hard-block guard's ceiling (ADR-127). |
 | `test_skill_file_size_guard.py` | `pre-tool-use-skill-file-size-guard.py` | Blocks a Write/Edit that would leave a `SKILL.md` file over a configurable byte ceiling; an exactly-at-limit size and an Edit that shrinks an already-oversized file both pass (ADR-127). |
 | `test_stop_experiment_verdict_gate.py` | `stop-experiment-verdict-gate.py` | Stop-hook backstop for the experiment-verdict half of the Experimental Rigor protocol: blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (ADR-115). |
-| `test_turn_count_hook.py` | `turn-count-hook.py` | Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
+| `test_turn_count_hook.py` | `turn-count-hook.py` | The `[session-size]` warning on growth (silent at a large start). Context-growth journal-stub bands: once per band, post-compaction growth, sidechain records skipped, stub discovery, config fallback, and an end-to-end subprocess run (ADR-150). |
 | `test_token_attribution.py` | `_token_pricing.py`, `token-report.py` | Model prices, unknown models reported as unpriced, and `--attribution` dollars pinned against a hand-computed transcript, with no transcript text in the output. |
 | `test_token_tracker.py` | `token-tracker.py` | Per-session token/cost aggregation and the once-per-session locate-failure advisory. |
 | `test_usage_snapshot.py` | `usage-snapshot.py` | OAuth-token expiry classification plus the merge-confirmation predicate for the post-tool-use usage snapshot. |
@@ -207,11 +210,19 @@ Scripts invoked directly (by a person or a skill), not wired as Claude Code hook
 1. Name it `test_*.py` (pure Python, offline-testable where possible) or `*.sh` (a bash gate or a
    behavioral driver against a real hook via stdin/subprocess) and drop it in this directory —
    `run-hook-tests.py` discovers it automatically, no wiring needed.
-2. Add a one-line module docstring (Python) or header comment (bash) stating what it covers —
-   several rows above were written straight from these.
-3. Add a row to the relevant table above (or a new subsection, if it's a genuinely new category).
-4. Add the numbered index line to the root `CLAUDE.md` → `## Testing` **and** the matching
-   detail item to [`docs/TESTING.md`](../../../docs/TESTING.md) — same number, same PR. Both are
-   required (ADR-114): the numbering gate parses the index and "Test before PR" defers to it;
-   incident/ADR context beyond one line belongs in the detail item, not here. The
-   `test_testing_index_parity.py` gate fails the suite if the two files' item sets diverge.
+2. Open the module docstring (Python) or header comment (bash) with what it covers, followed by
+   its index entry, within the file's first 10 lines. Each line starts its own line, the first names
+   what it covers so `git grep` can find it, and the second names this file on that same line:
+
+       Required when changing `claude/scripts/foo.py`.
+       Run: py -3 claude/scripts/tests/test_foo.py
+
+   What the test pins, scope gaps and incident history go below that, in the same docstring or
+   comment. `test_testing_index_merge.py` is an example.
+3. Add nothing to this README, the root `CLAUDE.md` or [`docs/TESTING.md`](../../../docs/TESTING.md).
+   Editing those is what made every pair of test-adding PRs conflict
+   ([ADR-074 Amendment 1](../../../docs/adr/074-pre-merge-numbering-collision-check.md)).
+   `test_testing_index_parity.py` refuses a new numbered item, and
+   `test_readme_index_parity.py` refuses a new row, or a test with neither a row nor an entry. A
+   shared support module isn't a test: it needs a row in this README's second column and an
+   exemption in that gate.

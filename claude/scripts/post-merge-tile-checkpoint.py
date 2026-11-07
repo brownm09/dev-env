@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Claude Code PostToolUse hook — after a successful `gh pr merge`, emit a
-blocking reminder to spawn follow-up tiles via the spawn_task tool.
+blocking reminder to spawn follow-up tiles via mcp__ccd_session__start_session.
 
 The CLAUDE.md "Capture post-merge follow-ups as tiles" rule (ADR-046) has no
 automated enforcement — without this hook it is crowded out by the journal/board
@@ -115,7 +115,7 @@ def main() -> None:
             sys.exit(0)
 
     _hookout.emit_block(
-        "[tile-checkpoint] PR merged - spawn follow-up tiles now via spawn_task for "
+        "[tile-checkpoint] PR merged - spawn follow-up tiles now via start_session for "
         "any out-of-scope fixes, deferred work, or ideas surfaced during this session. "
         "This includes the next not-yet-started unit of a multi-PR initiative (ADR-059) "
         "if one exists -- do not convert it into a scheduling/permission question back "
