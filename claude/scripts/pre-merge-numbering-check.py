@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hook -- pre-merge numbering-collision check (dev-env#516).
 
-CLAUDE.md's `## Testing` section and docs/adr/INDEX.md's ADR table are both
-hand-numbered sequential lists that many concurrent PRs append to. Two branches
-cut around the same time each pick "the next number" from their own stale
-snapshot; when both merge, git accepts the second insertion as a clean 3-way
-merge (it never touches the first PR's lines), silently producing a duplicate
-number instead of a conflict. The bug is a *merge-time race*, not a
+docs/adr/INDEX.md's ADR table is a hand-numbered sequential list that many
+concurrent PRs add to, and CLAUDE.md's `## Testing` section was another until it
+was frozen at item 118 (dev-env#1309, ADR-074 Amendment 1); this check still
+catches a Testing number that reaches a merge. Two branches cut around the same
+time each pick "the next number" from their own stale snapshot; when both merge
+at different insertion points, git accepts the second as a clean 3-way merge (it
+never touches the first PR's lines), silently producing a duplicate number
+instead of a conflict. The bug is a *merge-time race*, not a
 stale-branch problem: a branch can be perfectly self-consistent when authored
 and still collide, because the collision is introduced by *other* PRs merging
 first while this one sits in review (dev-env#516; see also seven ADR-INDEX.md
@@ -78,6 +80,7 @@ import _hookutil
 
 _TESTING_ITEM_RE = re.compile(r'^(\d+)\.\s+\*\*')
 _ADR_ROW_RE = re.compile(r'^\|\s*\[(\d+)\]\(')
+_TESTING_LABEL = "CLAUDE.md Testing section"
 
 
 def extract_section(text, heading):
@@ -189,11 +192,20 @@ def format_block_message(findings):
             lines.append(f"    this branch:  {branch_line}")
             lines.append(f"    origin/main:  {main_line}")
         lines.append("")
-    lines.append(
-        "Fix: git fetch origin main && git rebase origin/main -- then renumber the "
-        "colliding item(s) above to the next free number in that file, commit, and "
-        "re-run `gh pr merge`."
-    )
+    if set(findings) - {_TESTING_LABEL}:
+        lines.append(
+            "Fix: git fetch origin main && git rebase origin/main -- then renumber the "
+            "colliding item(s) above to the next free number in that file, commit, and "
+            "re-run `gh pr merge`."
+        )
+    if _TESTING_LABEL in findings:
+        lines.append(
+            "Fix for a Testing item: git fetch origin main && git rebase origin/main -- but "
+            "don't renumber, because a new test takes no number. Remove the item from "
+            "CLAUDE.md and docs/TESTING.md, and its row from claude/scripts/tests/README.md, "
+            "put `Required when ...` and `Run: ...` lines in the test file's first 10 lines "
+            "instead (dev-env#1309), commit, and re-run `gh pr merge`."
+        )
     return "\n".join(lines)
 
 
@@ -201,7 +213,7 @@ def format_block_message(findings):
 # hot spots (dev-env#516). Defined after the extractors so it can reference
 # them directly.
 _CHECKED_FILES = (
-    ("CLAUDE.md", extract_testing_numbers, "CLAUDE.md Testing section"),
+    ("CLAUDE.md", extract_testing_numbers, _TESTING_LABEL),
     ("docs/adr/INDEX.md", extract_adr_numbers, "docs/adr/INDEX.md ADR table"),
 )
 
