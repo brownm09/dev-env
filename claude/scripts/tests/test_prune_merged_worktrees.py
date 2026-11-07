@@ -732,8 +732,160 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
     return "abbreviations, empty paths and bad liveness windows exit 2"
 
 
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-160).
+# The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
+# network, because is_merged() skips its `gh` fallback for a commit with no branch name.
+
+def _scan(repo: ThrowawayRepo, state: Path, *flags: str):
+    r = repo.run_script(_MODULE_PATH, "--scan-dir", str(repo.root), "--include-named",
+                        "--state-file", str(state), *flags)
+    if r.returncode != 0:
+        raise AssertionError(f"scan: exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    return r.stdout
+
+
+def _result_field(stdout: str, name: str) -> str:
+    lines = [line for line in stdout.splitlines() if line.startswith("RESULT: ")]
+    if not lines:
+        raise AssertionError(f"no RESULT line\n{stdout}")
+    fields = dict(part.split("=", 1) for part in lines[-1].split()[1:])
+    return fields[name]
+
+
+def _add_unmerged_worktree(repo: ThrowawayRepo, name: str) -> str:
+    path = repo.primary / ".claude" / "worktrees" / name
+    repo._git(repo.primary, "worktree", "add", "--detach", str(path))
+    (path / "unmerged.txt").write_text(name, encoding="utf-8")
+    repo._git(path, "add", "unmerged.txt")
+    repo._git(path, "commit", "-m", name)
+    return str(path.resolve())
+
+
+def _break_fetch(repo: ThrowawayRepo) -> None:
+    repo._git(repo.root, "--git-dir", str(repo.origin), "update-ref", "-d", "refs/heads/main")
+
+
+def test_scan_second_run_lists_nothing_then_only_the_new_entries() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+        _break_fetch(repo)
+
+        first = _scan(repo, state)
+        if f"skipped {old}" not in first or "WARNING: fetch failed" not in first:
+            raise AssertionError(f"first run should list both\n{first}")
+        if _result_field(first, "baseline") != "true" or _result_field(first, "new_fetch_failed") != "1":
+            raise AssertionError(f"first run RESULT wrong\n{first}")
+
+        second = _scan(repo, state)
+        if str(repo.primary) in second:
+            raise AssertionError(f"second run still lists this repo's entries\n{second}")
+        checks = {"baseline": "false", "new_skipped": "0", "new_fetch_failed": "0", "fetch_failed": "1"}
+        for name, want in checks.items():
+            if _result_field(second, name) != want:
+                raise AssertionError(f"second run: {name} should be {want}\n{second}")
+        if _result_field(second, "skipped") != _result_field(first, "skipped"):
+            raise AssertionError(f"the skipped total should stay in RESULT\n{first}\n{second}")
+
+        new = _add_unmerged_worktree(repo, "new")
+        third = _scan(repo, state)
+        if f"skipped {new}" not in third or old in third:
+            raise AssertionError(f"third run should list only the new worktree\n{third}")
+        if _result_field(third, "new_skipped") != "1":
+            raise AssertionError(f"third run RESULT wrong\n{third}")
+
+        repo._git(repo.primary, "push", "origin", "main")
+        fourth = _scan(repo, state)
+        if f"fetch works again: {repo.primary}" not in fourth or "WARNING" in fourth:
+            raise AssertionError(f"a fetch that recovers should be reported once\n{fourth}")
+    return "repeat run lists no skip or fetch failure and keeps RESULT; only a new entry is listed"
+
+
+def test_scan_missing_or_unreadable_state_gives_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        _scan(repo, state)
+        if kept in _scan(repo, state):
+            raise AssertionError("control: the state file should silence the list")
+
+        state.write_text("{not json", encoding="utf-8")
+        out = _scan(repo, state)
+        if "no usable state" not in out or f"skipped {kept}" not in out or "Done" not in out:
+            raise AssertionError(f"an unreadable state file should give the full report\n{out}")
+
+        state.unlink()
+        out = _scan(repo, state)
+        if f"skipped {kept}" not in out or not state.exists():
+            raise AssertionError(f"a missing state file should give the full report and be rewritten\n{out}")
+    return "an unreadable or missing state file gives the full report, and is rewritten"
+
+
+def test_scan_full_and_dry_run_leave_the_state_alone() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+
+        _scan(repo, state, "--dry-run")
+        if state.exists():
+            raise AssertionError("--dry-run wrote the state file")
+        _scan(repo, state)
+        before = state.read_bytes()
+        new = _add_unmerged_worktree(repo, "new")
+
+        full = _scan(repo, state, "--full")
+        if old not in full or new not in full or "new_skipped" in full:
+            raise AssertionError(f"--full should list everything\n{full}")
+        if state.read_bytes() != before:
+            raise AssertionError("--full updated the state")
+
+        dry = _scan(repo, state, "--dry-run")
+        if new not in dry or old in dry or state.read_bytes() != before:
+            raise AssertionError(f"--dry-run should preview the change only\n{dry}")
+
+        real = _scan(repo, state)
+        if new not in real or _result_field(real, "new_skipped") != "1":
+            raise AssertionError(f"--full and --dry-run used up the next run's news\n{real}")
+    return "--full lists all and --dry-run previews, and neither uses up the next run's news"
+
+
+def test_skip_findings_ignores_passing_skips_but_keeps_their_record() -> str:
+    prior = {"/known": "not merged into origin/main"}
+    findings = prune.skip_findings(
+        [("/primary", prune.SKIP_PRIMARY_OR_CURRENT), ("/live", prune.SKIP_LIVE_SESSION),
+         ("/known", prune.SKIP_LIVE_SESSION), ("/dirty", "has uncommitted changes")],
+        prior,
+    )
+    expected = {"/known": "not merged into origin/main", "/dirty": "has uncommitted changes"}
+    if findings != expected:
+        raise AssertionError(f"got {findings}")
+    return "primary/current/live skips aren't findings; a known worktree going live keeps its entry"
+
+
+def test_single_repo_mode_keeps_the_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        for _ in range(2):
+            r = repo.run_script(_MODULE_PATH, "--include-named", "--state-file", str(state))
+            if f"skipped {kept}" not in r.stdout or "RESULT:" in r.stdout:
+                raise AssertionError(f"--repo-path changed behaviour\n{r.stdout}\n{r.stderr}")
+        if state.exists():
+            raise AssertionError("--repo-path wrote the state file")
+    return "--repo-path prints its full report every time and never touches the state"
+
+
 def main() -> int:
     tests = [
+        ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
+        ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
+        ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
+        ("skip_findings ignores passing skips, keeps their record", test_skip_findings_ignores_passing_skips_but_keeps_their_record),
+        ("--repo-path keeps the full report", test_single_repo_mode_keeps_the_full_report),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run prunes", test_cli_control_dry_run_keeps_and_plain_run_prunes),

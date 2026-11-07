@@ -43,23 +43,29 @@ documents, generalized by [ADR-070](../../docs/adr/070-reconcile-project-board-s
    ```
    The script discovers every git repo directly under `C:/Users/brown/Git` with a
    `.claude/hook-config.json` (`repo`/`project_number`/`project_owner` set) and reconciles
-   each one; repos without one are skipped silently — board tracking is opt-in.
+   each one; repos without one are skipped silently — board tracking is opt-in. It lists only
+   the issues that are new or changed since its last run, and prints the full list when its
+   state file is missing or unreadable (`baseline=true` in the `RESULT:` line). To see every
+   issue still flagged, add `--full`, which leaves the state file alone
+   ([ADR-160](../../../docs/adr/160-maintenance-routines-report-what-changed.md)).
 2. Report the script output per repo: how many orphan issues were added (vs. attempted — a
-   partial failure shows as `Added M/N ... (K failed)`), and the per-issue list of issues
-   still missing a required field (the script prints the exact `gh project item-edit`
-   commands for each, under its own `Repo: <name>` heading).
+   partial failure shows as `Added M/N ... (K failed)`), and the per-issue list it printed
+   (the exact `gh project item-edit` commands for each, under its own `Repo: <name>` heading).
+   Don't re-list issues it summarized as unchanged.
 3. Read the final aggregate `RESULT:` line (`repos_scanned=N repos_skipped=K repos_failed=F
-   orphans_added=M add_failed=J needs_attention=L dry_run=...`) and send a push notification
-   when any of:
-   - `needs_attention` is greater than 0 — list the issue numbers (with their repo) that
-     need a required field, so the user (or a later interactive session) can fill them.
-     **Do not set the field yourself** — it requires human judgment per the no-guessing rule.
-   - `add_failed` is greater than 0 — an orphan failed to add (e.g. a transient `gh` error);
-     note it self-heals on the next nightly run since the issue stays orphaned, but surface
-     it so a persistent failure doesn't go unnoticed.
-   - `repos_failed` is greater than 0 — a configured repo's `gh` call failed for a reason
-     other than a missing scope (network blip, access change, deleted repo); name the repo
-     from the per-repo output above so it can be investigated.
+   orphans_added=M add_failed=J needs_attention=L dry_run=... new_needs_attention=A
+   no_longer_needs_attention=B new_repos_failed=C baseline=...`) and send a push notification
+   **only for changed findings**: when `new_needs_attention` or `new_repos_failed` is greater
+   than 0. When both are 0, send no notification, however large `needs_attention`,
+   `add_failed` or `repos_failed` are, because those totals repeat what was already reported.
+   - `new_needs_attention` greater than 0 — list the issue numbers (with their repo) the script
+     printed, so the user (or a later interactive session) can fill them. An orphan whose add
+     failed is included (it shows `[ADD FAILED - re-run]`); it self-heals on a later run, since
+     the issue stays orphaned. **Do not set the field yourself** — it requires human judgment
+     per the no-guessing rule.
+   - `new_repos_failed` greater than 0 — a configured repo's `gh` call started failing for a
+     reason other than a missing scope (network blip, access change, deleted repo); name the
+     repo from the per-repo output above so it can be investigated.
 
 **Constraints:**
 - The script is **add-only + report-only**: it adds orphans and prints the `gh project
