@@ -234,6 +234,23 @@ def test_cli_rejects_unknown_arguments() -> str:
     return "undefined flags and a stray argument exit non-zero before any git command"
 
 
+def test_is_dirty_does_not_refresh_the_index() -> str:
+    """The prune reads the index's mtime as activity, so reclaim's scan must not renew it."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        index = repo.admin_dir / "index"
+        stamp = repo.age_git_state()
+        (repo.worktree / ".gitignore").touch()
+        if rwd.is_dirty(str(repo.worktree)):
+            raise AssertionError("touching a file without changing it should read as clean")
+        if abs(index.stat().st_mtime - stamp) > 1:
+            raise AssertionError("is_dirty rewrote the index")
+        repo._git(repo.worktree, "status", "--porcelain")
+        if abs(index.stat().st_mtime - stamp) <= 1:
+            raise AssertionError("plain git status left the index alone, so this test proves nothing")
+    return "is_dirty leaves the index's mtime alone where a plain git status moves it"
+
+
 def test_cli_control_dry_run_keeps_and_plain_run_reclaims() -> str:
     """Proves the two tests above can fail: this same worktree really is eligible."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -313,6 +330,7 @@ def main() -> int:
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run reclaims", test_cli_control_dry_run_keeps_and_plain_run_reclaims),
+        ("is_dirty does not refresh the index", test_is_dirty_does_not_refresh_the_index),
         ("CLI parser: existing callers still parse", test_cli_parser_accepts_existing_callers),
         ("CLI parser: abbreviation and bad values rejected", test_cli_parser_rejects_abbreviation_and_bad_values),
         ("is_idle_eligible decision table", test_is_idle_eligible_decision_table),
