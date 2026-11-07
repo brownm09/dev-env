@@ -170,7 +170,7 @@ Comparative claims about a process change follow the global `## Experimental Rig
 
 | # | Experiment | Corpus | Instruments and calibration references | Results home |
 |---|---|---|---|---|
-| 1 | Duplicate-issue retrieval ([#1260](https://github.com/brownm09/dev-env/issues/1260)) | `labels.json`: declared duplicates, avoided duplicates, declared non-duplicates | Hit-test scorer, known-good and known-bad rankers (item 115); vector ranking, `calibrate_vector.py` | `experiments/2026-11-issue-dup-retrieval/` |
+| 1 | Duplicate-issue retrieval ([#1260](https://github.com/brownm09/dev-env/issues/1260), re-run [#1282](https://github.com/brownm09/dev-env/issues/1282)) | `labels.json`: declared duplicates, avoided duplicates, declared non-duplicates | Scorer and retry merge through `score.py`'s real path, known-good and known-bad fixtures (item 117); live search, `calibrate_search.py`; vector ranking, `calibrate_vector.py` as a smoke check | `experiments/2026-11-issue-dup-retrieval/`, re-run in `rerun/` |
 
 Default tier: Tier 1 for anything that would change a standing rule, hook or skill; Tier 0 for a one-off look.
 

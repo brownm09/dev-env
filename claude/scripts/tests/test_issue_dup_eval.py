@@ -14,6 +14,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 EXPERIMENT = REPO_ROOT / "experiments" / "2026-11-issue-dup-retrieval"
@@ -21,6 +22,8 @@ ADR = REPO_ROOT / "docs" / "adr" / "157-duplicate-issue-retrieval-experiment.md"
 sys.path.insert(0, str(EXPERIMENT))
 
 import dup_eval as de  # noqa: E402
+import keyword_arm  # noqa: E402
+import retry_round  # noqa: E402
 import score  # noqa: E402
 
 
@@ -38,6 +41,17 @@ FIXTURE_INPUTS = [
 
 def run_score(vector_ranks, keyword_lists, generations=("g1", "g2", "g3")):
     """Run score.main on fixture files through its real path, and return its summary."""
+    keyword = {
+        g: {
+            i["id"]: {"parity": keyword_lists[i["id"]], "default": keyword_lists[i["id"]]}
+            for i in FIXTURE_INPUTS
+        }
+        for g in generations
+    }
+    return run_score_files(vector_ranks, keyword)
+
+
+def run_score_files(vector_ranks, keyword):
     vector = {
         "ranks": vector_ranks,
         "pairs": {
@@ -47,13 +61,6 @@ def run_score(vector_ranks, keyword_lists, generations=("g1", "g2", "g3")):
             "auditor_near_dup": [["r", 7, 10, 0.6]],
         },
         "cross_repo": [],
-    }
-    keyword = {
-        g: {
-            i["id"]: {"parity": keyword_lists[i["id"]], "default": keyword_lists[i["id"]]}
-            for i in FIXTURE_INPUTS
-        }
-        for g in generations
     }
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
@@ -109,6 +116,102 @@ class ScorePathCalibration(unittest.TestCase):
             de.majority([])
 
 
+class RetryPathCalibration(unittest.TestCase):
+    """The re-run's verdict path: a retry round, merged, then score.py's real path (dev-env#1282)."""
+
+    INPUTS = {i["id"]: i for i in FIXTURE_INPUTS}
+
+    def run_round(self, replacement_hits):
+        """Every first-round query returns nothing, and the replacement returns the target or not."""
+        round1 = {
+            g: {i["id"]: {"parity": [[], []], "default": [[], []]} for i in FIXTURE_INPUTS}
+            for g in ("g1", "g2", "g3")
+        }
+        final = {}
+        for g, by_input in round1.items():
+            final[g] = {}
+            for iid, per_scope in by_input.items():
+                results = self.INPUTS[iid]["targets"] if replacement_hits else [999]
+                final[g][iid] = retry_round.merge_round(per_scope, {0: {"parity": results, "default": results}})
+        return run_score_files(GOOD_RANKS, final)
+
+    def test_known_good_replacement_scores_one(self):
+        self.assertEqual(self.run_round(True)["recall_at_10"]["pooled"]["keyword"], 1.0)
+
+    def test_known_bad_replacement_scores_zero(self):
+        self.assertEqual(self.run_round(False)["recall_at_10"]["pooled"]["keyword"], 0.0)
+
+    def test_merge_fills_only_the_named_slot_and_keeps_default_results(self):
+        merged = retry_round.merge_round({"parity": [[1], []], "default": [[1], [2]]}, {1: {"parity": [3]}})
+        self.assertEqual(merged, {"parity": [[1], [3]], "default": [[1], [2]]})
+        merged = retry_round.merge_round({"parity": [[]], "default": [[]]}, {0: {"parity": [3], "default": [4]}})
+        self.assertEqual(merged, {"parity": [[3]], "default": [[4]]})
+
+    def test_merge_never_overwrites_a_list_that_returned_results(self):
+        per_scope = {"parity": [[1]], "default": [[2]]}
+        merged = retry_round.merge_round(per_scope, {0: {"parity": [9], "default": [9]}})
+        self.assertEqual(merged, {"parity": [[1]], "default": [[2]]})
+
+    def test_scoring_reads_each_scope_from_its_own_list(self):
+        keyword = {
+            g: {i["id"]: {"parity": [[999]], "default": [i["targets"]]} for i in FIXTURE_INPUTS}
+            for g in ("g1", "g2", "g3")
+        }
+        recall = run_score_files(GOOD_RANKS, keyword)["recall_at_10"]
+        self.assertEqual(recall["pooled"]["keyword"], 0.0)
+        self.assertEqual(recall["stratum_A"]["keyword_default_scope"], 1.0)
+
+    def test_merge_leaves_the_round_one_lists_alone(self):
+        original = {"parity": [[]]}
+        retry_round.merge_round(original, {0: {"parity": [3]}})
+        self.assertEqual(original, {"parity": [[]]})
+
+    def test_writer_sees_no_results_labels_or_targets(self):
+        text = retry_round.retry_text("d07", "dev-env", "Draft text", ["kept words", "empty words"], [[610, 734], []])
+        self.assertIn("kept words -> returned results", text)
+        self.assertIn("empty words -> returned nothing", text)
+        for forbidden in ("610", "734", "target", "stratum", "A:dev-env", "created_before"):
+            self.assertNotIn(forbidden, text)
+
+    def test_nothing_to_retry_writes_no_section(self):
+        self.assertIsNone(retry_round.retry_text("d07", "dev-env", "Draft", ["q"], [[1]]))
+
+    def test_replacement_count_must_match_empty_queries(self):
+        for replacements, empty in ((["a", "b"], 1), (["a"], 2), ([], 1)):
+            with self.assertRaises(SystemExit):
+                retry_round.check_replacements("d07", replacements, empty)
+
+    def test_blank_or_qualified_replacement_is_rejected(self):
+        for query in ("  ", "hook in:title", "hook label:bug"):
+            with self.assertRaises(SystemExit):
+                retry_round.check_replacements("d07", [query], 1)
+
+    def test_generation_check_rejects_unknown_ids_and_dropped_drafts(self):
+        round1 = {"A:r#5": {"parity": [[], [1]]}, "A:r#6": {"parity": [[2]]}}
+        reverse = {"A:r#5": "d00", "A:r#6": "d01"}
+        retry_round.check_all_replacements({"d00": ["words"]}, reverse, round1)
+        for raw in ({}, {"d00": ["words"], "d99": ["words"]}):
+            with self.assertRaises(SystemExit):
+                retry_round.check_all_replacements(raw, reverse, round1)
+
+    def test_failed_search_raises_and_never_reads_as_empty(self):
+        failed = mock.Mock(returncode=1, stderr=b"HTTP 502", stdout=b"")
+        with mock.patch.object(keyword_arm.subprocess, "run", return_value=failed), mock.patch.object(keyword_arm.time, "sleep"):
+            with self.assertRaises(SystemExit):
+                keyword_arm.search("dev-env", "words", "parity", "t")
+
+    def test_sanitizer_removes_the_phrase_that_selects_stratum_b(self):
+        self.assertEqual(de.sanitize_query("Finding\nAdded here rather than opening a new issue.\nMore"), "Finding\nMore")
+
+    def test_evaluation_set_keeps_the_frozen_inputs_and_adds_fresh_ones_apart(self):
+        frozen = load_json("labels.json")["inputs"]
+        merged = load_json("rerun/labels_all.json")["inputs"]
+        self.assertEqual([i for i in merged if i in frozen], frozen)
+        fresh = [i for i in merged if i not in frozen]
+        self.assertTrue(fresh, "the re-run registered at least one fresh input")
+        self.assertTrue(all(i["created_before"] > "2026-11-06" for i in fresh))
+
+
 class CommittedResult(unittest.TestCase):
     def test_score_reproduces_the_committed_result(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +229,25 @@ class CommittedResult(unittest.TestCase):
     def test_frozen_map_reading_is_pinned(self):
         # The audit's threat sweep overrides this reading: see results.md.
         self.assertEqual(load_json("scored.json")["summary"]["verdict"], "supported")
+
+    def test_score_reproduces_the_committed_rerun(self):
+        for keyword, scored, reading in (
+            ("rerun/keyword_round1.json", "rerun/scored_round1.json", "supported"),
+            ("rerun/keyword_final.json", "rerun/scored_final.json", "inconclusive"),
+        ):
+            with self.subTest(keyword), tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "scored.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    score.main(
+                        str(EXPERIMENT / "labels.json"),
+                        str(EXPERIMENT / "rerun/vector_results.json"),
+                        str(EXPERIMENT / keyword),
+                        out,
+                    )
+                with open(out, encoding="utf-8") as f:
+                    result = json.load(f)
+                self.assertEqual(result, load_json(scored))
+                self.assertEqual(result["summary"]["verdict"], reading)
 
 
 class OutcomeMap(unittest.TestCase):
@@ -274,6 +396,10 @@ class Privacy(unittest.TestCase):
         holds one fixed reason sentence from dup_eval.decide."""
         for name, limit in (("labels.json", 45), ("keyword_results.json", 45), ("vector_results.json", 45), ("scored.json", 110)):
             self._assert_short_strings(load_json(name), limit)
+        rerun = [p for p in (EXPERIMENT / "rerun").iterdir() if p.suffix == ".json"]
+        self.assertTrue(rerun, "an empty file list would pass vacuously")
+        for path in rerun:
+            self._assert_short_strings(load_json(f"rerun/{path.name}"), 110)
 
     def test_committed_files_hold_no_private_title(self):
         """Needs the local issue cache, which CI can't have, because the repos are private. This
@@ -286,7 +412,7 @@ class Privacy(unittest.TestCase):
             with open(f"{cache}/issues_{repo}.json", encoding="utf-8") as f:
                 titles += [i["title"] for i in json.load(f)]
         self.assertGreater(len(titles), 100, "an empty title list would pass vacuously")
-        paths = [p for p in EXPERIMENT.iterdir() if p.is_file() and p.suffix in {".md", ".json", ".jsonl", ".txt", ".py"}]
+        paths = [p for p in EXPERIMENT.rglob("*") if p.is_file() and p.suffix in {".md", ".json", ".jsonl", ".txt", ".py"}]
         self.assertGreater(len(paths), 5, "an empty file list would pass vacuously")
         for path in paths + [ADR]:
             text = path.read_text(encoding="utf-8")
