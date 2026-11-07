@@ -5141,6 +5141,9 @@ For a one-line navigational map of the older tests, see
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
+     To stay well inside the runner's 300-second cap on a busy machine (dev-env#1325), most tests
+     copy a shared snapshot of the repositories, and tests run side by side, each in its own process.
+     Pass a test's name to run just that one.
      A moved stub and manifest take the target branch's date, checked with the same glob
      `/journal-compose` uses, and the manifest's `stub` field names the new path in whichever form
      it had: a bare filename or a `sessions/<project>/` path, since both occur in real shards. A
