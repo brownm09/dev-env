@@ -149,6 +149,7 @@ the item). A one-line navigational map of the test directory is
 113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
 114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd`. Runs both wrappers against fixture install directories to check which binary each one starts (dev-env#1142). Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
 115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
+116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
 
 ## Observability
 

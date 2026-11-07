@@ -126,6 +126,26 @@ and continue with a partial report.
 
 ---
 
+## Step 3.5 — Report deferred criteria whose follow-up closed undone
+
+`/review` can't see a follow-up that closes after the PR merged, so this run looks for them
+([ADR-153](../../../docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292):
+
+```bash
+py -3 ~/.claude/scripts/deferred-followup-sweep.py --closed-since "$WINDOW_START" \
+  --repo brownm09/dev-env --repo brownm09/career-playbook --repo merickvaughn/lifting-logbook \
+  --repo brownm09/switchyard --repo brownm09/win11-init-tools --repo brownm09/cover-letter-runtime \
+  --repo brownm09/tech-leadership-reference
+```
+
+Add each reported line to the §2 action-item checklist of the deferring PR's repo: "Read this
+follow-up. Reopen it if the work is still wanted, or say on the issue why it was dropped." Step 6's
+dedup guard covers a line that also appeared in the previous run. Put the summary line in §1, since
+"not judged" counts closures nobody has checked. If the script exits non-zero, note the gap in §1 and
+continue, as with a failed subagent above. Don't reopen or comment on anything from this routine.
+
+---
+
 ## Step 4 — Synthesize the retrospective (v2 structure)
 
 Merge the per-project digests into one retrospective with **three parts**, each point anchored to

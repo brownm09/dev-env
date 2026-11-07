@@ -125,7 +125,9 @@ link. If the issue can't be read, stop and report a tool error, as in §1.
 of a merged PR replays that review, so it judges the second test, and rule 9's open-or-merged
 state, as of the PR's merge: a later closure or a PR opened later doesn't count for or against the
 row. The first test still reads the issue as it stands now, comments after the merge included,
-because a missing name is what the finding asks the author to fix.
+because a missing name is what the finding asks the author to fix. A closure after the merge is
+never this gate's to catch; `claude/scripts/deferred-followup-sweep.py` reports some of them, and it
+never changes a row (ADR-153 → *Follow-ups closed after merge*).
 
 ### Deferral and admission rules
 

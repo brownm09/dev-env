@@ -5216,3 +5216,16 @@ For a one-line navigational map of the test directory, see
      ```bash
      py -3 claude/scripts/tests/test_claude_md_size.py
      ```
+
+116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py`
+     ([ADR-153](adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Fixtures cut down from
+     the two references pin the outcome: switchyard PR 13 reports #12, and lifting-logbook PR 115 reports
+     nothing and counts #106 as not judged. They are fixtures because a live run of PR 13 changes if #12 is
+     reopened. Also pinned: only the Evidence cell of a `not verifiable` row counts, the block's own issue is
+     skipped, "deferred from" isn't a deferral, a closure before the merge reports nothing, and the negation
+     must name this issue right after the keyword. Deliberately not covered: the `gh` calls, and the sweep's
+     hit rate, which is in ADR-153 because it needs labelled data.
+
+     ```bash
+     py -3 claude/scripts/tests/test_deferred_followup_sweep.py
+     ```
