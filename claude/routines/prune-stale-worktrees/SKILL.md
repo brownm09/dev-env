@@ -34,6 +34,14 @@ Prune stale Claude session worktrees across all git repos under `C:/Users/brown/
 2. Report the per-repo output: how many worktrees were pruned and skipped in each repo, and the reason for each skip.
 3. If any repo shows `claude/*` branches skipped due to "not merged" status, list them and send a push notification summarizing the count and branch names so the user can investigate.
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine prune-stale-worktrees --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
+
 **Constraints:**
 - Script uses `git branch -d` (not `-D`) and `git worktree remove` (no `--force`) — safe by default
 - Repos with no GitHub remote are silently skipped

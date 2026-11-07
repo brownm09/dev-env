@@ -47,6 +47,14 @@ The batch skill handles all JD processing, artifact writing, `_review_queue.md` 
 branch creation, committing, PR creation, and push notification. This routine's job is only
 to ensure the working tree is current with `origin/main` before the skill runs.
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine nightly-cover-letters --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
+
 ## Constraints
 
 - **Never call AskUserQuestion** — fully autonomous

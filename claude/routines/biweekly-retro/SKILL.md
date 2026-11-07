@@ -327,6 +327,14 @@ Clean up any scratch files this run created.
 
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine biweekly-retro --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
+
 ## Constraints
 
 - **Engineering-journal repo:** `C:/Users/brown/Git/engineering-journal`; sessions root `sessions/`,

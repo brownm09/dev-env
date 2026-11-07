@@ -274,6 +274,14 @@ rm -f C:/Users/brown/.claude/scratch/nightly-research-update-*.js
 
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine nightly-research --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
+
 ## Constraints
 
 - **Queue file:** `C:/Users/brown/Git/research-notes/research-queue.md`

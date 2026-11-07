@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **114 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **115 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -151,7 +151,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (32)
+### Session state, reliability & token tracking (33)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -168,6 +168,7 @@ invocation instead.
 | `session-start-auto-resume.py` | SessionStart (`resume`, `asyncRewake`) | When a session's CLI starts and its transcript ended mid-turn, and the session is opted in, waits `settleSeconds`, re-checks nothing new arrived, then exits 2 to wake the model with a check-for-errors-and-continue message. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when context growth since the session's first turn, or the prompt count, crosses a threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state, state the context size the return re-caches, and suggest `/clear` with a hand-off if the task has changed. |
+| `routine-findings.py` | UserPromptSubmit, and `py -3 routine-findings.py save --routine NAME --message TEXT --push-result TEXT` | Routines save a finding when their push wasn't delivered; the hook shows saved findings once, on the next prompt in a person's session. See [ADR-160](../../docs/adr/160-routine-findings-delivery-fallback.md). |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `hook-timing-report.py` | `py -3 hook-timing-report.py [--since-hours N] [--dir PATH]` | Per-hook run-time and (sampled) launch-time percentiles from the `<hook>.dur.jsonl` lines every heartbeat appends (dev-env#848). Read-only. Before/after evidence for hot-path gating and the hook dispatcher. |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |

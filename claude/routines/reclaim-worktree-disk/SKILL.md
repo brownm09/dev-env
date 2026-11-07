@@ -35,6 +35,14 @@ Reclaim regenerable disk artifacts from idle Claude session worktrees across all
 2. Report the per-repo output: how much was reclaimed in each repo, and the reason for each skipped worktree.
 3. If the combined total reclaimed is meaningful (≥ 1 GB), send a push notification summarizing the amount reclaimed so the user has visibility into disk hygiene.
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so right after each push notification this routine sends, pass the tool's result to the fallback script, using an empty result if the tool failed or wasn't available:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine reclaim-worktree-disk --message 'THE PUSH TEXT' --push-result 'THE TOOL RESULT'
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. Drop any apostrophes from the quoted text, and if the script exits non-zero, put its error in the run's final output. `sync-routine-worktree` does this itself on its abort paths, so don't repeat it for those.
+
 **Constraints:**
 - The script deletes only `node_modules` and `.turbo` — never the worktree, branch, or any git state.
 - Only worktrees under `.claude/worktrees/` are considered (they auto-reinstall via ADR-016). The primary repo and manual sibling worktrees are left untouched.
