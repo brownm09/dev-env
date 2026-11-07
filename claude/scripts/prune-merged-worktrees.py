@@ -38,6 +38,9 @@ Usage:
   python claude/scripts/prune-merged-worktrees.py [--dry-run] [--repo-path /path/to/repo]
   python claude/scripts/prune-merged-worktrees.py [--dry-run] --scan-dir /path/to/dir
 
+  An undefined flag or stray argument exits 2 before any git command; --help prints usage
+  and exits 0 (dev-env#1310).
+
   --repo-path  Target a specific repo's worktrees (defaults to the dev-env repo).
                Example: --repo-path C:/Users/brown/Git/lifting-logbook
   --scan-dir   Discover and prune all git repos directly under the given directory.
@@ -69,6 +72,7 @@ Per-repo opt-in config (.claude/hook-config.json):
                ADR-075.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import argparse
 import json
 import os
 import re
@@ -77,7 +81,7 @@ import sys
 from pathlib import Path
 
 from _repo_scan import find_git_repos
-from _worktree_liveness import parse_liveness_window_seconds, worktree_session_is_live
+from _worktree_liveness import liveness_minutes_arg, worktree_session_is_live
 from _worktree_topology import (
     DETACHED,
     DRAFT_BRANCH_RE,
@@ -100,33 +104,37 @@ BRANCH_PREFIX = "claude/"
 LIVENESS_WINDOW_SECONDS = 24 * 60 * 60
 
 
-def _repo_from_args() -> str:
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--repo-path":
-            if i + 1 < len(sys.argv):
-                return str(Path(sys.argv[i + 1]).resolve())
-            sys.exit("--repo-path requires an argument")
-    return _DEFAULT_REPO
+def _nonempty(value: str) -> str:
+    """Reject an empty path: an unset shell variable must not select a repo nobody named."""
+    if not value:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
 
 
-def _scan_dir_from_args() -> str | None:
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--scan-dir":
-            if i + 1 < len(sys.argv):
-                return str(Path(sys.argv[i + 1]).resolve())
-            sys.exit("--scan-dir requires an argument")
-    return None
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the command line, exiting on --help or on anything undefined (dev-env#1310).
 
-
-def _liveness_window_seconds_from_args() -> int:
-    try:
-        return parse_liveness_window_seconds(sys.argv[1:], LIVENESS_WINDOW_SECONDS)
-    except ValueError as exc:
-        sys.exit(str(exc))
-
-
-def _include_named_from_args() -> bool:
-    return "--include-named" in sys.argv[1:]
+    This must run before the first git command: this script deletes worktrees, so a flag it
+    does not understand has to stop it. Abbreviations are off so a shortened flag is an error
+    rather than a guess. The flag descriptions stay ASCII so --help can't fail on a console's
+    code page; the module docstring has the full detail.
+    """
+    parser = argparse.ArgumentParser(
+        description="Remove worktrees whose branches are merged into origin/main.",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--dry-run", action="store_true", help="report what would change, change nothing")
+    parser.add_argument("--repo-path", metavar="PATH", type=_nonempty,
+                        help="target this repo (default: the dev-env repo)")
+    parser.add_argument("--scan-dir", metavar="DIR", type=_nonempty,
+                        help="target every git repo directly under DIR")
+    parser.add_argument("--liveness-window-min", metavar="N", dest="liveness_window_seconds",
+                        type=liveness_minutes_arg, default=LIVENESS_WINDOW_SECONDS,
+                        help="skip worktrees with a Claude transcript written in the last N minutes "
+                             f"(default: {LIVENESS_WINDOW_SECONDS // 60})")
+    parser.add_argument("--include-named", action="store_true",
+                        help="also prune merged worktrees on branches outside claude/*")
+    return parser.parse_args(argv)
 
 
 def run(args: list[str], cwd: str, check: bool = False, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -487,10 +495,11 @@ def prune_one(
 
 
 def main() -> None:
-    dry_run = "--dry-run" in sys.argv
-    scan_dir = _scan_dir_from_args()
-    liveness_window_seconds = _liveness_window_seconds_from_args()
-    include_named = _include_named_from_args()
+    args = _parse_args(sys.argv[1:])
+    dry_run = args.dry_run
+    scan_dir = str(Path(args.scan_dir).resolve()) if args.scan_dir is not None else None
+    liveness_window_seconds = args.liveness_window_seconds
+    include_named = args.include_named
 
     if dry_run:
         print("[dry-run] no changes will be made")
@@ -514,7 +523,7 @@ def main() -> None:
             summary += f", fetch failed in {len(fetch_failed_repos)} repo(s): {', '.join(fetch_failed_repos)}"
         print(summary)
     else:
-        repo = _repo_from_args()
+        repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
         prune_one(repo, dry_run, liveness_window_seconds, include_named)
 
 
