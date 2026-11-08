@@ -48,3 +48,16 @@ Gate calibration, per [ADR-144](144-gate-calibration-pass-3-dimension.md): the m
 - **Open PRs that edit moved lines will conflict once.** Their rule edits should go in as a short line, with any story in Instruction Detail.
 - **The rest of the start is untouched.** Tool definitions and the project `CLAUDE.md` are separate decisions, tracked in follow-up issues.
 - **Rollback:** revert the PR. The test and the file go together.
+
+## Amendment 1: the project file too (2026-11-07)
+
+[dev-env#1297](https://github.com/brownm09/dev-env/issues/1297) applies the same decision to the repo-root `CLAUDE.md`, dev-env's project file, which loads in every dev-env session. It had grown from 52,943 bytes when the issue was filed to 56,486.
+
+1. **Stories move to two homes.** The `## Testing` index keeps each item's number, title, triggering files, companion items and command; what each test pins and why stays in `docs/TESTING.md` under the same number, which already held most of it. The other sections' stories (hook output streams, the launcher and settings sync, routines, the board fallback and REST commands) move verbatim to a new `docs/REFERENCE.md` → Project Instruction Detail, with `Project detail:` headings so the global file's every-detail-heading-is-linked check doesn't claim them.
+2. **The same test caps it.** `test_claude_md_size.py` fails above 38,500 bytes, about 5% over the 36,690 left after the trim, resolves every local link from the repo root, and requires a link to every `Project detail:` heading.
+
+Gate calibration: the measured property is the same normalized byte count. Known-bad: 52,943 and 56,486 bytes, the file at filing and before the trim, both rejected, and both shown failing by running the test against those files. Known-good: the trimmed file, about 5% under the ceiling. The not-vacuous assertion carries over.
+
+At the fitted 0.395 tokens per byte, the 19,796 bytes removed are about 7,800 tokens off every call of every dev-env session. As in the original decision, that is arithmetic on the request, not a measured change in spend.
+
+Rejected: shortening each command by naming a common prefix once (`claude/scripts/tests/`) would save about 4k more bytes, but a command an agent can't paste as written invites mistakes, so commands stay whole.

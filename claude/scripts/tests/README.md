@@ -163,7 +163,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 
 | Test file | Covers | Purpose |
 |---|---|---|
-| `test_claude_md_size.py` | `claude/CLAUDE.md` | Caps the global instruction file's size and checks its local links resolve, including anchors into `docs/REFERENCE.md` (ADR-159). |
+| `test_claude_md_size.py` | `claude/CLAUDE.md`, `CLAUDE.md` | Caps the global and project instruction files' sizes and checks their local links resolve, including anchors into `docs/REFERENCE.md` (ADR-159). |
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |

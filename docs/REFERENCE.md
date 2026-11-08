@@ -16,6 +16,7 @@ For a compact overview see the [README](../README.md).
 - [Adding a Second Machine](#adding-a-second-machine)
 - [Git Workflow Runbooks](#git-workflow-runbooks)
 - [Instruction Detail](#instruction-detail)
+- [Project Instruction Detail](#project-instruction-detail)
 - [Engineering Journal Internals](#engineering-journal-internals)
 
 ---
@@ -2474,6 +2475,185 @@ Never use git plumbing to push around a stuck checkout. See [ADR-119](adr/119-da
   - **Report / analysis generated** — whenever the user requests any report or analysis (an audit, an investigation write-up, a **verification or deploy-check**, a comparison, a findings summary, etc.), capture it in the journal: save the full output as an artifact under `sessions/<project>/reports/YYYY-MM-DD-<slug>.md` and link it from the session stub (create the stub if none exists yet for the session). Report/analysis generation is itself a journal boundary — it does not require a PR. Short analyses (≲ one screen) may be inlined in the stub instead of linked; anything longer must be a linked artifact so the stub stays scannable. Applies to all projects. (A `/review <PR-URL>` session stays exempt per the exclusion below — its findings live on the PR, not in a free-standing report.) This trigger is mechanically backstopped by `stop-journal-stub-checkpoint.py` (a Stop hook): when a session with report/analysis/verification intent does substantive work but ends with no stub — and opened no PR, isn't a `/review` session, and carries no "skip journal" override — it blocks the stop once with an advisory reminder ([ADR-100](adr/100-stop-journal-stub-checkpoint-hook.md)).
 
   - **Context growth band** — when `turn-count-hook.py` prints a `[journal-stub]` nudge, update this session's stub in place (Edit tool), or create one if the nudge says none was written (Write tool, per the Stub file workflow below), then commit with an explicit pathspec and push. The nudge fires once per band of cumulative context growth since the session's first turn: first at 150k tokens of growth, then every further 100k (override with `journal_stub_context_first_tokens` / `journal_stub_context_step_tokens` in `.claude/hook-config.json`). Growth is measured from the first turn because this machine's session-start context is already ~130–185k, and a compaction's drop never resets it, so work done after a compaction still counts toward the next band. This bounds how much work a crash, compaction, or app restart can cost between the event triggers above. If the stub already covers everything since its last update, no edit is needed ([ADR-150](adr/150-context-growth-journal-stub-trigger.md)).
+
+## Project Instruction Detail
+
+The reasoning, incidents and procedures behind the rules in the repo-root [`CLAUDE.md`](../CLAUDE.md), dev-env's project file, which loads in every dev-env session. Moved here verbatim from that file by [dev-env#1297](https://github.com/brownm09/dev-env/issues/1297), the same split [ADR-159](adr/159-instruction-files-hold-rules-not-stories.md) made for the global file; the per-item detail of its `## Testing` index lives in [TESTING.md](TESTING.md) instead. `CLAUDE.md` holds the current rule, so where the two differ, it wins. Links are rewritten to resolve from `docs/`.
+
+### Project detail: Hook output streams
+
+From `## Observability`:
+
+- **Stream choice is event-type- and intent-dependent — not a blanket "diagnostics go to
+  stderr" rule.** A **blocking** hook uses stderr + exit 2 (the one channel every hook event
+  forwards to Claude on a non-zero exit). A **non-blocking advisory** (always exits 0) must use
+  whichever stream that *specific* event type forwards on exit 0 — for `UserPromptSubmit`/
+  `UserPromptExpansion`/`SessionStart` that's **stdout** (stderr is not surfaced there); other
+  event types (e.g. `Stop`) forward neither stream on exit 0, so an always-exit-0 advisory is
+  invisible regardless of stream and must block (exit 2 + stderr) to be seen at all. Getting
+  this backwards is silent by construction: `dev-env-sync.py`'s exit-0 warnings sat on stderr
+  for months, hiding a fast-forward-pull failure for 36+ hours and 21+ commits of drift before
+  anyone noticed (dev-env#694, [ADR-098](adr/098-dev-env-sync-advisories-to-stdout.md));
+  `journal-stop-check.py`'s archive reminder had the mirror-image `Stop`-hook bug
+  ([ADR-091](adr/091-journal-stop-check-archive-reminder-blocking.md)). Base contract:
+  [ADR-027](adr/027-userpromptsubmit-blocking-hook-conventions.md); invocation model:
+  [ADR-007](adr/007-hook-command-invocation.md).
+- **The equivalent of "is it observable / correct at its boundaries" is the verification
+  suite in `## Testing`** — the hook-script syntax check, the `pyw -3` stdio test, and
+  the pre-push self-test. A change to a hook or script must keep those green.
+
+### Project detail: Dev-env architecture
+
+From `## Dev-Env Architecture`.
+
+**Installed by dev-env, but deliberately *outside* every junction — `~/.claude/hook-launch.py`:**
+
+Every hook command runs as `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`
+([ADR-148](adr/148-missing-hook-script-fails-open-via-launcher.md)). The launcher is a real
+file that `_settings_sync.ensure_launcher` copies from `claude/scripts/_hook_launch.py` on every
+sync, *before* it writes any hooks that name it. It lives outside the junctions on purpose: when
+the canonical regresses to an older tree, everything under `~/.claude/scripts` regresses with it,
+but the launcher does not. A wired script that is missing then fails **open** (exit 0 plus a
+warning) instead of making Python exit 2, which would block every matching tool call, machine-wide
+(dev-env#1146). The sync also refuses to apply `hooks` while any script those hooks name is
+absent, keeping the live wiring and saying "pull first". Never delete the file by hand. To
+restore it, run `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` from a hook-free
+terminal. The path is absolute so the same command works in Windows PowerShell 5.1, the
+Terminal panel's shell, which expands neither `~` nor `&&`.
+
+**Machine-local *and* partly repo-owned — `~/.claude/settings.json`:**
+
+`~/.claude/settings.json` is a **real, machine-local file the Claude Code app writes**, not a
+symlink into this repo ([ADR-139](adr/139-machine-local-settings-with-shared-source-sync.md)).
+It used to be symlinked, which made the app dirty a tracked file and blocked the canonical's
+fast-forward *permanently* — serving stale hooks and skills machine-wide, since
+`~/.claude/{scripts,skills,hooks}` are links into that same checkout (dev-env#1049).
+
+**Adding a key to `claude/settings.shared.json` requires classifying it** in `OWNED_KEYS` or
+`SEED_KEYS` in [`claude/scripts/_settings_sync.py`](../claude/scripts/_settings_sync.py) — an
+unclassified key is reported as a warning and *not applied*, rather than silently ignored.
+
+**Machine-local is not the same as correctly scoped.** A key the app writes that carries
+**project-specific** content — an auto-mode environment scan, anything naming a particular repo's
+paths, visibility, or policies — does not belong in `~/.claude/settings.json` either, even though
+that file is now machine-local and out of git: the user-scope file loads for **every** project's
+session on this machine. Relocate it to that project's own `.claude/settings.local.json`, the only
+per-project personal-settings slot Claude Code has (verify the project's `.gitignore` excludes it
+first). This is a global rule, stated in full in
+[`claude/CLAUDE.md`](../claude/CLAUDE.md) → Platform & Environment.
+
+**Rule:** The canonical dev-env worktree (`~/Git/dev-env`) must stay on `main` at all times. All dev-env changes go through a separate worktree (use `EnterWorktree` or `git worktree add`). Reason: `~/.claude/settings.json` and `~/.claude/scripts/` are symlinked/junctioned to the canonical worktree's working tree — checking out a feature branch there makes newly merged hooks and scripts invisible until the worktree returns to main. `dev-env-sync` will warn on every prompt when this rule is violated. (`settings.json` has since become a machine-local file, ADR-139; `scripts/`, `skills/` and `hooks/` are still links.)
+
+**Routines note:** `~/.claude/routines/` is a read-only junction mirror of `claude/routines/` — it exists so a routine can read its own canonical source at run time, not so the scheduler auto-registers it. The `scheduled-tasks` MCP tool never reads or writes through it: that tool owns a **separate, real, non-linked** directory, `~/.claude/scheduled-tasks/`, with one subdirectory per *registered* task (reusable routines and one-off/manual tasks side by side — deliberately not a version-controlled mirror, since one-offs have no business in git). Authoring or editing `claude/routines/<name>/SKILL.md` and merging it does **not** update a live task. After merging, separately call `create_scheduled_task` / `update_scheduled_task` (`scheduled-tasks` MCP tool) so the live prompt matches. Prefer the self-referencing pattern `weekly-memory-audit` already uses: have the live prompt read its own canonical `claude/routines/<name>/SKILL.md` at run time and follow it when present, falling back to an embedded copy — this keeps the live task self-healing against future drift instead of silently diverging, as `daily-journal-compose` did until [dev-env#464](https://github.com/brownm09/dev-env/issues/464). See [ADR-003 amendment](adr/003-config-in-version-control.md) and [dev-env#344](https://github.com/brownm09/dev-env/issues/344).
+
+**Routine authoring — sync-to-main preamble.** Any routine that reads repo-resident files (a skill, a context file, a queue file) at run time must invoke the `sync-routine-worktree` skill as Step 0, before reading any of those files. Scheduled tasks fire into Claude-managed worktrees whose branches were cut from whatever `main` was at worktree creation; without an explicit sync the routine reads stale files or aborts because a recently-merged file is missing on the worktree branch. The sync skill handles fetch, branch-class-aware sync (Claude-managed worktree / `main` / other), file existence verification, and abort-with-push-notification on conflict — routines pass `REPO`, `VERIFY_FILE`, and `PREFIX` and treat the return as a guard. See `claude/skills/sync-routine-worktree/SKILL.md` and `claude/routines/nightly-cover-letters/SKILL.md` for the canonical pattern. Rationale: [ADR-013](adr/013-sync-routine-worktree-skill.md).
+
+### Project detail: GitHub Project board
+
+From `## GitHub Project`.
+
+The hook's config, `.claude/hook-config.json`, is gitignored here. Its tracked source is [`claude/hook-config.shared.json`](../claude/hook-config.shared.json): change project IDs there, in a PR. `dev-env-sync.py` copies it into the canonical's `.claude/` on any prompt where that file is missing, and never overwrites an existing one. If the config is missing anyway, the hook prints a `[project-hook] WARNING: ... NOT added to project #3` with the seed command and the manual `gh project item-add`, instead of exiting silently ([ADR-052 Amendment 2](adr/052-worktree-config-canonical-fallback.md), dev-env#669).
+
+**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually (substitute the PR URL for the issue URL when the item is a PR). Requires project scope — add once if needed: `gh auth refresh -s project`. No `[project-hook]` output after a create usually isn't a launch problem: a chain whose last command exits non-zero runs no PostToolUse hook at all, even when its `gh` command succeeded. To check for the rare inert state, where **every** PostToolUse hook is silent, look at `~/.claude/scratch/bash_state_<session-id>.json`: a file updated at the last successful shell call means hooks ran ([ADR-053's 2026-11-07 amendment](adr/053-posttooluse-hooks-inert-in-background-sessions.md)). Either way, these manual steps are the recovery.
+
+```bash
+# 1. Add issue/PR to project, capture item ID
+URL="<issue-or-pr-url>"
+TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
+gh project item-add 3 --owner brownm09 --url "$URL" --format json > "$TMPFILE"
+ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
+# No cleanup here: scratch leftovers are harmless, and an `rm` chained onto
+# `gh` is never auto-approved (ADR-147). To clean up, use a separate call:
+#   rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json
+
+# 2. Set Impact   (08de2558=High  6320e8a6=Medium  d8a85c2f=Low)
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkNc --single-select-option-id <option-id>
+
+# 3. Set Why (one sentence — the cost of not fixing it)
+gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
+  --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
+
+# 4. Cache the item ID (dev-env#1057, ADR-141) so a later lookup (e.g. to move
+#    Status) is a zero-cost hit instead of another full-board fetch. The regex and
+#    key format must stay byte-identical to _gh_project.py's _ISSUE_URL_RE /
+#    _cache_key (project-owner/project-number then repo#number, both lower-cased) —
+#    a drifted copy here would silently never hit what that module writes.
+GPI_URL="$URL" GPI_ITEM_ID="$ITEM_ID" node -e "
+  const fs = require('fs'), path = require('path');
+  const m = process.env.GPI_URL.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?\$/);
+  if (!m) process.exit(0);
+  const [, owner, repo, number] = m;
+  const cacheFile = 'C:/Users/brown/.claude/scratch/project-item-cache.json';
+  let cache = {};
+  try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch (e) {}
+  cache['brownm09/3|' + (owner + '/' + repo).toLowerCase() + '#' + number] = process.env.GPI_ITEM_ID;
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+  const tmp = cacheFile + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
+  fs.renameSync(tmp, cacheFile);
+"
+```
+
+**When GraphQL rejects a call, use REST.** Every `gh project` command in this section spends the
+GraphQL bucket, and so does the fallback in `get-project-item.sh`. GitHub also has a REST API for
+Projects v2, which spends the separate `core` bucket (the response header says
+`X-RateLimit-Resource: core`). So a GraphQL rate-limit error doesn't block the board: adding an
+item, looking up an item ID, and setting a field all have a REST path. This applies even when
+`gh api rate_limit` shows GraphQL budget left, and even when a retry passes: one token has two
+rate-limit counters, a read shows only one, and some calls still pass while the busier counter is
+at 0 ([finding on dev-env#1238](https://github.com/brownm09/dev-env/issues/1238#issuecomment-6671406131)).
+On 2026-11-05 a call was rejected with 3717/5000 remaining on the reading. The rule for judging the
+error is in [`claude/CLAUDE.md`](../claude/CLAUDE.md), *Never mutate git state directly*. See GitHub's
+[Project items](https://docs.github.com/en/rest/projects/items) and
+[Project fields](https://docs.github.com/en/rest/projects/fields) REST documentation.
+
+REST takes numeric IDs, not the `PVTI_`/`PVTSSF_`/`PVTF_` node IDs used above, so an ID from
+`get-project-item.sh` won't work here. Field IDs: Status=`341872838`, Impact=`341872855`,
+Why=`341872861`. Option IDs are the same strings as in the table above. If a field ID stops
+working, list the current ones with `gh api users/brownm09/projectsV2/3/fields`.
+
+```bash
+N=<issue-or-pr-number>
+
+# Add an issue or PR to the board; prints the numeric item ID. Use type=PullRequest for a PR.
+gh api -X POST users/brownm09/projectsV2/3/items -f type=Issue -f owner=brownm09 -f repo=dev-env -F number=$N --jq .id
+
+# Look up the numeric item ID of an item already on the board.
+ITEM_ID=$(gh api --paginate "users/brownm09/projectsV2/3/items?q=$N&per_page=100" \
+  --jq ".[] | select(.content.number == $N and (.content.html_url | contains(\"/brownm09/dev-env/\"))) | .id")
+
+# Set Status (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657).
+echo '{"fields":[{"id":341872838,"value":"98236657"}]}' | gh api -X PATCH "users/brownm09/projectsV2/3/items/$ITEM_ID" --input - --jq .id
+
+# Read it back; prints the option name, such as Done.
+gh api "users/brownm09/projectsV2/3/items/$ITEM_ID?fields=341872838" --jq '.fields[] | select(.id == 341872838) | .value.name.raw'
+```
+
+Impact and Why use the same `PATCH` with their own field IDs; Why's `value` is the text itself.
+Four behaviours, each seen on 2026-11-05, that a first attempt would trip over:
+
+- **`q` is a loose text filter, not a number lookup.** `q=1219` also returned #1212, and `q=12`
+  returned #120 and #121, so keep the `select`.
+- **Filter on `html_url`, not `repository_url`.** A pull request's `content.repository_url` is
+  null, so a filter on it never matches a PR.
+- **`q` can lag a new item.** `q=1239` returned nothing right after the add and found the item
+  about 35 seconds later. An empty result just after an add doesn't mean the add failed; use the
+  ID the `POST` printed.
+- **The `POST` isn't idempotent.** Adding an item already on the board fails with HTTP 422,
+  `Content already exists in this project`, which only means there's nothing to add.
+
+The local item-ID cache holds node IDs and these commands neither read nor write it. Corrects
+[dev-env#769](https://github.com/brownm09/dev-env/issues/769), which said Projects v2 lacked a REST API;
+see [dev-env#1239](https://github.com/brownm09/dev-env/issues/1239).
+
+To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session), use
+`get-project-item.sh` rather than querying the board directly — it checks a local cache first
+(dev-env#1057, [ADR-141](adr/141-project-item-id-creation-time-cache.md)) and costs **zero**
+`gh` calls on a hit (populated automatically at creation time and backfilled wholesale by
+`reconcile-project-board.py`'s sweeps), falling back on a miss to a query for that one item, which
+costs 1 GraphQL point ([dev-env#1246](https://github.com/brownm09/dev-env/issues/1246)). Don't look
+one item up with `gh project item-list`: on this board that's about 1,011 points.
 
 ## Disk-Full (ENOSPC) Recovery
 

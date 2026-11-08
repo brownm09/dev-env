@@ -1,8 +1,10 @@
 # dev-env — Project Instructions
 
 The global Claude Code configuration lives in [`claude/CLAUDE.md`](claude/CLAUDE.md),
-symlinked to `~/.claude/CLAUDE.md`. All workflow rules, hook invariants, model selection
-guidelines, and journal conventions are defined there and apply to every project.
+symlinked to `~/.claude/CLAUDE.md`, and its rules apply here. Like that file, this one holds
+rules: their stories live in [`docs/REFERENCE.md` → Project Instruction Detail](docs/REFERENCE.md#project-instruction-detail)
+and [`docs/TESTING.md`](docs/TESTING.md), and `test_claude_md_size.py` caps its size
+([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md)).
 
 ## Reference Documentation
 
@@ -15,154 +17,147 @@ guidelines, and journal conventions are defined there and apply to every project
 
 ## Testing
 
-This is the index of dev-env verification commands, one numbered item per test file or gate.
-Items 1 to 118 keep their numbers because other documents cite them, and the list takes no new
-ones. The global "Test before PR" rule in [`claude/CLAUDE.md`](claude/CLAUDE.md) defers to this
-section.
+This is the index of dev-env verification commands. Items 1 to 118 keep their numbers because
+other documents cite them, and the list takes no new ones. Each item names the change that
+requires it (paths are under `claude/scripts/` unless shown otherwise), then its command. What
+each test pins, its scope gaps and its history are in [docs/TESTING.md](docs/TESTING.md) under
+the **same item number**: read it before changing a test or its script, and extend it in the same
+PR.
 
-**To add a test, edit only the test file.** Put a `Required when ...` line naming what it covers
-and a `Run: ...` line naming the file in its first 10 lines, each starting its own line, and add
-nothing to this section, `docs/TESTING.md` or `claude/scripts/tests/README.md`, so two PRs that
-each add a test can't conflict
+**To add a test, edit only the test file.** Put a `Required when ...` line and a `Run: ...` line
+in its first 10 lines, each starting its own line, and add nothing to this section,
+`docs/TESTING.md` or `claude/scripts/tests/README.md`
 ([ADR-074 Amendment 1](docs/adr/074-pre-merge-numbering-collision-check.md)). A new check must be
-such a file, so the runner finds it, not an inline command. Cite a newer test by its file name.
-Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, or a test in
-`claude/scripts/tests/` with neither a row nor an entry; nothing gates `claude/hooks/tests/`. To
-find the tests for a script, from the repo root:
+such a file, not an inline command. Cite a newer test by its file name. Item 76 refuses a
+numbered line past 118 and item 84 refuses a new README row, or a test in `claude/scripts/tests/`
+with neither a row nor an entry; nothing gates `claude/hooks/tests/`. To find a script's tests:
 `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
-test, because a test may cover a script without naming it.
+test.
 
-**Run the whole suite** with `py -3 claude/scripts/run-hook-tests.py` — it glob-discovers
-every test in those two directories and is exactly what
+**Run the whole suite** with `py -3 claude/scripts/run-hook-tests.py`, exactly what
 `.github/workflows/hook-tests.yml` runs on `windows-latest` for every `pull_request`
-([ADR-103](docs/adr/103-shared-hookout-emitter.md)). When changing a script, also run its
-item's command below, or the `Run:` line of each test that `git grep` finds, before
-`gh pr create`.
+([ADR-103](docs/adr/103-shared-hookout-emitter.md)). When changing a script, also run its item's
+command, or the `Run:` line of each test `git grep` finds, before `gh pr create`. A one-line map
+of the older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 
-**Full per-item behavioral detail** — what each test pins, deliberate scope gaps, incident
-history — lives in [docs/TESTING.md](docs/TESTING.md) under the **same item numbers**
-(consult it before modifying a test or its script; extend it in the same PR that changes
-the item), and in the test file itself for a newer test. A one-line navigational map of the
-older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
-
-1. **Hook-script syntax check** — run from the repo root to verify all hook scripts parse. Run: `py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py`
-2. **`pyw -3` stdio verification** — Windows-only; confirms `pythonw.exe` honors parent-supplied pipes (the ADR-007 invariant). Needs a console, so CI skips it; run it locally. Run: `py -3 claude/scripts/tests/test_pyw_stdio.py`
-3. **Pre-push hook self-test** — required when changing `claude/hooks/pre-push`. Run: `bash claude/hooks/tests/test-pre-push-lockfile.sh`
-4. **Docs-only guard** — for docs-only changes to `claude/CLAUDE.md`. Run: `grep -n 'date -u' claude/CLAUDE.md` and confirm every match is an internal operational-artifact context (lock files, log timestamps), never stub-filename or branch-name descriptions.
-5. **Script path-hygiene lint** — required when adding or changing any `claude/scripts/*.sh` or `claude/hooks/*` shell script. Run: `bash claude/scripts/tests/check-script-path-hygiene.sh`
-6. **`get-project-item.sh` smoke test** — required when changing `claude/scripts/get-project-item.sh`. Run: `bash claude/scripts/tests/test-get-project-item.sh`
-7. **shellcheck gate** — recommended when changing any shell script. Run: `bash claude/scripts/tests/run-shellcheck.sh`
-8. **usage-snapshot classifier test** — required when changing `claude/scripts/usage-snapshot.py`. Run: `py -3 claude/scripts/tests/test_usage_snapshot.py`
-9. **worktree-npm-install gate test** — required when changing `claude/scripts/worktree-npm-install.py`. Covers both of the hook's decisions: the ADR-045 pre-install free-space gate and the ADR-142 node_modules-truncation audit (pure `classify_package_dir`/`truncation_verdict`/`is_staging_name`, plus temp-directory fixtures for `scan_node_modules`). Run: `py -3 claude/scripts/tests/test_worktree_npm_install.py`
-10. **post-pr-merge-reclaim test** — required when changing `claude/scripts/post-pr-merge-reclaim.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py`
-11. **memory-write-advisory test** — required when changing `claude/scripts/memory-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_memory_write_advisory.py`
-12. **post-tool-use test** — required when changing `claude/scripts/post-tool-use.py`. Run: `py -3 claude/scripts/tests/test_post_tool_use.py`
-13. **_hookio shared-read test** — required when changing `claude/scripts/_hookio.py` or `claude/scripts/_hookinput.py`. Run: `py -3 claude/scripts/tests/test_hookio.py`
-14. **post-pr-merge-project test** — required when changing `claude/scripts/post-pr-merge-project.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_project.py`
-15. **post-pr-merge-pull test** — required when changing `claude/scripts/post-pr-merge-pull.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_pull.py`
-16. **stub-push-archive-reminder test** — required when changing `claude/scripts/stub-push-archive-reminder.py`. Run: `py -3 claude/scripts/tests/test_stub_push_archive_reminder.py`
-17. **worktree-liveness guard test** — required when changing `claude/scripts/_worktree_liveness.py` or the prune/reclaim scripts' use of it. Run: `py -3 claude/scripts/tests/test_worktree_liveness.py`
-18. **posttooluse-inert-advisory test** — required when changing `claude/scripts/posttooluse-inert-advisory.py`. Run: `py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py`
-19. **reconcile-open-prs test** — required when changing `claude/scripts/reconcile-open-prs.py`. Run: `py -3 claude/scripts/tests/test_reconcile_open_prs.py`
-20. **post-compact open-PR + pending-tile reader test** — required when changing `claude/scripts/post-compact.py`. Run: `py -3 claude/scripts/tests/test_post_compact.py`
-21. **journal-shards shared-reader test** — required when changing `claude/scripts/_journal_shards.py`. Run: `py -3 claude/scripts/tests/test_journal_shards.py`
-22. **worktree-topology test** — required when changing `claude/scripts/_worktree_topology.py` or the squat-detection paths in `prune-merged-worktrees.py` / `post-pr-merge-pull.py` / `dev-env-sync.py` / `journal-canonical-guard.py`. Run: `py -3 claude/scripts/tests/test_worktree_topology.py`
-23. **post-merge-tile-checkpoint test** — required when changing `claude/scripts/post-merge-tile-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py`
-24. **pre-merge-message-check test** — required when changing `claude/scripts/pre-merge-message-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_message_check.py`
-25. **manifest field validator test** — required when changing `claude/scripts/validate-manifest.py`. Run: `py -3 claude/scripts/tests/test_validate_manifest.py`
-26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py` or `claude/scripts/_default_branch.py`. Run: `py -3 claude/scripts/tests/test_prune_merged_worktrees.py`
-27. **_hookutil shared-helper test** — required when changing `claude/scripts/_hookutil.py`. Run: `py -3 claude/scripts/tests/test_hookutil.py`
-28. **pr-merge-reminder test** — required when changing `claude/scripts/pr-merge-reminder.py`. Run: `py -3 claude/scripts/tests/test_pr_merge_reminder.py`
-29. **reconcile-project-board test** — required when changing `claude/scripts/reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_reconcile_project_board.py`
-30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`. Run: `py -3 claude/scripts/tests/test_reclaim_worktree_disk.py`
-31. **_repo_scan shared-module test** — required when changing `claude/scripts/_repo_scan.py` or the `--scan-dir` discovery path in `prune-merged-worktrees.py` / `reclaim-worktree-disk.py` / `reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_repo_scan.py`
-32. **worktree-path-check test** — required when changing `claude/scripts/pre-tool-use-worktree-path-check.py`. Run: `py -3 claude/scripts/tests/test_worktree_path_check.py`
-33. **canonical-mutate-guard test** — required when changing `claude/scripts/pre-tool-use-canonical-mutate-guard.py`. Run: `py -3 claude/scripts/tests/test_canonical_mutate_guard.py`
-34. **merge-stale-pr self-test** — required when changing `claude/scripts/merge-stale-pr.sh`. Run: `bash claude/scripts/tests/test-merge-stale-pr.sh`
-35. **worktree-canon shared-module test** — required when changing `claude/scripts/_worktree_canon.py`. Run: `py -3 claude/scripts/tests/test_worktree_canon.py`
-36. **`_winsubp` shared-module test** — required when changing `claude/scripts/_winsubp.py`. Run: `py -3 claude/scripts/tests/test_winsubp.py` + `py -3 claude/scripts/tests/test_pyw_stdio.py`
-37. **numbering-collision check test** — required when changing `claude/scripts/pre-merge-numbering-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_numbering_check.py`
-38. **pre-merge-findings-gate test** — required when changing `claude/scripts/pre-merge-findings-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_findings_gate.py` + `bash claude/scripts/tests/test-merge-findings-gate.sh`
-39. **Crude command-substring-check regression test** — required when adding or changing any `claude/scripts/*.py` file. Run: `py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py`
-40. **journal-shard-write-advisory test** — required when changing `claude/scripts/journal-shard-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_journal_shard_write_advisory.py`
-41. **`_journal_schema` shared-module test** — required when changing `claude/scripts/_journal_schema.py`. Run: `py -3 claude/scripts/tests/test_journal_schema.py`
-42. **`_bash_state` shared-module test** — required when changing `claude/scripts/_bash_state.py`. Run: `py -3 claude/scripts/tests/test_bash_state.py`
-43. **pre-commit-branch-check test** — required when changing `claude/scripts/pre-commit-branch-check.py`. Run: `py -3 claude/scripts/tests/test_pre_commit_branch_check.py`
-44. **pre-pr-create-check test** — required when changing `claude/scripts/pre-pr-create-check.py`. Run: `py -3 claude/scripts/tests/test_pre_pr_create_check.py`
-45. **pre-merge-branch-check test** — required when changing `claude/scripts/pre-merge-branch-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_branch_check.py`
-46. **check-journal-compose-liveness test** — required when changing `claude/scripts/check-journal-compose-liveness.py`. Run: `py -3 claude/scripts/tests/test_check_journal_compose_liveness.py`
-47. **disk-space-check test** — required when changing `claude/scripts/disk-space-check.py`. Run: `py -3 claude/scripts/tests/test_disk_space_check.py`
-48. **stop-tile-enumeration-gate test** — required when changing `claude/scripts/stop-tile-enumeration-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py`
-49. **setup-link-loop test** — required when changing `setup.sh`'s link arrays (`CLAUDE_FILE_LINKS` / `CLAUDE_DIR_LINKS` / `CLAUDE_JUNCTION_LINKS` / `HOME_LINKS`), its `link_claude_windows()` / `link_claude_unix()` functions, its backup/restore path (`prepare_link_target`, `restore_setup_backup` and its helpers, `set_hooks_path`, the settings.json capture in `seed_claude_settings`), its Windows preflight (`preflight_windows`, `symlink_probe`, `cmd_safe_path`), `win_cmd`, or its dispatch guard. Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
-50. **journal-stop-check test** — required when changing `claude/scripts/journal-stop-check.py`. Run: `py -3 claude/scripts/tests/test_journal_stop_check.py`
-51. **idle-refresher test** — required when changing `claude/scripts/idle-refresher.py`. Run: `py -3 claude/scripts/tests/test_idle_refresher.py`
-52. **pre-auto-merge-checkpoint-gate test** — required when changing `claude/scripts/pre-auto-merge-checkpoint-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py` + `bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh`
-53. **`_journal_compose_force` shared-module test** — required when changing `claude/scripts/_journal_compose_force.py`. Run: `py -3 claude/scripts/tests/test_journal_compose_force.py`
-54. **journal-compose-force-resolve end-to-end test** — required when changing `claude/scripts/journal-compose-force-resolve.py`. Run: `py -3 claude/scripts/tests/test_journal_compose_force_resolve.py`
-55. **journal-compose-force-guard test** — required when changing `claude/scripts/pre-tool-use-journal-compose-force-guard.py`. Run: `py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py`
-56. **dev-env-sync test** — required when changing `claude/scripts/dev-env-sync.py`. Run: `py -3 claude/scripts/tests/test_dev_env_sync.py`
-57. **journal-canonical-guard stdout-routing test** — required when changing `claude/scripts/journal-canonical-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_canonical_guard.py`
-58. **stop-journal-stub-checkpoint test** — required when changing `claude/scripts/stop-journal-stub-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_stop_journal_stub_checkpoint.py`
-59. **pre-bash-drift-check test** — required when changing `claude/scripts/pre-bash-drift-check.py`. Run: `py -3 claude/scripts/tests/test_pre_bash_drift_check.py`
-60. **_hookout emitter test** — required when changing `claude/scripts/_hookout.py`. Run: `py -3 claude/scripts/tests/test_hookout.py`
-61. **hook output-contract + ASCII-literal gate** — required when changing `claude/scripts/tests/test_hook_output_contract.py` or the shared `claude/scripts/tests/_hook_wiring.py` (the settings.json parser all three PR3 gates — items 61/62/63 — share, and `dev-env-doctor.py` imports; run all three and item 110 when changing it). Run: `py -3 claude/scripts/tests/test_hook_output_contract.py`
-62. **hook safe-exit structural gate** — required when changing `claude/scripts/tests/test_hook_safe_exit_guard.py` (or `_hook_wiring.py`, item 61). Run: `py -3 claude/scripts/tests/test_hook_safe_exit_guard.py`
-63. **settings-hook wiring lint** — required when changing `claude/scripts/tests/test_settings_hook_wiring.py` (or `_hook_wiring.py`, item 61) or the `hooks` block of `claude/settings.json`. Run: `py -3 claude/scripts/tests/test_settings_hook_wiring.py`
-64. **run-hook-tests runner test** — required when changing `claude/scripts/run-hook-tests.py`. Run: `py -3 claude/scripts/tests/test_run_hook_tests.py`
-65. **token-tracker test** — required when changing `claude/scripts/token-tracker.py`. Run: `py -3 claude/scripts/tests/test_token_tracker.py`
-66. **journal-draft-worktree-guard test** — required when changing `claude/scripts/pre-tool-use-journal-draft-worktree-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py`
-67. **hook-liveness-check test** — required when changing `claude/scripts/hook-liveness-check.py`. Run: `py -3 claude/scripts/tests/test_hook_liveness_check.py`
-68. **hook-heartbeat-guard structural gate** — required when changing which hooks are wired in `claude/settings.json`, or any wired hook's `main()`. Run: `py -3 claude/scripts/tests/test_hook_heartbeat_guard.py` + `py -3 claude/scripts/tests/test_hook_liveness_check.py`
-69. **journal-onboard-check sentinel test** — required when changing `claude/scripts/journal-onboard-check.py`. Run: `py -3 claude/scripts/tests/test_journal_onboard_check.py`
-70. **session-mode-prompt sentinel test** — required when changing `claude/scripts/session-mode-prompt.py`. Run: `py -3 claude/scripts/tests/test_session_mode_prompt.py`
-71. **sweep-scratch-debris test** — required when changing `claude/scripts/sweep-scratch-debris.py`. Run: `py -3 claude/scripts/tests/test_sweep_scratch_debris.py`
-72. **baseline-tests gc test** — required when changing `claude/scripts/baseline-tests.sh`. Run: `bash claude/scripts/tests/test-baseline-tests-gc.sh`
-73. **`_repo_target` shared-module test** — required when changing `claude/scripts/_repo_target.py` or the six hooks that delegate to it (`post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py`). Run: `py -3 claude/scripts/tests/test_repo_target.py`
-74. **session-mode-report test** — required when changing `claude/scripts/session-mode-report.py`. Run: `py -3 claude/scripts/tests/test_session_mode_report.py`
-75. **Unreachable-code lint (pylint `unreachable` / W0101)** — required before any PR touching `claude/scripts/*.py` or `claude/scripts/tests/*.py`. Run: `bash claude/scripts/tests/run-pylint-unreachable.sh`
-76. **Testing-index parity gate** — required when changing this `## Testing` index or `docs/TESTING.md`; asserts both files carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), no numbered line past 118, and no number used twice. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
-77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
-78. **worktree-recovery recipe + runbook-parity gate** — required when changing `claude/scripts/_worktree_recovery.py`, the orphan block message in `claude/scripts/pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
-79. **remote-read hygiene lint** — required when adding or changing anything under `claude/` that reads a file from a remote ref; flags a `git show <ref>:<path>` paired with `2>/dev/null` (the dev-env#602 / #877 MSYS-mangling false-absent class, ADR-120). Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
-80. **reconcile-pending-tiles test** — required when changing `claude/scripts/reconcile-pending-tiles.py`. Run: `py -3 claude/scripts/tests/test_reconcile_pending_tiles.py`
-81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — required when changing `claude/scripts/new-day-journal-check.py` or `claude/scripts/_journal_late.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
-82. **composed-output stray-terminal-scan test** — required when changing `claude/scripts/_composed_output_scan.py` or `claude/scripts/validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
-83. **journal-compose-replay conflict-recovery test** — required when changing `claude/scripts/journal-compose-replay.sh` or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md`. Run: `bash claude/scripts/tests/test-journal-compose-replay.sh`
-84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, or a new test's own entry; no new row in the tests README; orphan rows; `claude/scripts/README.md`'s header and section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
-85. **skill-file-size-guard test** — required when changing `claude/scripts/pre-tool-use-skill-file-size-guard.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_guard.py`
-86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
-87. **`_skill_file_size` shared-module test** — required when changing `claude/scripts/_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`
-88. **journal-shell-write-guard test** — required when changing `claude/scripts/pre-tool-use-journal-shell-write-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`
-89. **session-start-sync test** — required when changing `claude/scripts/session-start-sync.py` or `claude/scripts/_worktree_liveness.py`. Run: `py -3 claude/scripts/tests/test_session_start_sync.py` + `py -3 claude/scripts/tests/test_worktree_liveness.py`
-90. **`_gh_issue_state` shared-module test** — required when changing `claude/scripts/_gh_issue_state.py`. Run: `py -3 claude/scripts/tests/test_gh_issue_state.py`
-91. **retro-chain-status test** — required when changing `claude/scripts/retro-chain-status.py`. Run: `py -3 claude/scripts/tests/test_retro_chain_status.py`
-92. **journal-canon shared-module test** — required when changing `claude/scripts/_journal_canon.py` or the four hooks that delegate to it (`pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py`) — the module's own ADR-133 safety claim is that all four consumer suites stay green across a change to it, so re-run them together with its own suite. Run: `py -3 claude/scripts/tests/test_journal_canon.py` + `py -3 claude/scripts/tests/test_canonical_mutate_guard.py` + `py -3 claude/scripts/tests/test_journal_canonical_guard.py` + `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py` + `py -3 claude/scripts/tests/test_worktree_path_check.py`
-93. **sibling-hooks hardened-IO migration test** — required when changing any of the 12 sibling hooks covered here, `_hookio.py`'s `read_command`/`read_tool_input_field`/`read_cwd`/`read_exit_code`, or `_hookutil.py`'s `record_heartbeat`/`HOOK_HEARTBEAT_DIR_OVERRIDE` (see `docs/TESTING.md` item 93 for the full file list, the two-arm AST detector design, and the deliberate scope boundaries — the exit_code-fallback-branch exclusion and its accepted-coercion trade-off, pinned separately in items 12 and 28). Run: `py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py` + `py -3 claude/scripts/tests/test_worktree_path_check.py` + `py -3 claude/scripts/tests/test_hookio.py` + `py -3 claude/scripts/tests/test_hookutil.py`
-94. **`_shell_write_detect` shared-module test** — required when changing `claude/scripts/_shell_write_detect.py`; the module's ADR-138 safety claim is that the ADR-129 guard it was extracted from stays green across the move, so run that consumer suite alongside its own (the same pairing item 92 uses for `_journal_canon.py`). Run: `py -3 claude/scripts/tests/test_shell_write_detect.py` + `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`
-95. **shell-content-write-guard test** — required when changing `claude/scripts/pre-tool-use-shell-content-write-guard.py` or `claude/scripts/session-mode-prompt.py`'s bypass-mode carve-out (ADR-138 lands in both — the guard blocks the shape, the prompt hook delivers the precedence rule). Run: `py -3 claude/scripts/tests/test_shell_content_write_guard.py` + `py -3 claude/scripts/tests/test_session_mode_prompt.py`
-96. **replay-shell-content-guard test** — required when changing `claude/scripts/replay-shell-content-guard.py`; the on-demand reader that replays the ADR-138 guard over recorded session transcripts and reports its block rate, mechanism mix, override use, and failure-rate enrichment (ADR-138 Amendment 1). Re-run the script itself after any detector change to the guard — `py -3 claude/scripts/replay-shell-content-guard.py --gap`. Run: `py -3 claude/scripts/tests/test_replay_shell_content_guard.py`
-97. **journal-project-repo-map test** — required when changing `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md` (ADR-032 Amendment 1 lands in both — the script resolves the mapping and names every skip, the skill consumes `query_order` and surfaces those skips to the user). Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
-98. **`_settings_sync` shared-module test** — required when changing `claude/scripts/_settings_sync.py`, its `OWNED_KEYS`/`SEED_KEYS` classification, its launcher install or missing-script guard (`ensure_launcher`/`hooks_guard`, ADR-148; also run item 103), its hook-config seed (`seed_hook_config`, dev-env#669; also run item 12), `claude/settings.shared.json`, `claude/hook-config.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also re-run the three gates that read the shared file through `_hook_wiring.py` (items 61/62/63), `test_pyw_stdio.py` (item 2), `test_hook_liveness_check.py` (item 67), and the setup link-loop (item 49) — all five were repointed off `claude/settings.json` by ADR-139. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
-99. **`_gh_project` shared-module test** — required when changing `claude/scripts/_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
-100. **journal-compose-meta test** — required when changing `claude/scripts/journal-compose-meta.py`, the meta handling in `claude/skills/journal-compose/SKILL.md` (Step 2b, the Phase 1 template's `META_TRIGGER=` lines, Step 6.7, Step 10's `check-clean` and `check-staged`, Phase 2's and Step 10's staging and commit blocks (the end-to-end tests extract and run them), both Step 10.5 pathspec lists), the "Meta journal (`sessions/meta/`)" trigger list in `claude/CLAUDE.md`, or the meta rule in `claude/routines/daily-journal-compose/SKILL.md` ([ADR-082 Addendum, 2026-10-02](docs/adr/082-journal-compose-worktree-isolation.md), dev-env#52 and #892). Also run item 83 when the Step 10.5 block changes. Run: `py -3 claude/scripts/tests/test_journal_compose_meta.py`
-101. **scratch-rm-allow test** — required when changing `claude/scripts/pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow` (also run item 60 then). Run: `py -3 claude/scripts/tests/test_scratch_rm_allow.py`
-102. **replay-scratch-rm-allow test** — required when changing `claude/scripts/replay-scratch-rm-allow.py`, the on-demand replay of the ADR-147 hook over recorded session transcripts, or the hook's `check_command`/`Reject` surface it calls (also run item 101 then). Re-run the script itself after any change to the hook's lexer — `py -3 claude/scripts/replay-scratch-rm-allow.py`. Run: `py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py`
-103. **hook-launch test** — required when changing `claude/scripts/_hook_launch.py`, the command form of any hook in `claude/settings.shared.json`, or `_settings_sync.py`'s `ensure_launcher` (also run item 98 then). Every hook runs through the launcher, which fails open on a missing script instead of Python's blocking exit 2 ([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md), dev-env#1146). Run: `py -3 claude/scripts/tests/test_hook_launch.py`
-104. **hook-timing-report test** — required when changing `claude/scripts/hook-timing-report.py`, or `_hookutil.py`'s `record_duration` line format (also run item 27 then). Reads the per-fire duration lines the heartbeat writes (dev-env#848, ADR-106 Amendment 2). Run: `py -3 claude/scripts/tests/test_hook_timing_report.py`
-105. **turn-count-hook journal-stub band test** — required when changing `claude/scripts/turn-count-hook.py` ([ADR-150](docs/adr/150-context-growth-journal-stub-trigger.md), dev-env#1160). Run: `py -3 claude/scripts/tests/test_turn_count_hook.py`
-106. **heartbeat-ledger isolation gate** — required when adding or changing any test that runs a real wired hook (a subprocess or a `<module>.main()` call), or when changing `claude/scripts/tests/_heartbeat_isolation.py`. No test may write the production ledger `~/.claude/scratch/hook-heartbeat/` (dev-env#1163). Run: `py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py`
-107. **hook-dispatch test** — required when changing `claude/scripts/hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (also run items 2, 61-63, 67, 68 and 98 then). The in-process dispatcher that runs a group of hooks in one process ([ADR-151](docs/adr/151-in-process-hook-dispatcher.md), dev-env#851). Run: `py -3 claude/scripts/tests/test_hook_dispatch.py`
-108. **auto-resume test** — required when changing `claude/scripts/_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py` or `register-auto-resume.ps1`. These continue desktop sessions a reboot or app crash cut off mid-turn ([ADR-152](docs/adr/152-auto-resume-interrupted-desktop-sessions.md), dev-env#1182). Run: `py -3 claude/scripts/tests/test_auto_resume.py`. When changing `register-auto-resume.ps1`, also parse-check it and do the manual steps in docs/TESTING.md item 108.
-109. **hook static-scan test** — required when adding or changing any `claude/scripts/*.py` that uses subprocess or spawns Python, or any hook command in `claude/settings.shared.json`. The ADR-007 static scans (every hook runs `pyw -3` through the launcher and resolves, every subprocess-using script imports `_winsubp`, none spawns Python via `py`), split out of item 2 so CI runs them (dev-env#1194). Run: `py -3 claude/scripts/tests/test_hook_static_scans.py`
-110. **dev-env-doctor test** — required when changing `claude/scripts/dev-env-doctor.py`, `setup.sh`'s link arrays (the doctor's `LINKED_ITEMS` / `HOME_LINKS` are pinned against them), `claude/scripts/tests/_hook_wiring.py` (the doctor imports it), or the command form of the hooks in `claude/settings.shared.json` (the doctor checks every file a command names: the ADR-148 launcher, the ADR-151 dispatcher and each handler it runs). Run: `py -3 claude/scripts/tests/test_dev_env_doctor.py`
-111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py` or `claude/scripts/_journal_late.py`. A moved stub must take the target branch's date or `/journal-compose` skips it (dev-env#1203). Run: `py -3 claude/scripts/tests/test_reconcile_late_stubs.py`
-112. **token attribution and pricing test** — required when changing `claude/scripts/_token_pricing.py`, `claude/scripts/backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Also run item 65 when changing `_token_pricing.py`, since `token-tracker.py` prices through it (dev-env#1214, #1122, [ADR-154](docs/adr/154-token-attribution-and-shared-pricing.md)). Run: `py -3 claude/scripts/tests/test_token_attribution.py`
-113. **window-flash-monitor test** — required when changing `claude/scripts/window-flash-monitor.py` or `register-window-flash-monitor.ps1` ([ADR-155](docs/adr/155-record-console-flashes-before-fixing-them.md), dev-env#1225). The `--live` run opens real windows and briefly takes focus, so it is local only; run it too when changing the monitor. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
-114. **claude-wrappers test** — required when changing `bin/claude` or `bin/claude.cmd`. Runs both wrappers against fixture install directories to check which binary each one starts (dev-env#1142). Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
-115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in `docs/REFERENCE.md`. Caps the global file's size and checks its local links resolve ([ADR-159](docs/adr/159-instruction-files-hold-rules-not-stories.md), dev-env#1216). Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
-116. **deferred-followup-sweep test** — required when changing `claude/scripts/deferred-followup-sweep.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1292). Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
-117. **duplicate-issue retrieval scorer test** — required when changing anything under `experiments/2026-11-issue-dup-retrieval/`. Calibrates the experiment's scorer and outcome map, and scans committed files for private text ([ADR-157](docs/adr/157-duplicate-issue-retrieval-experiment.md), dev-env#1260). Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
-118. **closing-negation test** — required when changing `claude/scripts/_closing_negation.py` ([ADR-153](docs/adr/153-acceptance-criteria-filing-and-verification.md), dev-env#1300). Its two callers are items 38 and 116, so run those too. Run: `py -3 claude/scripts/tests/test_closing_negation.py`
+1. **Hook-script syntax check** — all hook scripts parse; run from the repo root. Run: `py -3 -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read(),f) for f in sys.argv[1:]]" claude/scripts/*.py`
+2. **`pyw -3` stdio verification** — Windows-only and needs a console, so CI skips it: run it locally. Run: `py -3 claude/scripts/tests/test_pyw_stdio.py`
+3. **Pre-push hook self-test** — `claude/hooks/pre-push`. Run: `bash claude/hooks/tests/test-pre-push-lockfile.sh`
+4. **Docs-only guard** — docs-only changes to `claude/CLAUDE.md`. Run: `grep -n 'date -u' claude/CLAUDE.md`; every match must be an internal operational artifact (lock files, log timestamps), never a stub filename or branch name.
+5. **Script path-hygiene lint** — any `*.sh` here or `claude/hooks/*` shell script. Run: `bash claude/scripts/tests/check-script-path-hygiene.sh`
+6. **`get-project-item.sh` smoke test** — `get-project-item.sh`. Run: `bash claude/scripts/tests/test-get-project-item.sh`
+7. **shellcheck gate** — recommended for any shell script. Run: `bash claude/scripts/tests/run-shellcheck.sh`
+8. **usage-snapshot classifier test** — `usage-snapshot.py`. Run: `py -3 claude/scripts/tests/test_usage_snapshot.py`
+9. **worktree-npm-install gate test** — `worktree-npm-install.py`. Run: `py -3 claude/scripts/tests/test_worktree_npm_install.py`
+10. **post-pr-merge-reclaim test** — `post-pr-merge-reclaim.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py`
+11. **memory-write-advisory test** — `memory-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_memory_write_advisory.py`
+12. **post-tool-use test** — `post-tool-use.py`. Run: `py -3 claude/scripts/tests/test_post_tool_use.py`
+13. **_hookio shared-read test** — `_hookio.py`, `_hookinput.py`. Run: `py -3 claude/scripts/tests/test_hookio.py`
+14. **post-pr-merge-project test** — `post-pr-merge-project.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_project.py`
+15. **post-pr-merge-pull test** — `post-pr-merge-pull.py`. Run: `py -3 claude/scripts/tests/test_post_pr_merge_pull.py`
+16. **stub-push-archive-reminder test** — `stub-push-archive-reminder.py`. Run: `py -3 claude/scripts/tests/test_stub_push_archive_reminder.py`
+17. **worktree-liveness guard test** — `_worktree_liveness.py`, or the prune/reclaim scripts' use of it. Run: `py -3 claude/scripts/tests/test_worktree_liveness.py`
+18. **posttooluse-inert-advisory test** — `posttooluse-inert-advisory.py`. Run: `py -3 claude/scripts/tests/test_posttooluse_inert_advisory.py`
+19. **reconcile-open-prs test** — `reconcile-open-prs.py`. Run: `py -3 claude/scripts/tests/test_reconcile_open_prs.py`
+20. **post-compact open-PR + pending-tile reader test** — `post-compact.py`. Run: `py -3 claude/scripts/tests/test_post_compact.py`
+21. **journal-shards shared-reader test** — `_journal_shards.py`. Run: `py -3 claude/scripts/tests/test_journal_shards.py`
+22. **worktree-topology test** — `_worktree_topology.py`, or the squat-detection paths in `prune-merged-worktrees.py`, `post-pr-merge-pull.py`, `dev-env-sync.py`, `journal-canonical-guard.py`. Run: `py -3 claude/scripts/tests/test_worktree_topology.py`
+23. **post-merge-tile-checkpoint test** — `post-merge-tile-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_post_merge_tile_checkpoint.py`
+24. **pre-merge-message-check test** — `pre-merge-message-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_message_check.py`
+25. **manifest field validator test** — `validate-manifest.py`. Run: `py -3 claude/scripts/tests/test_validate_manifest.py`
+26. **prune-merged-worktrees test** — `prune-merged-worktrees.py`, `_default_branch.py`. Run: `py -3 claude/scripts/tests/test_prune_merged_worktrees.py`
+27. **_hookutil shared-helper test** — `_hookutil.py`. Run: `py -3 claude/scripts/tests/test_hookutil.py`
+28. **pr-merge-reminder test** — `pr-merge-reminder.py`. Run: `py -3 claude/scripts/tests/test_pr_merge_reminder.py`
+29. **reconcile-project-board test** — `reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_reconcile_project_board.py`
+30. **reclaim-worktree-disk test** — `reclaim-worktree-disk.py`, `_default_branch.py`. Run: `py -3 claude/scripts/tests/test_reclaim_worktree_disk.py`
+31. **_repo_scan shared-module test** — `_repo_scan.py`, or the `--scan-dir` discovery path in `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `reconcile-project-board.py`. Run: `py -3 claude/scripts/tests/test_repo_scan.py`
+32. **worktree-path-check test** — `pre-tool-use-worktree-path-check.py`. Run: `py -3 claude/scripts/tests/test_worktree_path_check.py`
+33. **canonical-mutate-guard test** — `pre-tool-use-canonical-mutate-guard.py`. Run: `py -3 claude/scripts/tests/test_canonical_mutate_guard.py`
+34. **merge-stale-pr self-test** — `merge-stale-pr.sh`. Run: `bash claude/scripts/tests/test-merge-stale-pr.sh`
+35. **worktree-canon shared-module test** — `_worktree_canon.py`. Run: `py -3 claude/scripts/tests/test_worktree_canon.py`
+36. **`_winsubp` shared-module test** — `_winsubp.py`. Run: `py -3 claude/scripts/tests/test_winsubp.py` + `py -3 claude/scripts/tests/test_pyw_stdio.py`
+37. **numbering-collision check test** — `pre-merge-numbering-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_numbering_check.py`
+38. **pre-merge-findings-gate test** — `pre-merge-findings-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_findings_gate.py` + `bash claude/scripts/tests/test-merge-findings-gate.sh`
+39. **Crude command-substring-check regression test** — adding or changing any `*.py` here. Run: `py -3 claude/scripts/tests/test_no_crude_command_substring_checks.py`
+40. **journal-shard-write-advisory test** — `journal-shard-write-advisory.py`. Run: `py -3 claude/scripts/tests/test_journal_shard_write_advisory.py`
+41. **`_journal_schema` shared-module test** — `_journal_schema.py`. Run: `py -3 claude/scripts/tests/test_journal_schema.py`
+42. **`_bash_state` shared-module test** — `_bash_state.py`. Run: `py -3 claude/scripts/tests/test_bash_state.py`
+43. **pre-commit-branch-check test** — `pre-commit-branch-check.py`. Run: `py -3 claude/scripts/tests/test_pre_commit_branch_check.py`
+44. **pre-pr-create-check test** — `pre-pr-create-check.py`. Run: `py -3 claude/scripts/tests/test_pre_pr_create_check.py`
+45. **pre-merge-branch-check test** — `pre-merge-branch-check.py`. Run: `py -3 claude/scripts/tests/test_pre_merge_branch_check.py`
+46. **check-journal-compose-liveness test** — `check-journal-compose-liveness.py`. Run: `py -3 claude/scripts/tests/test_check_journal_compose_liveness.py`
+47. **disk-space-check test** — `disk-space-check.py`. Run: `py -3 claude/scripts/tests/test_disk_space_check.py`
+48. **stop-tile-enumeration-gate test** — `stop-tile-enumeration-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_tile_enumeration_gate.py`
+49. **setup-link-loop test** — `setup.sh`'s link arrays, link functions, backup/restore path, Windows preflight, `win_cmd` or dispatch guard (function names in docs/TESTING.md item 49). Run: `bash claude/scripts/tests/test-setup-link-loop.sh`
+50. **journal-stop-check test** — `journal-stop-check.py`. Run: `py -3 claude/scripts/tests/test_journal_stop_check.py`
+51. **idle-refresher test** — `idle-refresher.py`. Run: `py -3 claude/scripts/tests/test_idle_refresher.py`
+52. **pre-auto-merge-checkpoint-gate test** — `pre-auto-merge-checkpoint-gate.py`. Run: `py -3 claude/scripts/tests/test_pre_auto_merge_checkpoint_gate.py` + `bash claude/scripts/tests/test-auto-merge-checkpoint-gate.sh`
+53. **`_journal_compose_force` shared-module test** — `_journal_compose_force.py`. Run: `py -3 claude/scripts/tests/test_journal_compose_force.py`
+54. **journal-compose-force-resolve end-to-end test** — `journal-compose-force-resolve.py`. Run: `py -3 claude/scripts/tests/test_journal_compose_force_resolve.py`
+55. **journal-compose-force-guard test** — `pre-tool-use-journal-compose-force-guard.py`. Run: `py -3 claude/scripts/tests/test_pre_tool_use_journal_compose_force_guard.py`
+56. **dev-env-sync test** — `dev-env-sync.py`. Run: `py -3 claude/scripts/tests/test_dev_env_sync.py`
+57. **journal-canonical-guard stdout-routing test** — `journal-canonical-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_canonical_guard.py`
+58. **stop-journal-stub-checkpoint test** — `stop-journal-stub-checkpoint.py`. Run: `py -3 claude/scripts/tests/test_stop_journal_stub_checkpoint.py`
+59. **pre-bash-drift-check test** — `pre-bash-drift-check.py`. Run: `py -3 claude/scripts/tests/test_pre_bash_drift_check.py`
+60. **_hookout emitter test** — `_hookout.py`. Run: `py -3 claude/scripts/tests/test_hookout.py`
+61. **hook output-contract + ASCII-literal gate** — `tests/test_hook_output_contract.py`, or `tests/_hook_wiring.py` (then also run items 62, 63 and 110). Run: `py -3 claude/scripts/tests/test_hook_output_contract.py`
+62. **hook safe-exit structural gate** — `tests/test_hook_safe_exit_guard.py`, or `tests/_hook_wiring.py` (item 61). Run: `py -3 claude/scripts/tests/test_hook_safe_exit_guard.py`
+63. **settings-hook wiring lint** — `tests/test_settings_hook_wiring.py`, `tests/_hook_wiring.py` (item 61), or the `hooks` block of `claude/settings.json`. Run: `py -3 claude/scripts/tests/test_settings_hook_wiring.py`
+64. **run-hook-tests runner test** — `run-hook-tests.py`. Run: `py -3 claude/scripts/tests/test_run_hook_tests.py`
+65. **token-tracker test** — `token-tracker.py`. Run: `py -3 claude/scripts/tests/test_token_tracker.py`
+66. **journal-draft-worktree-guard test** — `pre-tool-use-journal-draft-worktree-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py`
+67. **hook-liveness-check test** — `hook-liveness-check.py`. Run: `py -3 claude/scripts/tests/test_hook_liveness_check.py`
+68. **hook-heartbeat-guard structural gate** — which hooks `claude/settings.json` wires, or any wired hook's `main()`. Run: `py -3 claude/scripts/tests/test_hook_heartbeat_guard.py` + `py -3 claude/scripts/tests/test_hook_liveness_check.py`
+69. **journal-onboard-check sentinel test** — `journal-onboard-check.py`. Run: `py -3 claude/scripts/tests/test_journal_onboard_check.py`
+70. **session-mode-prompt sentinel test** — `session-mode-prompt.py`. Run: `py -3 claude/scripts/tests/test_session_mode_prompt.py`
+71. **sweep-scratch-debris test** — `sweep-scratch-debris.py`. Run: `py -3 claude/scripts/tests/test_sweep_scratch_debris.py`
+72. **baseline-tests gc test** — `baseline-tests.sh`. Run: `bash claude/scripts/tests/test-baseline-tests-gc.sh`
+73. **`_repo_target` shared-module test** — `_repo_target.py`, or the six hooks that delegate to it: `post-pr-merge-project.py`, `pr-merge-reminder.py`, `posttooluse-inert-advisory.py`, `post-pr-merge-pull.py`, `stop-tile-enumeration-gate.py`, `post-tool-use.py`. Run: `py -3 claude/scripts/tests/test_repo_target.py`
+74. **session-mode-report test** — `session-mode-report.py`. Run: `py -3 claude/scripts/tests/test_session_mode_report.py`
+75. **Unreachable-code lint (pylint `unreachable` / W0101)** — any PR touching `*.py` or `tests/*.py` here. Run: `bash claude/scripts/tests/run-pylint-unreachable.sh`
+76. **Testing-index parity gate** — this index or `docs/TESTING.md`: both carry identical, contiguous item numbers and titles, none past 118 and none used twice. Run: `py -3 claude/scripts/tests/test_testing_index_parity.py`
+77. **experiment-verdict-gate test** — `stop-experiment-verdict-gate.py`. Run: `py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py`
+78. **worktree-recovery recipe + runbook-parity gate** — `_worktree_recovery.py`, the orphan block message in `pre-tool-use-worktree-path-check.py`, or the `docs/REFERENCE.md` "Worktree deregistration recovery" runbook. Run: `py -3 claude/scripts/tests/test_worktree_recovery.py`
+79. **remote-read hygiene lint** — anything under `claude/` that reads a file from a remote ref. Run: `bash claude/scripts/tests/check-remote-read-hygiene.sh`
+80. **reconcile-pending-tiles test** — `reconcile-pending-tiles.py`. Run: `py -3 claude/scripts/tests/test_reconcile_pending_tiles.py`
+81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — `new-day-journal-check.py`, `_journal_late.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
+82. **composed-output stray-terminal-scan test** — `_composed_output_scan.py`, `validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
+83. **journal-compose-replay conflict-recovery test** — `journal-compose-replay.sh`, or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md`. Run: `bash claude/scripts/tests/test-journal-compose-replay.sh`
+84. **README index-parity gate** — `tests/test_readme_index_parity.py`, or adding, removing or renaming any file in `claude/scripts/tests/` or `claude/scripts/`. Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
+85. **skill-file-size-guard test** — `pre-tool-use-skill-file-size-guard.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_guard.py`
+86. **skill-file-size-advisory test** — `skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
+87. **`_skill_file_size` shared-module test** — `_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`
+88. **journal-shell-write-guard test** — `pre-tool-use-journal-shell-write-guard.py`. Run: `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`
+89. **session-start-sync test** — `session-start-sync.py`, `_worktree_liveness.py`. Run: `py -3 claude/scripts/tests/test_session_start_sync.py` + `py -3 claude/scripts/tests/test_worktree_liveness.py`
+90. **`_gh_issue_state` shared-module test** — `_gh_issue_state.py`. Run: `py -3 claude/scripts/tests/test_gh_issue_state.py`
+91. **retro-chain-status test** — `retro-chain-status.py`. Run: `py -3 claude/scripts/tests/test_retro_chain_status.py`
+92. **journal-canon shared-module test** — `_journal_canon.py`, or the four hooks that delegate to it: `pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py`. Run all five suites: `py -3 claude/scripts/tests/test_journal_canon.py` + `py -3 claude/scripts/tests/test_canonical_mutate_guard.py` + `py -3 claude/scripts/tests/test_journal_canonical_guard.py` + `py -3 claude/scripts/tests/test_journal_draft_worktree_guard.py` + `py -3 claude/scripts/tests/test_worktree_path_check.py`
+93. **sibling-hooks hardened-IO migration test** — any of the 12 sibling hooks (listed in docs/TESTING.md item 93), `_hookio.py`'s `read_command`/`read_tool_input_field`/`read_cwd`/`read_exit_code`, or `_hookutil.py`'s `record_heartbeat`/`HOOK_HEARTBEAT_DIR_OVERRIDE`. Run: `py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py` + `py -3 claude/scripts/tests/test_worktree_path_check.py` + `py -3 claude/scripts/tests/test_hookio.py` + `py -3 claude/scripts/tests/test_hookutil.py`
+94. **`_shell_write_detect` shared-module test** — `_shell_write_detect.py`. Run: `py -3 claude/scripts/tests/test_shell_write_detect.py` + `py -3 claude/scripts/tests/test_journal_shell_write_guard.py`
+95. **shell-content-write-guard test** — `pre-tool-use-shell-content-write-guard.py`, or `session-mode-prompt.py`'s bypass-mode carve-out. Run: `py -3 claude/scripts/tests/test_shell_content_write_guard.py` + `py -3 claude/scripts/tests/test_session_mode_prompt.py`
+96. **replay-shell-content-guard test** — `replay-shell-content-guard.py`; after any detector change to the guard, also re-run `py -3 claude/scripts/replay-shell-content-guard.py --gap`. Run: `py -3 claude/scripts/tests/test_replay_shell_content_guard.py`
+97. **journal-project-repo-map test** — `journal-project-repo-map.py`, or the Step 8a Source 3 block in `claude/skills/journal-compose/SKILL.md`. Run: `py -3 claude/scripts/tests/test_journal_project_repo_map.py`
+98. **`_settings_sync` shared-module test** — `_settings_sync.py` (for `ensure_launcher`/`hooks_guard` also run item 103; for `seed_hook_config`, item 12), `claude/settings.shared.json`, `claude/hook-config.shared.json`, or `setup.sh`'s `seed_claude_settings()`. Also run items 2, 49, 61, 62, 63 and 67. Run: `py -3 claude/scripts/tests/test_settings_sync.py` + `bash claude/scripts/tests/test-setup-link-loop.sh`
+99. **`_gh_project` shared-module test** — `_gh_project.py`. Run: `py -3 claude/scripts/tests/test_gh_project.py`
+100. **journal-compose-meta test** — `journal-compose-meta.py`, the meta handling in `claude/skills/journal-compose/SKILL.md` (the steps are listed in docs/TESTING.md item 100; also run item 83 when Step 10.5 changes), the "Meta journal" trigger list in `claude/CLAUDE.md`, or the meta rule in `claude/routines/daily-journal-compose/SKILL.md`. Run: `py -3 claude/scripts/tests/test_journal_compose_meta.py`
+101. **scratch-rm-allow test** — `pre-tool-use-scratch-rm-allow.py`, or `_hookout.py`'s `plan_allow`/`emit_allow` (then also run item 60). Run: `py -3 claude/scripts/tests/test_scratch_rm_allow.py`
+102. **replay-scratch-rm-allow test** — `replay-scratch-rm-allow.py`, or the hook's `check_command`/`Reject` surface (then also run item 101); after any change to the hook's lexer, re-run `py -3 claude/scripts/replay-scratch-rm-allow.py`. Run: `py -3 claude/scripts/tests/test_replay_scratch_rm_allow.py`
+103. **hook-launch test** — `_hook_launch.py`, the command form of any hook in `claude/settings.shared.json`, or `_settings_sync.py`'s `ensure_launcher` (then also run item 98). Run: `py -3 claude/scripts/tests/test_hook_launch.py`
+104. **hook-timing-report test** — `hook-timing-report.py`, or `_hookutil.py`'s `record_duration` line format (then also run item 27). Run: `py -3 claude/scripts/tests/test_hook_timing_report.py`
+105. **turn-count-hook journal-stub band test** — `turn-count-hook.py`. Run: `py -3 claude/scripts/tests/test_turn_count_hook.py`
+106. **heartbeat-ledger isolation gate** — adding or changing any test that runs a real wired hook, or `tests/_heartbeat_isolation.py`; no test may write the production ledger `~/.claude/scratch/hook-heartbeat/`. Run: `py -3 claude/scripts/tests/test_hook_heartbeat_isolation.py`
+107. **hook-dispatch test** — `hook-dispatch.py`, or which hooks a dispatcher command runs in `claude/settings.shared.json` (then also run items 2, 61-63, 67, 68 and 98). Run: `py -3 claude/scripts/tests/test_hook_dispatch.py`
+108. **auto-resume test** — `_auto_resume.py`, `session-start-auto-resume.py`, `auto-resume-launcher.py`, `register-auto-resume.ps1` (for that one, also parse-check it and do the manual steps in docs/TESTING.md item 108). Run: `py -3 claude/scripts/tests/test_auto_resume.py`
+109. **hook static-scan test** — adding or changing any `*.py` here that uses subprocess or spawns Python, or any hook command in `claude/settings.shared.json`. Run: `py -3 claude/scripts/tests/test_hook_static_scans.py`
+110. **dev-env-doctor test** — `dev-env-doctor.py`, `setup.sh`'s link arrays, `tests/_hook_wiring.py`, or the command form of the hooks in `claude/settings.shared.json`. Run: `py -3 claude/scripts/tests/test_dev_env_doctor.py`
+111. **reconcile-late-stubs test** — `reconcile-late-stubs.py`, `_journal_late.py`. Run: `py -3 claude/scripts/tests/test_reconcile_late_stubs.py`
+112. **token attribution and pricing test** — `_token_pricing.py` (then also run item 65), `backfill-tokens.py`, or `token-report.py`'s `--attribution` mode or session tables. Run: `py -3 claude/scripts/tests/test_token_attribution.py`
+113. **window-flash-monitor test** — `window-flash-monitor.py`, `register-window-flash-monitor.ps1`. The `--live` run opens real windows and takes focus, so it is local only. Run: `py -3 claude/scripts/tests/test_window_flash_monitor.py` + `py -3 claude/scripts/tests/test_window_flash_monitor.py --live`
+114. **claude-wrappers test** — `bin/claude`, `bin/claude.cmd`. Run: `bash claude/scripts/tests/test-claude-wrappers.sh`
+115. **claude-md-size test** — `claude/CLAUDE.md`, this file, or the `## Instruction Detail` and `## Project Instruction Detail` headings in `docs/REFERENCE.md`. Run: `py -3 claude/scripts/tests/test_claude_md_size.py`
+116. **deferred-followup-sweep test** — `deferred-followup-sweep.py`. Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
+117. **duplicate-issue retrieval scorer test** — anything under `experiments/2026-11-issue-dup-retrieval/`. Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
+118. **closing-negation test** — `_closing_negation.py` (then also run items 38 and 116). Run: `py -3 claude/scripts/tests/test_closing_negation.py`
 
 ## Experiments
 
@@ -176,38 +171,26 @@ Default tier: Tier 1 for anything that would change a standing rule, hook or ski
 
 ## Observability
 
-dev-env has **no long-running runtime to instrument** — it is a configuration repo whose
-"runtime" is short-lived hook scripts and skills invoked by Claude Code. There is no
-application logger, no log aggregation, and no traces. This section exists to satisfy the
-global per-project `## Observability` requirement and to tell the *Plan-then-optimize → Pass 3*
-Observability dimension what to verify here instead.
+dev-env has **no long-running runtime to instrument**: no application logger, log aggregation or
+traces. Its runtime is short-lived hook scripts and skills, which follow the Claude Code hook
+contract ([ADR-027](docs/adr/027-userpromptsubmit-blocking-hook-conventions.md); invocation
+model, [ADR-007](docs/adr/007-hook-command-invocation.md)):
 
-Hooks and scripts observe the Claude Code hook contract rather than a logging stack:
+- **Use the stream the event type delivers on the exit code you chose; stderr isn't always the
+  safe channel.** A **blocking** hook uses stderr and exit 2. A **non-blocking advisory** (always
+  exit 0) uses the stream its event forwards on exit 0: **stdout** for `UserPromptSubmit`,
+  `UserPromptExpansion` and `SessionStart`. Other events, such as `Stop`, forward neither stream
+  on exit 0, so an advisory there must block (exit 2 + stderr) to be seen. Getting this backwards
+  is silent ([ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md),
+  [ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md)).
+  [Detail](docs/REFERENCE.md#project-detail-hook-output-streams)
+- **The verification suite in `## Testing` stands in for boundary observability.** A change to a
+  hook or script keeps it green.
 
-- **Stream choice is event-type- and intent-dependent — not a blanket "diagnostics go to
-  stderr" rule.** A **blocking** hook uses stderr + exit 2 (the one channel every hook event
-  forwards to Claude on a non-zero exit). A **non-blocking advisory** (always exits 0) must use
-  whichever stream that *specific* event type forwards on exit 0 — for `UserPromptSubmit`/
-  `UserPromptExpansion`/`SessionStart` that's **stdout** (stderr is not surfaced there); other
-  event types (e.g. `Stop`) forward neither stream on exit 0, so an always-exit-0 advisory is
-  invisible regardless of stream and must block (exit 2 + stderr) to be seen at all. Getting
-  this backwards is silent by construction: `dev-env-sync.py`'s exit-0 warnings sat on stderr
-  for months, hiding a fast-forward-pull failure for 36+ hours and 21+ commits of drift before
-  anyone noticed (dev-env#694, [ADR-098](docs/adr/098-dev-env-sync-advisories-to-stdout.md));
-  `journal-stop-check.py`'s archive reminder had the mirror-image `Stop`-hook bug
-  ([ADR-091](docs/adr/091-journal-stop-check-archive-reminder-blocking.md)). Base contract:
-  [ADR-027](docs/adr/027-userpromptsubmit-blocking-hook-conventions.md); invocation model:
-  [ADR-007](docs/adr/007-hook-command-invocation.md).
-- **The equivalent of "is it observable / correct at its boundaries" is the verification
-  suite in `## Testing` above** — the hook-script syntax check, the `pyw -3` stdio test, and
-  the pre-push self-test. A change to a hook or script must keep those green.
-
-What the Pass 3 Observability dimension should verify for a dev-env change: any new or changed
-hook/script routes its output to the stream its event type and blocking-intent actually deliver
-to Claude on the exit code it uses (see the stream-choice bullet above — never assume stderr is
-always the safe/diagnostic channel), chooses its exit code deliberately (0 = advisory, non-zero
-= blocking), and is covered by the relevant `## Testing` self-test. Pure docs/config changes
-(like this one) answer "N/A — no runtime."
+What the Pass 3 Observability dimension verifies here: a new or changed hook or script routes its
+output to the stream its event type and blocking intent deliver, chooses its exit code
+deliberately (0 advisory, non-zero blocking), and is covered by a `## Testing` self-test. Pure
+docs or config changes answer "N/A — no runtime."
 
 ## Documentation Maintenance
 
@@ -238,39 +221,25 @@ When a PR modifies any of the paths below, update the listed reference docs **in
 | `~/.claude/routines/` | `claude/routines/` (directory junction) |
 | `~/.claude/templates/` | `claude/templates/` (directory symlink) |
 
-`setup.sh` creates these (installs older than it may hold junctions instead — both resolve the
-same). `py -3 ~/.claude/scripts/dev-env-doctor.py` verifies the whole layout on any machine; adding
-a second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine).
+`setup.sh` creates these (older installs may hold junctions instead; both resolve the same).
+`py -3 ~/.claude/scripts/dev-env-doctor.py` verifies the whole layout on any machine; adding a
+second one: [`docs/REFERENCE.md` → Adding a Second Machine](docs/REFERENCE.md#adding-a-second-machine).
 
-**Machine-local only — never commit:**
+**Machine-local only — never commit:** `scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`,
+`plans/`, `shell-snapshots/`, `routine-findings/`
 
-`scratch/`, `projects/`, `sessions/`, `backups/`, `ide/`, `plans/`, `shell-snapshots/`, `routine-findings/`
+**`~/.claude/hook-launch.py` is installed by dev-env, deliberately outside every junction.** Every
+hook runs as `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`,
+so a wired script that is missing fails **open** instead of blocking every matching tool call
+([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md)).
+`_settings_sync.ensure_launcher` copies it from `claude/scripts/_hook_launch.py` on every sync,
+and the sync refuses to apply `hooks` while a script they name is absent. Never delete the file
+by hand; restore it with `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` from a hook-free
+terminal. [Detail](docs/REFERENCE.md#project-detail-dev-env-architecture)
 
-**Installed by dev-env, but deliberately *outside* every junction — `~/.claude/hook-launch.py`:**
-
-Every hook command runs as `pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/<name>.py`
-([ADR-148](docs/adr/148-missing-hook-script-fails-open-via-launcher.md)). The launcher is a real
-file that `_settings_sync.ensure_launcher` copies from `claude/scripts/_hook_launch.py` on every
-sync, *before* it writes any hooks that name it. It lives outside the junctions on purpose: when
-the canonical regresses to an older tree, everything under `~/.claude/scripts` regresses with it,
-but the launcher does not. A wired script that is missing then fails **open** (exit 0 plus a
-warning) instead of making Python exit 2, which would block every matching tool call, machine-wide
-(dev-env#1146). The sync also refuses to apply `hooks` while any script those hooks name is
-absent, keeping the live wiring and saying "pull first". Never delete the file by hand. To
-restore it, run `py -3 C:/Users/brown/.claude/scripts/_settings_sync.py` from a hook-free
-terminal. The path is absolute so the same command works in Windows PowerShell 5.1, the
-Terminal panel's shell, which expands neither `~` nor `&&`.
-
-**Machine-local *and* partly repo-owned — `~/.claude/settings.json`:**
-
-`~/.claude/settings.json` is a **real, machine-local file the Claude Code app writes**, not a
-symlink into this repo ([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)).
-It used to be symlinked, which made the app dirty a tracked file and blocked the canonical's
-fast-forward *permanently* — serving stale hooks and skills machine-wide, since
-`~/.claude/{scripts,skills,hooks}` are links into that same checkout (dev-env#1049).
-
-dev-env tracks `claude/settings.shared.json` instead and syncs it **into** the live file.
-Which keys belong where:
+**`~/.claude/settings.json` is a real, machine-local file the app writes, not a symlink**
+([ADR-139](docs/adr/139-machine-local-settings-with-shared-source-sync.md)). dev-env tracks
+`claude/settings.shared.json` and syncs it **into** the live file:
 
 | Class | Keys | Behavior |
 |---|---|---|
@@ -279,43 +248,50 @@ Which keys belong where:
 | **Machine-local** (never tracked) | `theme`, `tui`, `agentPushNotifEnabled`, `inputNeededNotifEnabled`, `skipWorkflowUsageWarning`, `autoMode` | Never read, written, or removed by the sync. `autoMode.environment` describes personal data and must stay out of git. |
 
 **Adding a key to `claude/settings.shared.json` requires classifying it** in `OWNED_KEYS` or
-`SEED_KEYS` in [`claude/scripts/_settings_sync.py`](claude/scripts/_settings_sync.py) — an
-unclassified key is reported as a warning and *not applied*, rather than silently ignored.
-
-**Machine-local is not the same as correctly scoped.** A key the app writes that carries
-**project-specific** content — an auto-mode environment scan, anything naming a particular repo's
-paths, visibility, or policies — does not belong in `~/.claude/settings.json` either, even though
-that file is now machine-local and out of git: the user-scope file loads for **every** project's
-session on this machine. Relocate it to that project's own `.claude/settings.local.json`, the only
-per-project personal-settings slot Claude Code has (verify the project's `.gitignore` excludes it
-first). This is a global rule, stated in full in
-[`claude/CLAUDE.md`](claude/CLAUDE.md) → Platform & Environment.
-
-`dev-env-sync.py` runs the sync every prompt. To apply it by hand after editing the shared file:
-
-```bash
-py -3 ~/.claude/scripts/_settings_sync.py
-```
+`SEED_KEYS` in [`claude/scripts/_settings_sync.py`](claude/scripts/_settings_sync.py); an
+unclassified key is reported as a warning and *not applied*. A key the app writes with
+project-specific content belongs in that project's `.claude/settings.local.json`, not the user
+file (global rule, *Platform & Environment*). `dev-env-sync.py` runs the sync every prompt; to
+apply it by hand after editing the shared file: `py -3 ~/.claude/scripts/_settings_sync.py`.
+[Detail](docs/REFERENCE.md#project-detail-dev-env-architecture)
 
 **Rule:** Any addition or modification to a dev-env-owned artifact — new hook script, new skill, settings change, CLAUDE.md edit — must be committed to `brownm09/dev-env` via branch and PR before the session ends. Do not leave global tooling as untracked files.
 
-**Rule:** The canonical dev-env worktree (`~/Git/dev-env`) must stay on `main` at all times. All dev-env changes go through a separate worktree (use `EnterWorktree` or `git worktree add`). Reason: `~/.claude/settings.json` and `~/.claude/scripts/` are symlinked/junctioned to the canonical worktree's working tree — checking out a feature branch there makes newly merged hooks and scripts invisible until the worktree returns to main. `dev-env-sync` will warn on every prompt when this rule is violated.
+**Rule:** The canonical dev-env worktree (`~/Git/dev-env`) must stay on `main` at all times. All
+dev-env changes go through a separate worktree (`EnterWorktree` or `git worktree add`), because
+`~/.claude/` links into the canonical's working tree, so a feature branch there hides newly
+merged hooks and scripts. `dev-env-sync` warns on every prompt while this is broken.
 
-**Routines note:** `~/.claude/routines/` is a read-only junction mirror of `claude/routines/` — it exists so a routine can read its own canonical source at run time, not so the scheduler auto-registers it. The `scheduled-tasks` MCP tool never reads or writes through it: that tool owns a **separate, real, non-linked** directory, `~/.claude/scheduled-tasks/`, with one subdirectory per *registered* task (reusable routines and one-off/manual tasks side by side — deliberately not a version-controlled mirror, since one-offs have no business in git). Authoring or editing `claude/routines/<name>/SKILL.md` and merging it does **not** update a live task. After merging, separately call `create_scheduled_task` / `update_scheduled_task` (`scheduled-tasks` MCP tool) so the live prompt matches. Prefer the self-referencing pattern `weekly-memory-audit` already uses: have the live prompt read its own canonical `claude/routines/<name>/SKILL.md` at run time and follow it when present, falling back to an embedded copy — this keeps the live task self-healing against future drift instead of silently diverging, as `daily-journal-compose` did until [dev-env#464](https://github.com/brownm09/dev-env/issues/464). See [ADR-003 amendment](docs/adr/003-config-in-version-control.md) and [dev-env#344](https://github.com/brownm09/dev-env/issues/344).
+**Routines:** merging a change to `claude/routines/<name>/SKILL.md` does **not** update the live
+task. The `scheduled-tasks` MCP tool owns a separate, real directory, `~/.claude/scheduled-tasks/`;
+`~/.claude/routines/` is only a read-only mirror. After merging, call `update_scheduled_task` (or
+`create_scheduled_task`) so the live prompt matches, and prefer a live prompt that reads its own
+canonical `SKILL.md` at run time and falls back to an embedded copy, as `weekly-memory-audit` does
+([ADR-003 amendment](docs/adr/003-config-in-version-control.md),
+[dev-env#344](https://github.com/brownm09/dev-env/issues/344)).
+[Detail](docs/REFERENCE.md#project-detail-dev-env-architecture)
 
-**Routine authoring — sync-to-main preamble.** Any routine that reads repo-resident files (a skill, a context file, a queue file) at run time must invoke the `sync-routine-worktree` skill as Step 0, before reading any of those files. Scheduled tasks fire into Claude-managed worktrees whose branches were cut from whatever `main` was at worktree creation; without an explicit sync the routine reads stale files or aborts because a recently-merged file is missing on the worktree branch. The sync skill handles fetch, branch-class-aware sync (Claude-managed worktree / `main` / other), file existence verification, and abort-with-push-notification on conflict — routines pass `REPO`, `VERIFY_FILE`, and `PREFIX` and treat the return as a guard. See `claude/skills/sync-routine-worktree/SKILL.md` and `claude/routines/nightly-cover-letters/SKILL.md` for the canonical pattern. Rationale: `docs/adr/013-sync-routine-worktree-skill.md`.
+**Routine authoring:** a routine that reads repo-resident files at run time invokes the
+`sync-routine-worktree` skill as Step 0, before reading them, passing `REPO`, `VERIFY_FILE` and
+`PREFIX` and treating the return as a guard. Pattern: `claude/routines/nightly-cover-letters/SKILL.md`;
+rationale: [ADR-013](docs/adr/013-sync-routine-worktree-skill.md).
 
-**Doc-reconciliation checkpoint** (three moments, same as ADR-warrant): (1) immediately after a plan is approved; (2) immediately after `gh pr create` returns; (3) immediately before `gh pr merge`. At each checkpoint, ask: does this change add, remove, rename, or modify the behavior of a skill, hook, script, or routine? If yes, verify that `README.md` and the Documentation Maintenance table above are satisfied in this PR. **If warranted updates are missing, add them before merging.** Rationale: `docs/adr/019-doc-reconciliation-enforcement.md`.
+**Doc-reconciliation checkpoint**, at the three ADR-warrant moments (after plan approval, after
+`gh pr create`, before `gh pr merge`): if the change adds, removes, renames or changes the
+behavior of a skill, hook, script or routine, `README.md` and the Documentation Maintenance table
+above must be satisfied in this PR, before merging
+([ADR-019](docs/adr/019-doc-reconciliation-enforcement.md)).
 
-**Downstream artifacts that name specific dev-env skills/hooks/routines** (update in the same PR as a rename or retirement):
-
-- `tech-leadership-reference/ai-adoption/ai-adoption-readiness-framework.md` — Appendix C names `/propose`, `/review`, `/journal-compose`, `/research`, and the `prune-stale-worktrees` and nightly journal compose routines as live-state evidence.
+**Downstream artifacts that name specific dev-env skills/hooks/routines** (update in the same PR
+as a rename or retirement): `tech-leadership-reference/ai-adoption/ai-adoption-readiness-framework.md`,
+whose Appendix C names `/propose`, `/review`, `/journal-compose`, `/research`, and the
+`prune-stale-worktrees` and nightly journal compose routines.
 
 **Repo path:** `C:/Users/brown/Git/dev-env`
 
 ## GitHub Project
 
-All new dev-env issues and PRs must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The general single-select option-mutation hazard that applies to **every** project is documented in the global `claude/CLAUDE.md` → Dev-Env & Project Boards section; the dev-env-specific IDs and procedures are below.
+All new dev-env issues and PRs must be added to the **Dev Env** project and given an Impact rating and Why description before work begins. The single-select option-mutation hazard that applies to every project is in the global `claude/CLAUDE.md` → Dev-Env & Project Boards.
 
 **Project IDs:**
 - Project number: `3`, owner: `brownm09`
@@ -337,110 +313,34 @@ All new dev-env issues and PRs must be added to the **Dev Env** project and give
 | Medium | Recurs periodically or silently degrades correctness over time |
 | Low | Nice-to-have; low frequency or easily worked around |
 
-**Workflow — automated via PostToolUse hook:** After `gh issue create` or `gh pr create` succeeds, `post-tool-use.py` adds the issue or PR to project #3 and exits code 2, printing the exact `gh project item-edit` commands to set Impact and Why. **Run those commands immediately — before any file edits.** The hook treats both identically ([ADR-023](docs/adr/023-generic-required-fields-issue-hook.md)).
+**Workflow — automated via PostToolUse hook:** After `gh issue create` or `gh pr create`
+succeeds, `post-tool-use.py` adds the issue or PR to project #3 and exits 2, printing the
+`gh project item-edit` commands that set Impact and Why. **Run those commands immediately —
+before any file edits** ([ADR-023](docs/adr/023-generic-required-fields-issue-hook.md)). Its
+config, the gitignored `.claude/hook-config.json`, is copied from tracked
+[`claude/hook-config.shared.json`](claude/hook-config.shared.json) (change project IDs there, in
+a PR); if it's missing, the hook prints a `[project-hook] WARNING` with the seed and manual
+commands ([ADR-052 Amendment 2](docs/adr/052-worktree-config-canonical-fallback.md)).
 
-The hook's config, `.claude/hook-config.json`, is gitignored here. Its tracked source is [`claude/hook-config.shared.json`](claude/hook-config.shared.json): change project IDs there, in a PR. `dev-env-sync.py` copies it into the canonical's `.claude/` on any prompt where that file is missing, and never overwrites an existing one. If the config is missing anyway, the hook prints a `[project-hook] WARNING: ... NOT added to project #3` with the seed command and the manual `gh project item-add`, instead of exiting silently ([ADR-052 Amendment 2](docs/adr/052-worktree-config-canonical-fallback.md), dev-env#669).
+**Fallback, when the hook didn't fire or the add failed:** add the item, set Impact and Why, and
+cache the item ID with the commands in
+[Project detail: GitHub Project board](docs/REFERENCE.md#project-detail-github-project-board).
+They need the `project` scope (`gh auth refresh -s project`). No `[project-hook]` output after a
+create usually means the chain's last command exited non-zero, which runs no PostToolUse hook
+([ADR-053's 2026-11-07 amendment](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)).
 
-**Fallback (if the hook did not fire or the item-add failed):** run the three steps manually (substitute the PR URL for the issue URL when the item is a PR). Requires project scope — add once if needed: `gh auth refresh -s project`. No `[project-hook]` output after a create usually isn't a launch problem: a chain whose last command exits non-zero runs no PostToolUse hook at all, even when its `gh` command succeeded. To check for the rare inert state, where **every** PostToolUse hook is silent, look at `~/.claude/scratch/bash_state_<session-id>.json`: a file updated at the last successful shell call means hooks ran ([ADR-053's 2026-11-07 amendment](docs/adr/053-posttooluse-hooks-inert-in-background-sessions.md)). Either way, these manual steps are the recovery.
+**When GraphQL rejects a call, use REST.** Every `gh project` command spends GraphQL; the Projects
+v2 REST API spends the separate `core` bucket, and can add an item, look up its ID and set a
+field. This holds even when `gh api rate_limit` shows GraphQL budget left. REST takes numeric
+IDs, not node IDs: Status=`341872838`, Impact=`341872855`, Why=`341872861`, with the same option
+IDs as above. Commands, and four behaviors a first attempt trips over:
+[Project detail: GitHub Project board](docs/REFERENCE.md#project-detail-github-project-board)
+([dev-env#1239](https://github.com/brownm09/dev-env/issues/1239)).
 
-```bash
-# 1. Add issue/PR to project, capture item ID
-URL="<issue-or-pr-url>"
-TMPFILE="C:/Users/brown/.claude/scratch/tmp_item_$$.json"
-gh project item-add 3 --owner brownm09 --url "$URL" --format json > "$TMPFILE"
-ITEM_ID=$(node -e "const d=JSON.parse(require('fs').readFileSync('$TMPFILE','utf8')); console.log(d.id);")
-# No cleanup here: scratch leftovers are harmless, and an `rm` chained onto
-# `gh` is never auto-approved (ADR-147). To clean up, use a separate call:
-#   rm -f C:/Users/brown/.claude/scratch/tmp_item_*.json
-
-# 2. Set Impact   (08de2558=High  6320e8a6=Medium  d8a85c2f=Low)
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTSSF_lAHOAjEKvM4BWKFezhRgkNc --single-select-option-id <option-id>
-
-# 3. Set Why (one sentence — the cost of not fixing it)
-gh project item-edit --project-id PVT_kwHOAjEKvM4BWKFe --id "$ITEM_ID" \
-  --field-id PVTF_lAHOAjEKvM4BWKFezhRgkN0 --text "<why this matters>"
-
-# 4. Cache the item ID (dev-env#1057, ADR-141) so a later lookup (e.g. to move
-#    Status) is a zero-cost hit instead of another full-board fetch. The regex and
-#    key format must stay byte-identical to _gh_project.py's _ISSUE_URL_RE /
-#    _cache_key (project-owner/project-number then repo#number, both lower-cased) —
-#    a drifted copy here would silently never hit what that module writes.
-GPI_URL="$URL" GPI_ITEM_ID="$ITEM_ID" node -e "
-  const fs = require('fs'), path = require('path');
-  const m = process.env.GPI_URL.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?\$/);
-  if (!m) process.exit(0);
-  const [, owner, repo, number] = m;
-  const cacheFile = 'C:/Users/brown/.claude/scratch/project-item-cache.json';
-  let cache = {};
-  try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch (e) {}
-  cache['brownm09/3|' + (owner + '/' + repo).toLowerCase() + '#' + number] = process.env.GPI_ITEM_ID;
-  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-  const tmp = cacheFile + '.' + process.pid + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
-  fs.renameSync(tmp, cacheFile);
-"
-```
-
-**When GraphQL rejects a call, use REST.** Every `gh project` command in this section spends the
-GraphQL bucket, and so does the fallback in `get-project-item.sh`. GitHub also has a REST API for
-Projects v2, which spends the separate `core` bucket (the response header says
-`X-RateLimit-Resource: core`). So a GraphQL rate-limit error doesn't block the board: adding an
-item, looking up an item ID, and setting a field all have a REST path. This applies even when
-`gh api rate_limit` shows GraphQL budget left, and even when a retry passes: one token has two
-rate-limit counters, a read shows only one, and some calls still pass while the busier counter is
-at 0 ([finding on dev-env#1238](https://github.com/brownm09/dev-env/issues/1238#issuecomment-6671406131)).
-On 2026-11-05 a call was rejected with 3717/5000 remaining on the reading. The rule for judging the
-error is in [`claude/CLAUDE.md`](claude/CLAUDE.md), *Never mutate git state directly*. See GitHub's
-[Project items](https://docs.github.com/en/rest/projects/items) and
-[Project fields](https://docs.github.com/en/rest/projects/fields) REST documentation.
-
-REST takes numeric IDs, not the `PVTI_`/`PVTSSF_`/`PVTF_` node IDs used above, so an ID from
-`get-project-item.sh` won't work here. Field IDs: Status=`341872838`, Impact=`341872855`,
-Why=`341872861`. Option IDs are the same strings as in the table above. If a field ID stops
-working, list the current ones with `gh api users/brownm09/projectsV2/3/fields`.
-
-```bash
-N=<issue-or-pr-number>
-
-# Add an issue or PR to the board; prints the numeric item ID. Use type=PullRequest for a PR.
-gh api -X POST users/brownm09/projectsV2/3/items -f type=Issue -f owner=brownm09 -f repo=dev-env -F number=$N --jq .id
-
-# Look up the numeric item ID of an item already on the board.
-ITEM_ID=$(gh api --paginate "users/brownm09/projectsV2/3/items?q=$N&per_page=100" \
-  --jq ".[] | select(.content.number == $N and (.content.html_url | contains(\"/brownm09/dev-env/\"))) | .id")
-
-# Set Status (Todo=f75ad846, In Progress=47fc9ee4, Done=98236657).
-echo '{"fields":[{"id":341872838,"value":"98236657"}]}' | gh api -X PATCH "users/brownm09/projectsV2/3/items/$ITEM_ID" --input - --jq .id
-
-# Read it back; prints the option name, such as Done.
-gh api "users/brownm09/projectsV2/3/items/$ITEM_ID?fields=341872838" --jq '.fields[] | select(.id == 341872838) | .value.name.raw'
-```
-
-Impact and Why use the same `PATCH` with their own field IDs; Why's `value` is the text itself.
-Four behaviours, each seen on 2026-11-05, that a first attempt would trip over:
-
-- **`q` is a loose text filter, not a number lookup.** `q=1219` also returned #1212, and `q=12`
-  returned #120 and #121, so keep the `select`.
-- **Filter on `html_url`, not `repository_url`.** A pull request's `content.repository_url` is
-  null, so a filter on it never matches a PR.
-- **`q` can lag a new item.** `q=1239` returned nothing right after the add and found the item
-  about 35 seconds later. An empty result just after an add doesn't mean the add failed; use the
-  ID the `POST` printed.
-- **The `POST` isn't idempotent.** Adding an item already on the board fails with HTTP 422,
-  `Content already exists in this project`, which only means there's nothing to add.
-
-The local item-ID cache holds node IDs and these commands neither read nor write it. Corrects
-[dev-env#769](https://github.com/brownm09/dev-env/issues/769), which said Projects v2 lacked a REST API;
-see [dev-env#1239](https://github.com/brownm09/dev-env/issues/1239).
-
-To look up an item ID by issue or PR number `<N>` (e.g., to move status in a later session), use
-`get-project-item.sh` rather than querying the board directly — it checks a local cache first
-(dev-env#1057, [ADR-141](docs/adr/141-project-item-id-creation-time-cache.md)) and costs **zero**
-`gh` calls on a hit (populated automatically at creation time and backfilled wholesale by
-`reconcile-project-board.py`'s sweeps), falling back on a miss to a query for that one item, which
-costs 1 GraphQL point ([dev-env#1246](https://github.com/brownm09/dev-env/issues/1246)). Don't look
-one item up with `gh project item-list`: on this board that's about 1,011 points:
+**Look up an item ID by issue or PR number with `get-project-item.sh`,** never
+`gh project item-list` (about 1,011 GraphQL points on this board). It reads a local cache first,
+costing zero `gh` calls on a hit ([ADR-141](docs/adr/141-project-item-id-creation-time-cache.md)),
+and falls back to a one-item query:
 
 ```bash
 ITEM_ID=$(bash ~/.claude/scripts/get-project-item.sh <N>)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """claude/CLAUDE.md loads in every session in every project, so its size is capped, and its links
-are checked because rules now lean on them for their detail (dev-env#1216, ADR-159).
+are checked because rules now lean on them for their detail (dev-env#1216, ADR-159). The
+repo-root CLAUDE.md, dev-env's project file, loads in every dev-env session and gets the same
+checks with its own ceiling (dev-env#1297).
 
 Run: py -3 claude/scripts/tests/test_claude_md_size.py
 """
@@ -25,6 +27,20 @@ HOW_TO_FIX = (
     "Detail. Raise CEILING_BYTES only with a reason in the PR body (ADR-159)."
 )
 
+PROJECT_CLAUDE_MD = os.path.join(REPO, "CLAUDE.md")
+
+# About 5% above the project file's size after the #1297 trim: 36,690 bytes.
+PROJECT_CEILING_BYTES = 38_500
+
+# The project file before the trim: the size #1297 was filed against, and the size when it landed.
+PROJECT_KNOWN_BAD_SIZES = (52_943, 56_486)
+
+PROJECT_HOW_TO_FIX = (
+    "Write the new rule as a line or two and move its story to docs/REFERENCE.md -> Project "
+    "Instruction Detail, or a Testing item's detail to docs/TESTING.md. Raise "
+    "PROJECT_CEILING_BYTES only with a reason in the PR body (ADR-159)."
+)
+
 # A link's target, optional anchor, and optional quoted title.
 LINK = re.compile(r"\]\((?!https?:)([^)#\s]*)(?:#([^)\s]*))?(?:\s+\"[^\"]*\")?\)")
 
@@ -35,8 +51,8 @@ def size_of(path):
         return len(f.read().replace(b"\r\n", b"\n"))
 
 
-def over_ceiling(size):
-    return size > CEILING_BYTES
+def over_ceiling(size, ceiling=CEILING_BYTES):
+    return size > ceiling
 
 
 def strip_fences(text):
@@ -143,6 +159,41 @@ def test_every_detail_heading_is_linked():
     assert len(headings) > 20, f"only {len(headings)} detail headings found; the extraction is broken"
     unlinked = sorted(h for h in headings if f"#{h})" not in text)
     assert not unlinked, f"detail sections nothing in claude/CLAUDE.md points to: {unlinked}"
+
+
+def test_project_file_is_under_its_ceiling():
+    size = size_of(PROJECT_CLAUDE_MD)
+    assert not over_ceiling(size, PROJECT_CEILING_BYTES), (
+        f"CLAUDE.md is {size} bytes, over the {PROJECT_CEILING_BYTES} ceiling. {PROJECT_HOW_TO_FIX}"
+    )
+
+
+def test_the_old_project_file_would_have_failed():
+    for size in PROJECT_KNOWN_BAD_SIZES:
+        assert over_ceiling(size, PROJECT_CEILING_BYTES), f"the ceiling must reject the pre-trim size {size}"
+
+
+def test_the_project_measurement_is_not_vacuous():
+    assert size_of(PROJECT_CLAUDE_MD) > PROJECT_CEILING_BYTES // 2, "CLAUDE.md read back far too small to be the real file"
+
+
+def test_every_project_local_link_resolves():
+    with open(PROJECT_CLAUDE_MD, encoding="utf-8") as f:
+        text = f.read()
+    found, broken = broken_links(text, REPO)
+    assert found > 20, f"only {found} local links extracted; the extraction is broken, a vacuous pass"
+    assert not broken, f"broken links in CLAUDE.md: {broken}"
+
+
+def test_every_project_detail_heading_is_linked():
+    with open(PROJECT_CLAUDE_MD, encoding="utf-8") as f:
+        text = f.read()
+    anchors = anchors_in_file(REFERENCE)
+    assert "project-instruction-detail" in anchors
+    headings = {a for a in anchors if a.startswith("project-detail-")}
+    assert len(headings) >= 3, f"only {len(headings)} project detail headings found; the extraction is broken"
+    unlinked = sorted(h for h in headings if f"(docs/REFERENCE.md#{h})" not in text)
+    assert not unlinked, f"project detail sections nothing in CLAUDE.md points to: {unlinked}"
 
 
 def test_the_link_check_catches_a_broken_link():

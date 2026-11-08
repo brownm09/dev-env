@@ -4189,7 +4189,9 @@ For a one-line navigational map of the older tests, see
 97. **journal-project-repo-map test** — required when changing
     `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in
     `claude/skills/journal-compose/SKILL.md`
-    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045).
+    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045). The amendment
+    lands in both: the script resolves the mapping and names every skip, and the skill consumes
+    `query_order` and surfaces those skips to the user.
 
     The script resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug so Step 8a
     Source 3 can query it for `start-here`-labeled issues. It exists as a script, rather than the
@@ -5167,7 +5169,9 @@ For a one-line navigational map of the older tests, see
      py -3 claude/scripts/tests/test_dev_env_doctor.py
      ```
 
-111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`.
+111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`
+     or `claude/scripts/_journal_late.py`. A moved stub must take the target branch's date or
+     `/journal-compose` skips it (dev-env#1203).
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
@@ -5282,8 +5286,18 @@ For a one-line navigational map of the older tests, see
      bash claude/scripts/tests/test-claude-wrappers.sh
      ```
 
-115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in
-     `docs/REFERENCE.md` (dev-env#1216, ADR-159). The file loads in every session in every project, so the test fails
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md`, the repo-root `CLAUDE.md`, or the
+     `## Instruction Detail` and `## Project Instruction Detail` headings in `docs/REFERENCE.md` (dev-env#1216,
+     dev-env#1297, ADR-159).
+
+     **Project file (dev-env#1297).** The repo-root `CLAUDE.md` loads in every dev-env session, so it gets the
+     same treatment with its own ceiling, `PROJECT_CEILING_BYTES`, about 5% over its 36,690 bytes after the
+     trim. It pins that the ceiling rejects the pre-trim sizes, 52,943 bytes (when #1297 was filed) and 56,486
+     (when it landed), that the read isn't implausibly small, that every local link resolves from the repo
+     root (more than 20 required), and that every `Project detail:` heading in `docs/REFERENCE.md` has a link
+     pointing to it from the project file.
+
+     **Global file.** The file loads in every session in every project, so the test fails
      above a byte ceiling set about 5% over its size after the trim, with line endings normalized so a CRLF checkout
      measures the same. It pins that the ceiling rejects the pre-trim sizes, 166,696 and 181,551 bytes, and that the
      read isn't implausibly small. Rules now lean on links for their detail, so it also resolves every local link,
