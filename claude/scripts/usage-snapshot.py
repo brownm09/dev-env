@@ -346,12 +346,12 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
     state is one of:
       "no_expiry" — no expiry recorded (expires_at_ms falsy); proceed silently.
       "ok"        — token valid with > 1h remaining; proceed silently.
-      "expiring"  — token valid but expires within 1 hour; main() still uses it.
+      "expiring"  — token valid but under an hour from expiry; main() still uses it
+                    and shows the snapshot, so there is nothing to warn about.
       "expired"   — token already expired; main() skips the snapshot with this advisory.
 
-    For "no_expiry"/"ok" the advisory is "". For "expiring"/"expired" the advisory
-    is a one-line message intended for stderr. Mirrors the visibility of the
-    expiring-within-1h path so an already-expired token no longer fails silently.
+    Only "expired" carries an advisory (a one-line message intended for stderr, so
+    an already-expired token no longer fails silently); every other state returns "".
     """
     if not expires_at_ms:
         return "no_expiry", ""
@@ -364,10 +364,7 @@ def classify_token(expires_at_ms: int, now_ms: float) -> tuple[str, str]:
             f"rewrite it; the next merge then shows the snapshot."
         )
     if (expires_at_ms - now_ms) < 3_600_000:
-        return "expiring", (
-            "[usage-snapshot] OAuth token expires within 1 hour — open Claude Code "
-            "interactively to refresh before the next check."
-        )
+        return "expiring", ""
     return "ok", ""
 
 
