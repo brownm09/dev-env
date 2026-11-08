@@ -432,6 +432,13 @@ if real_shared is not None:
     for key in ("theme", "tui", "autoMode", "skipWorkflowUsageWarning"):
         check(key not in real_shared, f"machine-local key stays out of the tracked file: {key}")
 
+    # The tools the user chose to remove from every session's request (dev-env#1296).
+    check(
+        real_shared.get("permissions", {}).get("deny")
+        == ["Artifact", "PowerShell", "Workflow", "SuggestPluginInstall", "SuggestSkills"],
+        "shipped deny list is exactly the user's choice on dev-env#1296",
+    )
+
     # The shipped spend defaults (dev-env#1215, ADR-156).
     check(real_shared.get("autoCompactWindow") == 400000, "shipped compaction window is 400k")
     shipped_env = real_shared.get("env", {})
