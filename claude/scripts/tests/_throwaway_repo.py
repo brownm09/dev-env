@@ -16,8 +16,11 @@ clean and eligible. run_script() always passes --repo-path, but that flag is par
 code under test, so a test must call assert_targets_repo() on a --dry-run's output before
 any live run: a script that ignored --repo-path would otherwise act on the real dev-env repo.
 """
+import contextlib
+import io
 import os
 import subprocess
+import unittest.mock
 import sys
 import time
 from pathlib import Path
@@ -98,10 +101,12 @@ class ThrowawayRepo:
     def git(self, *args: str) -> None:
         self._git(self.primary, *args)
 
-    def age_git_state(self, seconds: float = 7 * 24 * 60 * 60) -> float:
-        """Date the worktree's git state back, as if idle since. Returns the new mtime."""
+    def age_git_state(self, seconds: float = 7 * 24 * 60 * 60, admin_dir: "Path | None" = None) -> float:
+        """Date a worktree's git state back, as if idle since (default: the first worktree's).
+        Returns the new mtime."""
         stamp = time.time() - seconds
-        for path in (self.admin_dir, *self.admin_dir.iterdir()):
+        admin_dir = admin_dir or self.admin_dir
+        for path in (admin_dir, *admin_dir.iterdir()):
             os.utime(path, (stamp, stamp))
         return stamp
 
@@ -125,6 +130,62 @@ class ThrowawayRepo:
             raise AssertionError(
                 f"run did not target {self.primary}; refusing to continue to a live run\n{result.stdout}"
             )
+
+    def add_worktree(self, name: str, branch: str) -> Path:
+        """Another clean, merged worktree like the first one, with its own node_modules."""
+        path = self.primary / ".claude" / "worktrees" / name
+        self._git(self.primary, "worktree", "add", str(path), "-b", branch)
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "dep.js").write_text("x", encoding="utf-8")
+        return path
+
+    def age_all_git_state(self, seconds: float = 7 * 24 * 60 * 60) -> None:
+        """age_git_state() for every worktree, past the recent-activity guard."""
+        for admin in (self.primary / ".git" / "worktrees").iterdir():
+            self.age_git_state(seconds, admin)
+
+    def run_main_failing_on(self, module, fail_on: str, *args: str,
+                            only_for: "tuple[str, ...]" = ()) -> "tuple[str, str, int]":
+        """Run module.main() in this process with every git call naming branch fail_on raising
+        OSError: as a whole argument, or as the end of a `<base>..<branch>` range. With
+        only_for, just the git subcommand starting with those words fails. Returns (stdout,
+        stderr, exit code).
+
+        A --dry-run of the same command, with nothing failing, must first show it targets this
+        repo: args are parsed by the code under test. A module's default last-run state file is
+        moved under this repo, so no call can read or write the real one.
+        """
+        real_run = subprocess.run
+
+        def run(cmd, *a, **k):
+            names_branch = any(part == fail_on or str(part).endswith(f"..{fail_on}") for part in cmd)
+            if names_branch and list(cmd[1:1 + len(only_for)]) == list(only_for):
+                raise OSError(f"injected failure for {fail_on}")
+            return real_run(cmd, *a, **k)
+
+        state_file = self.root / "last-run-state.json"
+        if not hasattr(module, "DEFAULT_STATE_FILE"):
+            state_file = None
+
+        def main(*argv: str, inject: bool) -> "tuple[str, str, int]":
+            out, err, code = io.StringIO(), io.StringIO(), 0
+            with unittest.mock.patch.object(module, "DEFAULT_STATE_FILE", state_file) if state_file \
+                    else contextlib.nullcontext(), \
+                    unittest.mock.patch.dict(os.environ, self._script_env, clear=True), \
+                    unittest.mock.patch.object(sys, "argv", ["script", *argv]), \
+                    unittest.mock.patch("subprocess.run", side_effect=run if inject else real_run), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    module.main()
+                except SystemExit as exc:
+                    code = exc.code or 0
+            return out.getvalue(), err.getvalue(), code
+
+        dry_out, _, _ = main(*args, "--dry-run", inject=False)
+        # A --scan-dir run past its baseline prints no per-repo header, only the directory.
+        if f"repos under {self.root}\n" not in dry_out:
+            self.assert_targets_repo(subprocess.CompletedProcess([], 0, dry_out, ""))
+        return main(*args, inject=True)
 
     def run_script(self, script: Path, *args: str) -> subprocess.CompletedProcess:
         """Run script against this repo. cwd is the root, so no worktree is the current one."""

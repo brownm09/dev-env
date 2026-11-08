@@ -355,7 +355,8 @@ def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_ru
     """The machine-readable last line of a --scan-dir run, which the routine reads.
 
     fetch_failed counts every repo whose fetch failed or timed out (dev-env#1087); errors, the
-    repos an unexpected exception stopped, appears only when there is one."""
+    repos where an unexpected exception stopped the repo or one of its worktrees (dev-env#1344),
+    appears only when there is one."""
     line = (
         f"RESULT: repos_scanned={repos} pruned={pruned} skipped={skipped} "
         f"fetch_failed={fetch_failed} dry_run={'true' if dry_run else 'false'}"
@@ -376,10 +377,11 @@ def scan_result(repos: int, pruned: int, skipped: int, fetch_failed: int, dry_ru
 def prune_one(
     repo: str, dry_run: bool, liveness_window_seconds: int, include_named: bool = False,
     last_run: "LastRun | None" = None,
-) -> "tuple[int, int, str | None]":
+) -> "tuple[int, int, str | None, list[str]]":
     """Prune merged claude/* worktrees in a single repo.
 
-    Returns (pruned, skipped, fetch_problem), where fetch_problem is None, FAILED or TIMED_OUT.
+    Returns (pruned, skipped, fetch_problem, errors), where fetch_problem is None, FAILED or
+    TIMED_OUT, and errors lists the worktrees an unexpected exception stopped (dev-env#1344).
 
     include_named (opt-in, default False): when True, a worktree whose branch does not start
     with BRANCH_PREFIX is no longer unconditionally skipped by the prefix guard below -- it
@@ -401,7 +403,7 @@ def prune_one(
         remote_new = last_run.record(repo, REMOTE_SECTION, {"origin": str(exc)})[0] if last_run else []
         if verbose or remote_new:
             print(f"  SKIP {repo}: {exc}")
-        return 0, 0, None
+        return 0, 0, None, []
     if last_run is not None and last_run.record(repo, REMOTE_SECTION, {})[1] and not verbose:
         print(f"  GitHub remote resolves again: {repo}")
 
@@ -433,7 +435,7 @@ def prune_one(
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
         print(f"  ERROR: git worktree list failed in {repo}: {result.stderr}", file=sys.stderr)
-        return 0, 0, fetch_problem
+        return 0, 0, fetch_problem, []
 
     worktrees = parse_worktree_porcelain(result.stdout)
     primary = primary_worktree_path(worktrees)
@@ -458,157 +460,178 @@ def prune_one(
 
     pruned: list[str] = []
     skipped: list[tuple[str, str]] = []
+    errors: list[str] = []
 
     for wt in worktrees:
         branch = wt["branch"]
         path = str(Path(wt["path"]).resolve())
 
-        # Always skip the primary worktree and wherever this process is running
-        if path == primary or path == cwd:
-            skipped.append((path, SKIP_PRIMARY_OR_CURRENT))
-            continue
-
-        # Skip a worktree with a live Claude session (recent transcript activity). The
-        # cwd guard above only covers THIS process; an out-of-process routine cannot see
-        # another worktree's active session except via its transcript mtime — removing a
-        # live worktree severs the session mid-task (dev-env#383, ADR-051). Additive: this
-        # only ever adds a skip, never removes more than the merged/clean checks below.
-        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
-            skipped.append((path, SKIP_LIVE_SESSION))
-            continue
-
-        # The transcript check above can't see a session started in another folder that works
-        # here through `git worktree add` or `git -C` (dev-env#1330, ADR-051 Amendment 1).
-        activity = git_activity_skip_reason(path, window_seconds=liveness_window_seconds)
-        if activity:
-            skipped.append((path, activity))
-            continue
-
-        # Non-primary worktree squatting main: park it back onto its own claude/<slug>
-        # branch (recreated at HEAD) to free the main ref. Non-destructive — `git
-        # checkout -b` changes no working-tree files, so it frees main even for a dirty
-        # squatter that `git worktree remove` (no --force) would refuse. The freed
-        # worktree is removed on a later run via the normal merged path once idle+clean
-        # (dev-env#396, ADR-058). The ADR-051 liveness guard above already spared a live
-        # squatter, so parking only ever moves an idle one.
-        if path == squatter_path:
-            park = park_branch_for(path)
-            if dry_run:
-                pruned.append(path)
-                print(f"  [dry-run] would park stale {default_branch} checkout off {default_branch}: {path} -> {park}")
-                continue
-            r = run(["git", "-C", path, "checkout", "-b", park], cwd=repo)
-            if r.returncode != 0:
-                skipped.append((path, f"park off {default_branch} failed (branch {park} may already exist): {r.stderr.strip()}"))
-                continue
-            pruned.append(path)
-            print(f"  parked off {default_branch}: {path} ({park}) — freed the {default_branch} ref")
-            continue
-
-        # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
-        # branch (membership in the precomputed draft_squatter_paths set above):
-        # illegitimate on ANY non-canonical worktree in ANY repo, checked unconditionally
-        # (before the BRANCH_PREFIX gate below, which would otherwise skip it — a draft/*
-        # branch never starts with claude/). The ADR-051 liveness guard already ran for
-        # this worktree earlier in this loop, so a live squatter never reaches here
-        # (dev-env#747, ADR-105).
-        if path in draft_squatter_paths:
-            dirty = is_dirty(path)
-            fully_pushed = _origin_ahead_count(branch, repo) == 0
-            action = pattern_squat_action(path, branch, live=False, dirty=dirty, fully_pushed=fully_pushed)
-            if dry_run:
-                pruned.append(path)
-                print(f"  [dry-run] would {action.kind}: {path} ({branch} -> {action.park_branch})")
-                continue
-            r = run(["git", "-C", path, "checkout", "-b", action.park_branch], cwd=repo)
-            if r.returncode != 0:
-                skipped.append((path, f"park off {branch} failed (branch {action.park_branch} may already exist): {r.stderr.strip()}"))
-                continue
-            if action.kind == "park-and-remove":
-                try:
-                    rm = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
-                except subprocess.TimeoutExpired:
-                    skipped.append((path, "parked, but git worktree remove timed out — retry manually"))
-                    pruned.append(path)
-                    continue
-                if rm.returncode != 0:
-                    skipped.append((path, f"parked but remove failed: {rm.stderr.strip()}"))
-                    pruned.append(path)
-                    continue
-                print(f"  parked + removed: {path} (was {branch})")
-            else:
-                print(f"  parked only (left in place for review): {path} (was {branch} -> {action.park_branch})")
-            pruned.append(path)
-            continue
-
-        # Past the squatter check, a worktree on the default branch is that branch's real home
-        # (the primary is bare or detached). It is merged by definition, so --include-named
-        # would otherwise remove it and delete the branch.
-        if branch in protected_branches:
-            skipped.append((path, f"on the default branch '{branch}'"))
-            continue
-
-        if not branch.startswith(BRANCH_PREFIX) and not include_named:
-            skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
-            continue
-
-        # A detached-HEAD worktree has no branch ref -- is_merged()/diff_files() need an
-        # actual commit to compare against origin/main, not the DETACHED sentinel, which is
-        # not a resolvable git ref anywhere (dev-env#979). Resolve it once here and use the
-        # resolved SHA in place of `branch` for both merge-status checks below; `branch`
-        # itself is left untouched for display/prefix purposes elsewhere in the loop.
-        merge_ref = branch
-        is_detached = branch == DETACHED
-        if is_detached:
-            merge_ref = resolve_detached_head(path, repo)
-            if merge_ref is None:
-                skipped.append((path, f"not merged into origin/{default_branch} (detached HEAD, commit unresolvable)"))
-                continue
-
-        if not is_merged(merge_ref, gh_repo, repo, default_branch, skip_pr_fallback=is_detached):
-            if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(merge_ref, repo, default_branch), ephemeral_patterns)):
-                skipped.append((path, f"not merged into origin/{default_branch}"))
-                continue
-
-        if is_dirty(path):
-            skipped.append((path, "has uncommitted changes"))
-            continue
-
-        if dry_run:
-            pruned.append(path)
-            print(f"  [dry-run] would remove: {path} ({branch})")
-            continue
-
-        # Use a generous timeout: git worktree remove runs an internal untracked-file scan
-        # that is slow when node_modules is present. With timeout=30 the scan aborts the
-        # entire run (dev-env#350); 300s lets even a 1 GB worktree complete. TimeoutExpired
-        # is caught so one slow removal skips that worktree and continues the scan.
+        # An unexpected error is this worktree's alone: the repo's other worktrees are still
+        # handled and counted (dev-env#1344).
         try:
-            r = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
-        except subprocess.TimeoutExpired:
-            skipped.append((path, "git worktree remove timed out — worktree may be large; retry manually"))
-            continue
-        if r.returncode != 0:
-            skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
-            continue
+            # Always skip the primary worktree and wherever this process is running
+            if path == primary or path == cwd:
+                skipped.append((path, SKIP_PRIMARY_OR_CURRENT))
+                continue
 
-        r = run(["git", "branch", "-d", branch], cwd=repo)
-        if r.returncode != 0:
+            # Skip a worktree with a live Claude session (recent transcript activity). The
+            # cwd guard above only covers THIS process; an out-of-process routine cannot see
+            # another worktree's active session except via its transcript mtime — removing a
+            # live worktree severs the session mid-task (dev-env#383, ADR-051). Additive: this
+            # only ever adds a skip, never removes more than the merged/clean checks below.
+            if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
+                skipped.append((path, SKIP_LIVE_SESSION))
+                continue
+
+            # The transcript check above can't see a session started in another folder that works
+            # here through `git worktree add` or `git -C` (dev-env#1330, ADR-051 Amendment 1).
+            activity = git_activity_skip_reason(path, window_seconds=liveness_window_seconds)
+            if activity:
+                skipped.append((path, activity))
+                continue
+
+            # Non-primary worktree squatting main: park it back onto its own claude/<slug>
+            # branch (recreated at HEAD) to free the main ref. Non-destructive — `git
+            # checkout -b` changes no working-tree files, so it frees main even for a dirty
+            # squatter that `git worktree remove` (no --force) would refuse. The freed
+            # worktree is removed on a later run via the normal merged path once idle+clean
+            # (dev-env#396, ADR-058). The ADR-051 liveness guard above already spared a live
+            # squatter, so parking only ever moves an idle one.
+            if path == squatter_path:
+                park = park_branch_for(path)
+                if dry_run:
+                    pruned.append(path)
+                    print(f"  [dry-run] would park stale {default_branch} checkout off {default_branch}: {path} -> {park}")
+                    continue
+                r = run(["git", "-C", path, "checkout", "-b", park], cwd=repo)
+                if r.returncode != 0:
+                    skipped.append((path, f"park off {default_branch} failed (branch {park} may already exist): {r.stderr.strip()}"))
+                    continue
+                pruned.append(path)
+                print(f"  parked off {default_branch}: {path} ({park}) — freed the {default_branch} ref")
+                continue
+
+            # Non-primary worktree squatting a draft/YYYY-MM-DD-shaped engineering-journal
+            # branch (membership in the precomputed draft_squatter_paths set above):
+            # illegitimate on ANY non-canonical worktree in ANY repo, checked unconditionally
+            # (before the BRANCH_PREFIX gate below, which would otherwise skip it — a draft/*
+            # branch never starts with claude/). The ADR-051 liveness guard already ran for
+            # this worktree earlier in this loop, so a live squatter never reaches here
+            # (dev-env#747, ADR-105).
+            if path in draft_squatter_paths:
+                dirty = is_dirty(path)
+                fully_pushed = _origin_ahead_count(branch, repo) == 0
+                action = pattern_squat_action(path, branch, live=False, dirty=dirty, fully_pushed=fully_pushed)
+                if dry_run:
+                    pruned.append(path)
+                    print(f"  [dry-run] would {action.kind}: {path} ({branch} -> {action.park_branch})")
+                    continue
+                r = run(["git", "-C", path, "checkout", "-b", action.park_branch], cwd=repo)
+                if r.returncode != 0:
+                    skipped.append((path, f"park off {branch} failed (branch {action.park_branch} may already exist): {r.stderr.strip()}"))
+                    continue
+                if action.kind == "park-and-remove":
+                    try:
+                        rm = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
+                    except subprocess.TimeoutExpired:
+                        skipped.append((path, "parked, but git worktree remove timed out — retry manually"))
+                        pruned.append(path)
+                        continue
+                    except OSError as exc:
+                        skipped.append((path, f"parked but remove failed: {exc}"))
+                        pruned.append(path)
+                        continue
+                    if rm.returncode != 0:
+                        skipped.append((path, f"parked but remove failed: {rm.stderr.strip()}"))
+                        pruned.append(path)
+                        continue
+                    print(f"  parked + removed: {path} (was {branch})")
+                else:
+                    print(f"  parked only (left in place for review): {path} (was {branch} -> {action.park_branch})")
+                pruned.append(path)
+                continue
+
+            # Past the squatter check, a worktree on the default branch is that branch's real home
+            # (the primary is bare or detached). It is merged by definition, so --include-named
+            # would otherwise remove it and delete the branch.
+            if branch in protected_branches:
+                skipped.append((path, f"on the default branch '{branch}'"))
+                continue
+
+            if not branch.startswith(BRANCH_PREFIX) and not include_named:
+                skipped.append((path, f"branch '{branch}' not in {BRANCH_PREFIX}* prefix"))
+                continue
+
+            # A detached-HEAD worktree has no branch ref -- is_merged()/diff_files() need an
+            # actual commit to compare against origin/main, not the DETACHED sentinel, which is
+            # not a resolvable git ref anywhere (dev-env#979). Resolve it once here and use the
+            # resolved SHA in place of `branch` for both merge-status checks below; `branch`
+            # itself is left untouched for display/prefix purposes elsewhere in the loop.
+            merge_ref = branch
+            is_detached = branch == DETACHED
+            if is_detached:
+                merge_ref = resolve_detached_head(path, repo)
+                if merge_ref is None:
+                    skipped.append((path, f"not merged into origin/{default_branch} (detached HEAD, commit unresolvable)"))
+                    continue
+
+            if not is_merged(merge_ref, gh_repo, repo, default_branch, skip_pr_fallback=is_detached):
+                if not (ephemeral_patterns and files_are_all_ephemeral(diff_files(merge_ref, repo, default_branch), ephemeral_patterns)):
+                    skipped.append((path, f"not merged into origin/{default_branch}"))
+                    continue
+
+            if is_dirty(path):
+                skipped.append((path, "has uncommitted changes"))
+                continue
+
+            if dry_run:
+                pruned.append(path)
+                print(f"  [dry-run] would remove: {path} ({branch})")
+                continue
+
+            # Use a generous timeout: git worktree remove runs an internal untracked-file scan
+            # that is slow when node_modules is present. With timeout=30 the scan aborts the
+            # entire run (dev-env#350); 300s lets even a 1 GB worktree complete. TimeoutExpired
+            # is caught so one slow removal skips that worktree and continues the scan.
+            try:
+                r = run(["git", "worktree", "remove", path], cwd=repo, timeout=300)
+            except subprocess.TimeoutExpired:
+                skipped.append((path, "git worktree remove timed out — worktree may be large; retry manually"))
+                continue
+            if r.returncode != 0:
+                skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
+                continue
+
             # Worktree already gone; branch delete failure is non-fatal
-            print(f"  WARNING: branch delete failed for {branch} in {repo}: {r.stderr.strip()}")
+            try:
+                r = run(["git", "branch", "-d", branch], cwd=repo)
+                delete_error = r.stderr.strip() if r.returncode != 0 else ""
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                delete_error = f"{type(exc).__name__}: {exc}"
+            if delete_error:
+                print(f"  WARNING: branch delete failed for {branch} in {repo}: {delete_error}")
 
-        pruned.append(path)
-        print(f"  pruned: {path} ({branch})")
+            pruned.append(path)
+            print(f"  pruned: {path} ({branch})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- stopped partway, so check its state; "
+                  f"it is not in the total")
+            traceback.print_exc()
+            errors.append(path)
 
     skip_new: list[str] = []
     skip_gone: list[str] = []
     if last_run is not None:
-        skip_new, skip_gone = last_run.record(
-            repo, SKIPPED_SECTION, skip_findings(skipped, last_run.prior(repo, SKIPPED_SECTION))
-        )
+        prior = last_run.prior(repo, SKIPPED_SECTION)
+        findings = skip_findings(skipped, prior)
+        # An errored worktree wasn't looked at, so whatever was on record for it still stands.
+        findings.update({path: prior[path] for path in errors if path in prior})
+        skip_new, skip_gone = last_run.record(repo, SKIPPED_SECTION, findings)
 
     if verbose:
         suffix = f" [fetch {fetch_problem} — results may use stale origin/{default_branch}]" if fetch_problem else ""
+        if errors:
+            suffix = f", errors {len(errors)}{suffix}"
         print(f"  Done — pruned {len(pruned)}, skipped {len(skipped)}{suffix}")
         if skipped:
             for path, reason in skipped:
@@ -620,7 +643,7 @@ def prune_one(
         for path in skip_gone:
             print(f"    no longer skipped: {path}")
 
-    return len(pruned), len(skipped), fetch_problem
+    return len(pruned), len(skipped), fetch_problem, errors
 
 
 def main() -> None:
@@ -653,7 +676,7 @@ def main() -> None:
             # Any other git call can also time out (`git status` on a large worktree, `gh pr
             # list`): one repo must never stop the sweep of the rest (dev-env#1087).
             try:
-                p, s, fetch_problem = prune_one(repo, dry_run, liveness_window_seconds, include_named, last_run)
+                p, s, fetch_problem, errors = prune_one(repo, dry_run, liveness_window_seconds, include_named, last_run)
             except Exception as exc:  # noqa: BLE001
                 # Lines already printed for this repo record what it changed; its counts are lost.
                 print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its counts are not in the total")
@@ -664,6 +687,8 @@ def main() -> None:
             total_skipped += s
             if fetch_problem:
                 fetch_problem_repos[fetch_problem].append(repo)
+            if errors:
+                error_repos.append(repo)
         summary = f"\nTotal — pruned {total_pruned}, skipped {total_skipped}"
         list_names = last_run is None or last_run.is_baseline
         for problem, problem_repos in fetch_problem_repos.items():
@@ -683,7 +708,9 @@ def main() -> None:
             sys.exit(1)
     else:
         repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
-        prune_one(repo, dry_run, liveness_window_seconds, include_named)
+        *_, errors = prune_one(repo, dry_run, liveness_window_seconds, include_named)
+        if errors:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

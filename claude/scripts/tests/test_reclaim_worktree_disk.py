@@ -325,6 +325,34 @@ def test_scan_continues_after_fetch_timeout_and_unexpected_error() -> str:
     return "repo B reached both times; a timed-out fetch warns and exits 0, an unexpected error is named and exits 1"
 
 
+def test_error_in_one_worktree_leaves_the_others_handled() -> str:
+    """dev-env#1344 known-bad: an exception in one worktree's ahead check used to end its repo,
+    dropping the bytes already reclaimed from the total and never reaching the rest."""
+    cases = (("wt", "--scan-dir"), ("second", "--scan-dir"), ("wt", "--repo-path"))
+    for failing_name, mode in cases:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp))
+            worktrees = {"wt": (repo.worktree, repo.branch),
+                         "second": (repo.add_worktree("second", "claude/second"), "claude/second")}
+            failing, failing_branch = worktrees[failing_name]
+            other = next(path for name, (path, _) in worktrees.items() if name != failing_name)
+            args = ("--scan-dir", str(repo.root)) if mode == "--scan-dir" else ("--repo-path", str(repo.primary))
+            # Each node_modules counts as 1 GiB, so the total shows which worktrees were counted.
+            with unittest.mock.patch.object(rwd, "dir_size_bytes", return_value=1024 ** 3):
+                out, err, code = repo.run_main_failing_on(rwd, failing_branch, *args)
+            label = f"{failing_name} failing, {mode}"
+            if (other / "node_modules").exists() or not (failing / "node_modules").exists():
+                raise AssertionError(f"{label}: the other node_modules should go, the failing one stay\n{out}\n{err}")
+            if f"ERROR: {failing.resolve()}" not in out or "Traceback" not in err:
+                raise AssertionError(f"{label}: the error should name the failing worktree, traceback on stderr\n{out}\n{err}")
+            if code != 1:
+                raise AssertionError(f"{label}: exit {code}, expected 1\n{out}")
+            total = "Total — reclaimed 1.00 GB, error in 1 repo(s)" if mode == "--scan-dir" else "Done — reclaimed 1.00 GB"
+            if total not in out:
+                raise AssertionError(f"{label}: expected {total!r}\n{out}")
+    return "either worktree failing: the other is reclaimed and counted, the failing one is named, exit 1"
+
+
 def _load_hook(name: str):
     spec = importlib.util.spec_from_file_location(name.replace("-", "_"), SCRIPTS_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -387,6 +415,7 @@ def main() -> int:
     tests = [
         ("real repo: non-main default branch fetched and reclaimed", test_real_non_main_default_branch_is_fetched_and_reclaimed),
         ("scan: fetch timeout or unexpected error -> next repo reached", test_scan_continues_after_fetch_timeout_and_unexpected_error),
+        ("error in one worktree: the others still reclaimed and counted, exit 1", test_error_in_one_worktree_leaves_the_others_handled),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run reclaims", test_cli_control_dry_run_keeps_and_plain_run_reclaims),

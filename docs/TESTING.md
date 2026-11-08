@@ -923,7 +923,10 @@ For a one-line navigational map of the older tests, see
     ([dev-env#1087](https://github.com/brownm09/dev-env/issues/1087)). Throwaway repos with a non-`main`
     default branch cover `origin/HEAD` unset and set, discovery failure, a squatter on that branch, and a
     worktree on the default branch under a detached primary, which `--include-named` must not remove
-    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)).
+    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)). An exception in one worktree
+    (injected in-process by `run_main_failing_on()`) leaves the repo's other worktrees pruned and
+    counted, names the failing one, exits 1 in both modes, and keeps that worktree's last-run record
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -1111,7 +1114,9 @@ For a one-line navigational map of the older tests, see
 
 30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`.
     Also covers a throwaway repo with a non-`main` default branch, and a `--scan-dir` run reaching the
-    next repo after a fetch timeout or unexpected error.
+    next repo after a fetch timeout or unexpected error, and an exception in one worktree leaving the
+    repo's other worktrees reclaimed and counted, with exit 1 in both modes
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
     Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
     `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
@@ -2865,7 +2870,7 @@ For a one-line navigational map of the older tests, see
 
 63. **settings-hook wiring lint** — required when changing
     `claude/scripts/tests/test_settings_hook_wiring.py` (or `_hook_wiring.py`, item 61) or the `hooks`
-    block of `claude/settings.json`. For every `(event, matcher, hook)` entry: the command resolves to a
+    block of `claude/settings.shared.json`. For every `(event, matcher, hook)` entry: the command resolves to a
     `<name>.py` that exists in `claude/scripts/`, and it carries an explicit integer `timeout` (seconds)
     at or above its budget floor — `usage-snapshot.py` -> 90, a hook importing `_winsubp` (the
     subprocess-hook marker, authoring rule 4) -> 30, pure-Python -> 10 (a FLOOR, `>=`, so a longer
@@ -3036,7 +3041,7 @@ For a one-line navigational map of the older tests, see
 
 67. **hook-liveness-check test** — required when changing `claude/scripts/hook-liveness-check.py`.
     Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
-    fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
+    fixtures — never the live `claude/settings.shared.json`, so this suite's pass/fail doesn't drift with
     production wiring changes; [ADR-106](adr/106-hook-heartbeat-liveness-ledger.md);
     dev-env#745, PR8 of #717): `hook_names_from_command` (every script-basename-minus-`.py` after
     the launcher, matching the literal string each hook passes to `_hookutil.record_heartbeat` —
@@ -3065,7 +3070,7 @@ For a one-line navigational map of the older tests, see
     parsed hook count; text distinct from `format_warning`'s so the two failure classes are never
     conflated) and a cross-check test, `test_wired_hook_events_agrees_with_hook_wiring_module`, that
     runs `wired_hook_events()` and `tests/_hook_wiring.wired_script_events()` against the **real**
-    `claude/settings.json` and asserts agreement (modulo the `.py`-suffix convention) — a regression
+    `claude/settings.shared.json` and asserts agreement (modulo the `.py`-suffix convention) — a regression
     guard against the two deliberately-not-yet-consolidated parsers (see the ADR's Settings-parsing
     scope decision) silently drifting apart. `main()`'s stdin plumbing IS now covered: a behavioral
     layer drives the real hook end-to-end over stdin via subprocess, with HOME/USERPROFILE isolated
@@ -3092,11 +3097,11 @@ For a one-line navigational map of the older tests, see
     ```
 
 68. **hook-heartbeat-guard structural gate** — required when changing which hooks are wired in
-    `claude/settings.json`, or any wired hook's `main()`. Mirrors
+    `claude/settings.shared.json`, or any wired hook's `main()`. Mirrors
     `test_hook_safe_exit_guard.py` / `test_hook_output_contract.py`'s established AST-gate pattern
     ([ADR-106](adr/106-hook-heartbeat-liveness-ledger.md)'s 2026-07-13 addendum;
     dev-env#745, PR8 of #717 `/review`): asserts every currently-wired hook (discovered via
-    `tests/_hook_wiring.py`, so the checked set self-updates with `claude/settings.json` — never a
+    `tests/_hook_wiring.py`, so the checked set self-updates with `claude/settings.shared.json` — never a
     hardcoded list) calls `_hookutil.record_heartbeat("<own-name>")` as the literal first statement
     of its own `main()` (after any docstring). Unlike its two precedent gates, ships with an
     **empty allowlist from day one** — PR8 made every wired hook compliant in the same change that
@@ -3110,7 +3115,7 @@ For a one-line navigational map of the older tests, see
     instead of the literal, fixed immediately); the unqualified `from _hookutil import
     record_heartbeat` call shape (also out of scope by design); and an unrelated first call. The
     repo-wide gate then asserts zero non-compliant wired hooks against the real
-    `claude/settings.json` + `claude/scripts/*.py`.
+    `claude/settings.shared.json` + `claude/scripts/*.py`.
 
     ```bash
     py -3 claude/scripts/tests/test_hook_heartbeat_guard.py
@@ -3368,7 +3373,7 @@ For a one-line navigational map of the older tests, see
     py -3 claude/scripts/tests/test_testing_index_parity.py
     ```
 
-77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py` (ADR-115). Pins the Stop hook that nudges when a session states a process-experiment conclusion with no `/experiment-audit` run. Verdict-language detection: each of the four operative idioms fires ("the spike failed", "experiment was a success", "adopt the challenger", "challenger outperformed ..."), while a bare unit-test "the test failed", meta-discussion that keeps words between the experiment noun and the outcome word, and — the load-bearing rigor-docs guarantee — verdict wording confined to a `Write`/`Edit` `tool_use` input (a session authoring an ADR/report) all do NOT fire. Also pins the suppressors (the `[experiment-audit]` marker in assistant text, a `/experiment-audit` command wrapper, and the "skip experiment audit" user override — a `tool_result`/compact-summary mention of the phrase does not waive), the `evaluate()` composition, the cp1252-encodable reminder, and the end-to-end behavior (fire → exit 2 on stderr with empty stdout; audit-ran / skip / no-verdict / docs-editing / `stop_hook_active` → exit 0; the once-per-session sentinel suppresses a second fire; empty/non-dict stdin → exit 0 fail-open). Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings wiring) rides the shared PR3/PR8 gates (items 61/62/63/68), which auto-discover the hook once it is wired in `claude/settings.json`.
+77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py` (ADR-115). Pins the Stop hook that nudges when a session states a process-experiment conclusion with no `/experiment-audit` run. Verdict-language detection: each of the four operative idioms fires ("the spike failed", "experiment was a success", "adopt the challenger", "challenger outperformed ..."), while a bare unit-test "the test failed", meta-discussion that keeps words between the experiment noun and the outcome word, and — the load-bearing rigor-docs guarantee — verdict wording confined to a `Write`/`Edit` `tool_use` input (a session authoring an ADR/report) all do NOT fire. Also pins the suppressors (the `[experiment-audit]` marker in assistant text, a `/experiment-audit` command wrapper, and the "skip experiment audit" user override — a `tool_result`/compact-summary mention of the phrase does not waive), the `evaluate()` composition, the cp1252-encodable reminder, and the end-to-end behavior (fire → exit 2 on stderr with empty stdout; audit-ran / skip / no-verdict / docs-editing / `stop_hook_active` → exit 0; the once-per-session sentinel suppresses a second fire; empty/non-dict stdin → exit 0 fail-open). Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings wiring) rides the shared PR3/PR8 gates (items 61/62/63/68), which auto-discover the hook once it is wired in `claude/settings.shared.json`.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py
@@ -3602,7 +3607,7 @@ For a one-line navigational map of the older tests, see
 
     Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings
     wiring) rides the shared gates — items 61/62/63/68 — which auto-discover the hook from
-    `claude/settings.json`; no registry edit was needed to bring it under them.
+    `claude/settings.shared.json`; no registry edit was needed to bring it under them.
 
     `project_dirs` is no longer *behaviourally* tested here — dev-env#881 hoisted it into
     `_journal_shards.py` and its behaviour is pinned once in item 21. What remains is a one-line
@@ -4195,7 +4200,9 @@ For a one-line navigational map of the older tests, see
 97. **journal-project-repo-map test** — required when changing
     `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in
     `claude/skills/journal-compose/SKILL.md`
-    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045).
+    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045). The amendment
+    lands in both: the script resolves the mapping and names every skip, and the skill consumes
+    `query_order` and surfaces those skips to the user.
 
     The script resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug so Step 8a
     Source 3 can query it for `start-here`-labeled issues. It exists as a script, rather than the
@@ -5173,7 +5180,9 @@ For a one-line navigational map of the older tests, see
      py -3 claude/scripts/tests/test_dev_env_doctor.py
      ```
 
-111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`.
+111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`
+     or `claude/scripts/_journal_late.py`. A moved stub must take the target branch's date or
+     `/journal-compose` skips it (dev-env#1203).
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
@@ -5288,8 +5297,19 @@ For a one-line navigational map of the older tests, see
      bash claude/scripts/tests/test-claude-wrappers.sh
      ```
 
-115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in
-     `docs/REFERENCE.md` (dev-env#1216, ADR-159). The file loads in every session in every project, so the test fails
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md`, the repo-root `CLAUDE.md`, or the
+     `## Instruction Detail` and `## Project Instruction Detail` headings in `docs/REFERENCE.md` (dev-env#1216,
+     dev-env#1297, ADR-159).
+
+     **Project file (dev-env#1297).** The repo-root `CLAUDE.md` loads in every dev-env session, so it gets the
+     same checks as a second row of `CAPPED_FILES`, the table every check loops over: a 38,500-byte ceiling,
+     about 5% over its 36,860 bytes after the trim; the pre-trim sizes 52,943 (when #1297 was filed) and
+     56,572 (when it landed) rejected; a read that isn't implausibly small; every local link resolving from
+     the repo root (more than 20 required); and a link of the exact form `(docs/REFERENCE.md#<anchor>)` to
+     every `Project detail:` heading. Each file's link form is pinned the same way. A separate check keeps
+     the two heading prefixes from overlapping, so neither file's check claims the other's sections.
+
+     **Global file.** The file loads in every session in every project, so the test fails
      above a byte ceiling set about 5% over its size after the trim, with line endings normalized so a CRLF checkout
      measures the same. It pins that the ceiling rejects the pre-trim sizes, 166,696 and 181,551 bytes, and that the
      read isn't implausibly small. Rules now lean on links for their detail, so it also resolves every local link,

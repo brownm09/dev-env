@@ -176,7 +176,7 @@ def test_named_branch_skipped_by_default() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=_dispatch_named):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_REPO_NAMED",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -198,7 +198,7 @@ def test_named_branch_pruned_with_include_named() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=_dispatch_named):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_REPO_NAMED",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -278,7 +278,7 @@ def test_draft_branch_squat_park_and_remove() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_EJ_REPO",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -299,7 +299,7 @@ def test_draft_branch_squat_park_only_when_dirty() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=True):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_EJ_REPO",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -323,7 +323,7 @@ def test_draft_branch_squat_park_and_remove_when_remove_fails() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_EJ_REPO",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -347,7 +347,7 @@ def test_draft_branch_squat_park_and_remove_when_remove_times_out() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_EJ_REPO",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -364,7 +364,7 @@ def test_timeout_skips_worktree_and_continues() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=_dispatch):
         with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
             with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                     repo="/FAKE_REPO",
                     dry_run=False,
                     liveness_window_seconds=86400,
@@ -455,7 +455,7 @@ def test_detached_head_merged_commit_pruned() -> str:
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
                 with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
                     with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                        pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                        pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                             repo="/FAKE_REPO_DETACHED",
                             dry_run=False,
                             liveness_window_seconds=86400,
@@ -481,7 +481,7 @@ def test_detached_head_unmerged_commit_skipped() -> str:
                 with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
                     with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
                         with redirect_stdout(out):
-                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                            pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                                 repo="/FAKE_REPO_DETACHED",
                                 dry_run=False,
                                 liveness_window_seconds=86400,
@@ -504,7 +504,7 @@ def test_detached_head_rev_parse_failure_skipped() -> str:
                 with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
                     with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
                         with redirect_stdout(out):
-                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                            pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                                 repo="/FAKE_REPO_DETACHED",
                                 dry_run=False,
                                 liveness_window_seconds=86400,
@@ -536,7 +536,7 @@ def test_detached_head_missing_worktree_path_skipped() -> str:
         with unittest.mock.patch("pathlib.Path.exists", return_value=False):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
                 with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                    pruned_count, skipped_count, fetch_failed, _errors = prune.prune_one(
                         repo="/FAKE_REPO_DETACHED",
                         dry_run=False,
                         liveness_window_seconds=86400,
@@ -918,6 +918,49 @@ def test_scan_continues_after_unexpected_error() -> str:
     return "repo B reached after a TimeoutExpired or OSError; summary names repo A; exit 1"
 
 
+def test_error_in_one_worktree_leaves_the_others_handled() -> str:
+    """dev-env#1344 known-bad: an exception in one worktree's merge check used to end its repo,
+    dropping the worktrees already pruned from the total and never reaching the rest."""
+    cases = (("wt", "--scan-dir"), ("second", "--scan-dir"), ("wt", "--repo-path"))
+    for failing_name, mode in cases:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp))
+            worktrees = {"wt": (repo.worktree, repo.branch),
+                         "second": (repo.add_worktree("second", "claude/second"), "claude/second")}
+            repo.age_all_git_state()
+            failing, failing_branch = worktrees[failing_name]
+            other = next(path for name, (path, _) in worktrees.items() if name != failing_name)
+            args = ("--scan-dir", str(repo.root), "--full") if mode == "--scan-dir" else ("--repo-path", str(repo.primary))
+            out, err, code = repo.run_main_failing_on(prune, failing_branch, *args)
+            label = f"{failing_name} failing, {mode}"
+            if other.exists() or not failing.exists():
+                raise AssertionError(f"{label}: the other worktree should be removed, the failing one kept\n{out}\n{err}")
+            if f"ERROR: {failing.resolve()}" not in out or "Traceback" not in err:
+                raise AssertionError(f"{label}: the error should name the failing worktree, traceback on stderr\n{out}\n{err}")
+            if code != 1:
+                raise AssertionError(f"{label}: exit {code}, expected 1\n{out}")
+            if mode == "--scan-dir":
+                if "Total — pruned 1," not in out or _result_field(out, "pruned") != "1" or _result_field(out, "errors") != "1":
+                    raise AssertionError(f"{label}: the total should count the removal and the error\n{out}")
+            elif "Done — pruned 1," not in out:
+                raise AssertionError(f"{label}: the repo's count should include the removal\n{out}")
+    return "either worktree failing: the other is removed and counted, the failing one is named, exit 1"
+
+
+def test_branch_delete_error_after_removal_still_counts_as_pruned() -> str:
+    """The worktree is already gone when `git branch -d` raises: a warning, not an error."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        repo.age_all_git_state()
+        out, err, code = repo.run_main_failing_on(prune, repo.branch, "--repo-path", str(repo.primary),
+                                                  only_for=("branch", "-d"))
+        if repo.worktree.exists() or code != 0 or "ERROR" in out:
+            raise AssertionError(f"exit {code}: the removal should stand as a clean prune\n{out}\n{err}")
+        if "WARNING: branch delete failed" not in out or "Done — pruned 1," not in out:
+            raise AssertionError(f"should warn and count the removal\n{out}")
+    return "git branch -d raising after the removal: warned, counted as pruned, exit 0"
+
+
 def test_draft_squat_fetch_timeout_counts_as_not_pushed() -> str:
     """_origin_ahead_count has its own fetch: a hang there means 'not provably pushed'."""
     with unittest.mock.patch("subprocess.run", side_effect=_timeout(["fetch"])):
@@ -1129,6 +1172,36 @@ def test_scan_second_run_lists_nothing_then_only_the_new_entries() -> str:
     return "repeat run lists no skip or fetch failure and keeps RESULT; only a new entry is listed"
 
 
+def test_scan_errored_worktree_keeps_its_record() -> str:
+    """dev-env#1344: a worktree an error stopped wasn't looked at, so it isn't resolved either."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        path = repo.primary / ".claude" / "worktrees" / "unmerged"
+        repo._git(repo.primary, "worktree", "add", str(path), "-b", "claude/unmerged")
+        (path / "unmerged.txt").write_text("x", encoding="utf-8")
+        repo._git(path, "add", "unmerged.txt")
+        repo._git(path, "commit", "-m", "unmerged")
+        repo.age_all_git_state()
+        path = str(path.resolve())
+
+        first = _scan(repo, state)
+        if f"skipped {path}: not merged" not in first:
+            raise AssertionError(f"first run should list the unmerged worktree\n{first}")
+        repo.age_all_git_state()
+        out, err, code = repo.run_main_failing_on(
+            prune, "claude/unmerged", "--scan-dir", str(repo.root), "--include-named", "--state-file", str(state))
+        error = commit_state(state)
+        if error:
+            raise AssertionError(error)
+        if code != 1 or f"ERROR: {path}" not in out or "no longer skipped" in out:
+            raise AssertionError(f"errored run: exit {code}, should name it and not resolve it\n{out}\n{err}")
+        third = _scan(repo, state)
+        if _result_field(third, "new_skipped") != "0" or path in third:
+            raise AssertionError(f"the record should have survived the errored run\n{third}")
+    return "an errored worktree is neither 'no longer skipped' nor new again on the next run"
+
+
 def test_scan_missing_or_unreadable_state_gives_full_report() -> str:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp))
@@ -1260,7 +1333,9 @@ def main() -> int:
         ("scan: discovery timeout -> next repo reached, reported as timed out", test_scan_continues_after_discovery_timeout),
         ("scan: failed and timed-out fetches listed separately", test_scan_reports_failed_and_timed_out_separately),
         ("scan: unexpected error -> next repo reached, named, exit 1", test_scan_continues_after_unexpected_error),
-        ("draft squat: fetch timeout -> not provably pushed", test_draft_squat_fetch_timeout_counts_as_not_pushed),
+        ("error in one worktree: the others still pruned and counted, exit 1", test_error_in_one_worktree_leaves_the_others_handled),
+        ("branch delete error after removal: still pruned, exit 0", test_branch_delete_error_after_removal_still_counts_as_pruned),
+        ("draft squat: fetch timeout -> not provably pushed",test_draft_squat_fetch_timeout_counts_as_not_pushed),
         ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),
         ("real repo: origin/HEAD set -> believed without the remote", test_real_origin_head_is_believed_without_asking_the_remote),
         ("real repo: discovery failure -> fetch failed, run carries on", test_real_discovery_failure_lands_in_fetch_failed),
@@ -1270,7 +1345,8 @@ def main() -> int:
         ("real repo: non-main squatter parked, default branch survives", test_real_non_main_squatter_is_parked_and_default_branch_survives),
         ("real repo: default-branch worktree under detached primary kept", test_real_default_branch_worktree_under_detached_primary_is_kept),
         ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
-        ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
+        ("--scan-dir errored worktree keeps its record", test_scan_errored_worktree_keeps_its_record),
+        ("--scan-dir missing or unreadable state gives the full report",test_scan_missing_or_unreadable_state_gives_full_report),
         ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
         ("--scan-dir uncommitted run reports again", test_scan_uncommitted_run_reports_again),
         ("--scan-dir unreadable remote is a finding", test_scan_unreadable_remote_is_a_finding),
