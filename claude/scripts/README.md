@@ -1,10 +1,14 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **115 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
-utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
-([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
-per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
+scripts (wired Claude Code hooks, shared `_foo.py` modules, and utility/setup scripts across
+`.py`/`.sh`/`.ps1`). The rows below index the files that existed on 2026-11-07
+([dev-env#830](https://github.com/brownm09/dev-env/issues/830)), and take no new ones. A newer
+script carries its own entry, a `Purpose:` line near its top, so two PRs that each add a script
+can't conflict here ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)). To list
+those, from the repo root: `git grep -n -E '^[#" ]*Purpose:' -- claude/scripts ':!claude/scripts/tests'`.
+`tests/test_readme_index_parity.py` requires every file to have a row or its own entry, and
+refuses a new row.
 
 **Not `claude/scripts/tests/`.** That subdirectory has its own index —
 [`claude/scripts/tests/README.md`](tests/README.md)
@@ -32,8 +36,8 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
-(they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 28 are listed together. Most have their own test file in
+(they're described in prose paragraphs at the top of the Hooks section instead); this table
+lists those that existed when its rows were frozen. Most have their own test file in
 [`tests/README.md`](tests/README.md) → Shared support modules. `_default_branch.py` is covered by
 `test_prune_merged_worktrees.py` and `test_reclaim_worktree_disk.py`, which run it against real
 throwaway repos.
@@ -74,13 +78,13 @@ throwaway repos.
 
 ## Wired hooks & their domain utilities
 
-The 45 scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
+The scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
 the utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.shared.json`; utility scripts show their
 invocation instead.
 
-### Engineering journal & stub workflow (24)
+### Engineering journal & stub workflow
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -109,7 +113,7 @@ invocation instead.
 | `merge-stale-pr.sh` | `bash merge-stale-pr.sh <PR-URL>` | Remediates a stale engineering-journal draft PR: checks out, warns on a missing journal file, deletes orphaned drafts, rebases, squash-merges. |
 | `retro-chain-status.py` | `py -3 retro-chain-status.py --repo <owner/repo> [--repo ...] [--journal-repo PATH]` | Read-only per-repo classifier for the retro-action chained-tile backlog (dev-env#967): reports ALIVE/UNRESOLVED/NO_QUEUE_FOUND/QUEUE_EXHAUSTED/ALL_TILED/AMBIGUOUS/NEEDS_REFILL; never mutates anything, a per-repo failure lands in that repo's own `{"status": "ERROR", "error": "..."}` entry. Engine behind the `retro-chain-refill` skill. |
 
-### PR / merge workflow (20)
+### PR / merge workflow
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -134,7 +138,7 @@ invocation instead.
 | `baseline-tests.sh` | `baseline-tests <snapshot\|diff\|gc>` | Captures/diffs/garbage-collects pre-existing test failure baselines for the fix-on-touch policy (ADR-030). |
 | `merge-ready.sh` | `bash merge-ready.sh [owner/repo ...]` | Lists, per repo, open PRs that are green + mergeable + waiting on nothing vs. still open but not ready; read-only, defaults to `merickvaughn/lifting-logbook`. |
 
-### GitHub project board (4)
+### GitHub project board
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -143,7 +147,7 @@ invocation instead.
 | `reconcile-project-board.py` | `py -3 reconcile-project-board.py [--repo-root\|--scan-dir] [--dry-run] [--full]` | Finds open issues missing from the board and open board items missing a required field; add-only, never guesses a value. |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> ...)` | Resolves a GitHub Project item node ID from an issue/PR number. |
 
-### Worktrees & disk management (7)
+### Worktrees & disk management
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -155,7 +159,7 @@ invocation instead.
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (31)
+### Session state, reliability & token tracking
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -206,6 +210,8 @@ invocation instead.
 3. **If it's a shared `_foo.py` module or a utility script:** add it to
    [`docs/REFERENCE.md`](../../docs/REFERENCE.md)'s Utilities section (or its shared-module
    prose) if it has externally-relevant behavior.
-4. Add a one-line row to this file in the matching section (shared module, or the domain closest
-   to what the script does). This file is not part of the `CLAUDE.md` Documentation Maintenance
-   table's required-updates list — keeping it current is good hygiene, not a merge gate.
+4. Don't add a row to this file. In the script's first 10 lines, start one line of its docstring
+   or a comment with `Purpose:` and what the script does, for example `# Purpose: prunes merged
+   worktrees.` A comment doesn't change how a hook, module, `.sh` or `.ps1` file runs.
+   `tests/test_readme_index_parity.py` fails a script with neither a row nor that line, and
+   fails a new row ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)).

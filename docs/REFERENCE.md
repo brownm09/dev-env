@@ -264,12 +264,11 @@ See [ADR-131](adr/131-retro-chain-idempotent-refill.md).
 
 For a one-line-per-file index of the files directly in `claude/scripts/` — wired hooks, shared
 `_foo.py` modules, and utility scripts, grouped by workflow domain — see
-[`claude/scripts/README.md`](../claude/scripts/README.md), which carries the gated, authoritative
-file count itself so this sentence can't drift out of sync with it by restating a second,
-differently-scoped number (`docs/REFERENCE.md`'s prior count here covered `.py` files only,
-while the README's covers `.py`/`.sh`/`.ps1` — two correct-for-their-own-definition numbers that
-nonetheless read as contradictory side by side; dev-env#966 review finding)
-([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The tables below remain the
+[`claude/scripts/README.md`](../claude/scripts/README.md)
+([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). Its rows stop at the scripts that
+existed on 2026-11-07; a newer script carries a `Purpose:` line near its top instead
+([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)). Neither file states a file
+count, because every new script changed it. The tables below remain the
 authoritative per-hook behavioral description; that index is a navigational map only.
 
 Most hooks are **advisory** — they emit `systemMessage` reminders but do not block tool execution. The exception is `pre-tool-use-worktree-path-check.py` (a `PreToolUse` hook), which exits 2 with a `{"reason": "..."}` payload to block `Write`, `Edit`, and `NotebookEdit` calls that target the canonical repo root instead of the active worktree, or that are issued from an orphaned worktree whose `.git` link no longer resolves (so git silently operates on the canonical repo).

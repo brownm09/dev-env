@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Two PRs that each add a test must merge cleanly, in either order (dev-env#1309).
+"""Two PRs that each add a test, or each add a script, must merge cleanly in either order.
 
-Required when changing `test_testing_index_parity.py`, `test_readme_index_parity.py`, or
-the `## Testing` introduction in the root `CLAUDE.md`.
+Required when changing `test_testing_index_parity.py`, `test_readme_index_parity.py`, the
+`## Testing` introduction in the root `CLAUDE.md`, or `claude/scripts/README.md`.
 Run: py -3 claude/scripts/tests/test_testing_index_merge.py
 
 Builds a throwaway repository from the real indexed files and the real parity gates,
 then adds two tests on two branches the documented way: a `Required when` line and a
 `Run:` line at the top of the test file, with no edit to `CLAUDE.md`, `docs/TESTING.md`
-or `claude/scripts/tests/README.md`. It merges them both ways with `git merge`, and
-with `git merge-tree` in a bare clone. `git merge-tree` is the closest local stand-in
-for GitHub's merge, which has no working tree (ADR-074 Amendment 1).
+or `claude/scripts/tests/README.md` (dev-env#1309). It does the same for two scripts,
+each with a `Purpose:` line and no edit to `claude/scripts/README.md` (dev-env#1311). It
+merges each pair both ways with `git merge`, and with `git merge-tree` in a bare clone.
+`git merge-tree` is the closest local stand-in for GitHub's merge, which has no working
+tree (ADR-074 Amendments 1 and 2).
 
 The clean merges record what git does with those two branches. They can't fail from a
 change to this repository, because branches that add different files have no text to
@@ -30,7 +32,11 @@ from _throwaway_repo import _env
 from test_testing_index_parity import extract_section
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SHARED_FILES = ("CLAUDE.md", "docs/TESTING.md", "claude/scripts/tests/README.md")
+SHARED_FILES = (
+    "CLAUDE.md", "docs/TESTING.md", "claude/scripts/tests/README.md", "claude/scripts/README.md",
+)
+# Pairs of branches that each add one file the documented way.
+NEW_FILE_PAIRS = (("new-a", "new-b"), ("script-a", "script-b"))
 PARITY_GATES = ("test_testing_index_parity.py", "test_readme_index_parity.py")
 # Written out rather than computed from LAST_NUMBERED_ITEM: raising that constant to
 # admit a new item must fail here, or the freeze is one more edit in the same PR.
@@ -91,6 +97,12 @@ class TestTestingIndexMerge(unittest.TestCase):
         cls._branch("duplicate", cls._numbered_item(f"{FIRST_REFUSED_ITEM - 1}. **Fixture** — run `true`"))
         cls._branch("no-entry", {"claude/scripts/tests/test_fixture_bare.py": '"""No entry."""\n'})
         cls._branch("new-row", cls._new_readme_row("test_fixture_row.py"))
+        # One script of each kind the gate indexes; a .ps1 is covered by its unit tests.
+        cls._branch("script-a", {"claude/scripts/fixture_a.py": '"""Fixture.\n\nPurpose: a fixture.\n"""\n'})
+        cls._branch("script-b", {"claude/scripts/fixture_b.sh": "#!/usr/bin/env bash\n# Purpose: a fixture.\n"})
+        cls._branch("old-script-a", cls._new_script_row("fixture_row_a.py"))
+        cls._branch("old-script-b", cls._new_script_row("fixture_row_b.py"))
+        cls._branch("script-no-entry", {"claude/scripts/fixture_bare.py": '"""No entry."""\n'})
         _git(cls._tmp.name, "clone", "-q", "--bare", str(cls.repo), "bare.git")
         cls.bare = Path(cls._tmp.name) / "bare.git"
 
@@ -133,6 +145,18 @@ class TestTestingIndexMerge(unittest.TestCase):
         lines.insert(row, f"| `{name}` | a fixture | A row. |\n")
         return {rel: "".join(lines), f"claude/scripts/tests/{name}": '"""No entry."""\n'}
 
+    @classmethod
+    def _new_script_row(cls, name):
+        """A new script indexed the old way, by a row at the end of the last table."""
+        rel = "claude/scripts/README.md"
+        lines = (cls.repo / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+        end = next((i for i, line in enumerate(lines) if line.startswith("## Adding a new script")), None)
+        rows = [i for i, line in enumerate(lines[:end or 0]) if line.startswith("| `")]
+        if not rows:
+            raise AssertionError("the scripts README has no rows before its last section; fix this fixture")
+        lines.insert(rows[-1] + 1, f"| `{name}` | `py -3 {name}` | A row. |\n")
+        return {rel: "".join(lines), f"claude/scripts/{name}": '"""No entry."""\n'}
+
     def _merge_both(self, first, second):
         """Merge two branches onto main in a throwaway branch; return the second merge."""
         scratch = f"merge-{first}-{second}"
@@ -154,7 +178,8 @@ class TestTestingIndexMerge(unittest.TestCase):
         )
 
     def test_new_tests_merge_cleanly_in_either_order(self):
-        for first, second in (("new-a", "new-b"), ("new-b", "new-a")):
+        orders = [pair for a, b in NEW_FILE_PAIRS for pair in ((a, b), (b, a))]
+        for first, second in orders:
             with self.subTest(order=f"{first} then {second}"):
                 result = self._merge_both(first, second)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -168,18 +193,20 @@ class TestTestingIndexMerge(unittest.TestCase):
                                      f"{rel} changed, so a later PR could still conflict")
 
     def test_new_tests_merge_cleanly_with_no_working_tree(self):
-        for first, second in (("new-a", "new-b"), ("new-b", "new-a")):
+        orders = [pair for a, b in NEW_FILE_PAIRS for pair in ((a, b), (b, a))]
+        for first, second in orders:
             with self.subTest(order=f"{first} then {second}"):
                 result = self._merge_tree(first, second)
                 self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_merged_tree_passes_both_parity_gates(self):
-        result = self._merge_both("new-a", "new-b")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for gate in PARITY_GATES:
-            with self.subTest(gate=gate):
-                run = self._run_gate(gate)
-                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        for first, second in NEW_FILE_PAIRS:
+            result = self._merge_both(first, second)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for gate in PARITY_GATES:
+                with self.subTest(pair=first, gate=gate):
+                    run = self._run_gate(gate)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_old_numbered_way_conflicts(self):
         """Known-bad reference: without this, the clean merges above could be a blind harness."""
@@ -192,6 +219,14 @@ class TestTestingIndexMerge(unittest.TestCase):
     def test_old_numbered_way_conflicts_with_no_working_tree(self):
         result = self._merge_tree("old-a", "old-b")
         self.assertEqual(result.returncode, 1, f"expected a conflict, got: {result.stdout}{result.stderr}")
+
+    def test_old_script_row_way_conflicts(self):
+        """Known-bad reference for the scripts README: two rows added at the same point."""
+        result = self._merge_both("old-script-a", "old-script-b")
+        self.assertNotEqual(result.returncode, 0, "two appended rows merged without a conflict")
+        self.assertIn("claude/scripts/README.md", _git(self.repo, "ls-files", "--unmerged").stdout)
+        tree = self._merge_tree("old-script-a", "old-script-b")
+        self.assertEqual(tree.returncode, 1, f"expected a conflict, got: {tree.stdout}{tree.stderr}")
 
     def test_written_procedure_is_the_one_the_fixtures_follow(self):
         intro = extract_section((REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8"), "Testing")
@@ -220,6 +255,25 @@ class TestTestingIndexMerge(unittest.TestCase):
         self.assertNotEqual(run.returncode, 0, "a new README row passed the README gate")
         self.assertIn("Required when", run.stdout + run.stderr,
                       "the failure must say what to do instead of adding a row")
+
+    def test_gate_refuses_a_new_script_with_no_entry(self):
+        _git(self.repo, "checkout", "-q", "-f", "script-no-entry")
+        run = self._run_gate("test_readme_index_parity.py")
+        self.assertNotEqual(run.returncode, 0, "a script with no entry passed the README gate")
+        self.assertIn("fixture_bare.py", run.stdout + run.stderr)
+
+    def test_gate_refuses_a_new_script_row(self):
+        _git(self.repo, "checkout", "-q", "-f", "old-script-a")
+        run = self._run_gate("test_readme_index_parity.py")
+        self.assertNotEqual(run.returncode, 0, "a new scripts README row passed the README gate")
+        self.assertIn("Purpose:", run.stdout + run.stderr,
+                      "the failure must say what to do instead of adding a row")
+
+    def test_written_script_procedure_is_the_one_the_fixtures_follow(self):
+        readme = (REPO_ROOT / "claude/scripts/README.md").read_text(encoding="utf-8")
+        for phrase in ("Don't add a row to this file", "`Purpose:`"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, readme)
 
 
 if __name__ == "__main__":
