@@ -12,7 +12,7 @@ schedule: "0 9 * * 1"
 py -3 ~/.claude/scripts/routine-findings.py save --routine weekly-memory-audit --file C:/Users/brown/.claude/scratch/routine-finding-weekly-memory-audit-<HHMMSS>.txt
 ```
 
-It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output.
 
 Reconcile agent memory against the version-controlled instructions across every project. Run
 **fully autonomously** — never call `AskUserQuestion`, never wait for input, never prompt for

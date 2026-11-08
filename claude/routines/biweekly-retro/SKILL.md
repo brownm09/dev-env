@@ -13,7 +13,7 @@ schedule: "0 9 * * 0"
 py -3 ~/.claude/scripts/routine-findings.py save --routine biweekly-retro --file C:/Users/brown/.claude/scratch/routine-finding-biweekly-retro-<HHMMSS>.txt
 ```
 
-It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output.
 
 Synthesize a biweekly engineering retrospective from the engineering-journal. Run **fully
 autonomously** — never call `AskUserQuestion`, never wait for input, never prompt for approval.
