@@ -945,7 +945,9 @@ For a one-line navigational map of the older tests, see
     cases -> `[]`), `_result_text` (string / list-joined / `toolUseResult` stdout+stderr fallback /
     empty -> `''`), `iter_bash_calls` (id-pairing returning `(command, output, cwd)`, out-of-order
     parallel results not crossing, default `cwd=''`, and non-dict/non-Bash/orphan records -> `[]`
-    without raising), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
+    without raising), `iter_bash_call_details` (dev-env#1331: the same pairing plus the result's
+    `is_error`, counted only when literally `True`, and the issuing record's timestamp;
+    `iter_bash_calls` is its first three fields), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
     lines), and `load_records` (reads a JSONL file to its object records). Imported by
     `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
     `token-tracker.py` ([ADR-064](adr/064-shared-hookutil-sentinel-transcript-locate.md),
