@@ -71,8 +71,9 @@ Imported as a sibling module in `scripts/` via `sys.path`, the same way as
 `_worktree_canon` / `_hookutil` / `_hookout`. Per docs/REFERENCE.md, library
 modules like this one get no hooks/utilities table row in that file -- they are
 documented in prose next to their consumer (the per-directory
-`claude/scripts/README.md` index DOES carry a row for every `_foo.py`, and is a
-separate obligation).
+`claude/scripts/README.md` index carries a row for every `_foo.py` that existed
+when its rows were frozen; a newer one carries a `Purpose:` line instead,
+dev-env#1311).
 
 `collections.namedtuple`, not `typing.NamedTuple`: importing `typing` costs
 ~7-11 ms of cold-import time, and this module is imported at module scope by a

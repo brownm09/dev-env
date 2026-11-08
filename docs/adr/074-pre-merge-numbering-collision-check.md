@@ -273,8 +273,8 @@ Known good: the real README and directory; two branches that each add a script t
 cleanly in either order with `git merge` and `git merge-tree`, and pass both parity gates. Known bad:
 a script with no entry, and a new row, which the gate refuses; two rows added at the same point, which
 conflict. `test_testing_index_merge.py` builds all of these on every CI run, and turns red when the
-ceiling is raised to 116 or the `Purpose:` line stops counting. `TestHasPurposeLine` pins 9 accepted
-and 7 refused shapes for the line itself.
+ceiling is raised to 116 or the `Purpose:` line stops counting. `TestHasPurposeLine` pins 13 accepted
+and 8 refused shapes for the line itself.
 
 **Alternatives rejected.**
 
@@ -293,8 +293,8 @@ conflict is resolved by keeping both rows, with no count or number to recompute.
 
 **Consequences.**
 
-- A session finds a newer script's entry with
-  `git grep -n -E '^[#" ]*Purpose:' -- claude/scripts ':!claude/scripts/tests'`.
+- A session finds a newer script's entry with the `git grep` command at the top of
+  `claude/scripts/README.md`.
 - An open PR that adds a row to `claude/scripts/README.md` fails item 84 once this merges, and the
   failure says what to write instead.
 - To reverse this: revert the change, then give each script added since then a row and restore the

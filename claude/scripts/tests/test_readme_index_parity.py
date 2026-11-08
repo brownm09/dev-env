@@ -37,6 +37,11 @@ so a future README that put a "| `foo.py` |"-shaped line inside a fence could mi
 as a table row. Both READMEs currently contain zero code fences; ADR-122 records this as an
 accepted scope gap rather than carrying a fence state machine for a condition that does not
 occur -- the same call ADR-116/ADR-121 made only after fence-blindness actually bit them.
+
+A second accepted gap: the `Purpose:` check reads text, not syntax, so a code line in a
+script's first 10 lines that starts with `Purpose:` (an annotated variable `Purpose: int = 3`)
+would count as an entry. No script does this, and telling a docstring line from a code line
+would mean parsing three languages for a case that hasn't occurred.
 """
 import os
 import re
@@ -58,7 +63,11 @@ OWN_ENTRY_LINES = 10
 # What may come before an entry on its line: a comment mark, or a docstring's opening quotes.
 ENTRY_PREFIX = r"^[#\s\"']*"
 REQUIRED_WHEN_RE = re.compile(ENTRY_PREFIX + r"Required when[ \t]+\S", re.MULTILINE)
-PURPOSE_RE = re.compile(ENTRY_PREFIX + r"Purpose:[ \t]+\S", re.MULTILINE)
+# A script's entry may also open a PowerShell `<#` block or a prefixed docstring (`r"""`),
+# and needs text after it that isn't the docstring's own closing quotes.
+PURPOSE_RE = re.compile(
+    r"^[ \t]*(?:#+|<#|[rRuU]?(?:\"\"\"|'''))?[ \t]*Purpose:[ \t]+[^\s\"']", re.MULTILINE
+)
 # Each README's first-column names when its rows were frozen (dev-env#1309, #1311).
 FROZEN_TEST_ROWS = 118
 FROZEN_SCRIPT_ROWS = 115
@@ -319,6 +328,10 @@ class TestHasPurposeLine(unittest.TestCase):
             ("tool.ps1", "comment after #Requires"):
                 f"#Requires -RunAsAdministrator\n# {purpose}\nparam()\n",
             ("tool.ps1", "inside a comment block"): f"<#\n.SYNOPSIS\n{purpose}\n#>\n",
+            ("tool.ps1", "on a comment block's opener"): f"<# {purpose} #>\nparam()\n",
+            ("tool.py", "raw docstring"): f'r"""{purpose}\n"""\n',
+            ("tool.py", "single-quoted docstring"): f"'''{purpose}\n'''\n",
+            ("tool.py", "tab-indented docstring line"): f'"""Foo.\n\n\t{purpose}\n"""\n',
             ("tool.py", "CRLF"): f'"""Foo.\r\n\r\n{purpose}\r\n"""\r\n',
             ("tool.py", "byte order mark"): f"﻿# {purpose}\n",
             ("tool.py", "last allowed line"): "\n" * 9 + f"# {purpose}\n",
@@ -331,6 +344,7 @@ class TestHasPurposeLine(unittest.TestCase):
         cases = {
             "no Purpose line": '"""Does foo."""\n',
             "nothing after Purpose:": "# Purpose:\n",
+            "only a docstring's closing quotes after Purpose:": '"""Purpose: """\n',
             "no colon": "# Purpose does foo.\n",
             "past the first ten lines": "\n" * 10 + "# Purpose: does foo.\n",
             "mentioned mid-sentence": "# Its Purpose: does foo.\n",

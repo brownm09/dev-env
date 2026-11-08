@@ -26,8 +26,9 @@ nothing to this section, `docs/TESTING.md` or `claude/scripts/tests/README.md`, 
 each add a test can't conflict
 ([ADR-074 Amendment 1](docs/adr/074-pre-merge-numbering-collision-check.md)). A new check must be
 such a file, so the runner finds it, not an inline command. Cite a newer test by its file name.
-Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, or a test in
-`claude/scripts/tests/` with neither a row nor an entry; nothing gates `claude/hooks/tests/`. To
+Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, a test in
+`claude/scripts/tests/` with neither a row nor an entry, or a script in `claude/scripts/` with
+neither a row nor a `Purpose:` line; nothing gates `claude/hooks/tests/`. To
 find the tests for a script, from the repo root:
 `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
 test, because a test may cover a script without naming it.

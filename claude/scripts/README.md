@@ -2,13 +2,15 @@
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
 scripts (wired Claude Code hooks, shared `_foo.py` modules, and utility/setup scripts across
-`.py`/`.sh`/`.ps1`). The rows below index the files that existed on 2026-11-07
-([dev-env#830](https://github.com/brownm09/dev-env/issues/830)), and take no new ones. A newer
-script carries its own entry, a `Purpose:` line near its top, so two PRs that each add a script
-can't conflict here ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)). To list
-those, from the repo root: `git grep -n -E '^[#" ]*Purpose:' -- claude/scripts ':!claude/scripts/tests'`.
-`tests/test_readme_index_parity.py` requires every file to have a row or its own entry, and
-refuses a new row.
+`.py`/`.sh`/`.ps1`). The rows below index the 115 files that existed on 2026-11-07
+([dev-env#830](https://github.com/brownm09/dev-env/issues/830)), so a newer script isn't listed
+here. A newer script carries its own entry, a `Purpose:` line near its top, so two PRs that each
+add a script can't conflict here ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)).
+To list them, from the repo root:
+`git grep -n "Purpose:" -- claude/scripts ':!claude/scripts/tests' ':!claude/scripts/README.md'`.
+That lists every mention, so it can include a line the gate wouldn't count; the gate,
+`tests/test_readme_index_parity.py`, decides what's an entry. It requires every file to have a
+row or its own entry, and refuses more than 115 rows, so a new script can't take a row.
 
 **Not `claude/scripts/tests/`.** That subdirectory has its own index —
 [`claude/scripts/tests/README.md`](tests/README.md)
@@ -78,7 +80,8 @@ throwaway repos.
 
 ## Wired hooks & their domain utilities
 
-The scripts Claude Code invokes automatically via `claude/settings.shared.json`, grouped with
+The scripts Claude Code invokes automatically via `claude/settings.shared.json`, as of the
+2026-11-07 freeze (a newer hook carries a `Purpose:` line instead), grouped with
 the utility scripts that serve the same workflow area — mirroring
 [`tests/README.md`](tests/README.md)'s domain grouping so the two indexes read the same way.
 **Event** names the hook registration(s) from `settings.shared.json`; utility scripts show their

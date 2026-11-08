@@ -805,7 +805,8 @@ post-merge step, not implied by the code landing on `main`.
 
 On-demand scripts — not wired to any event. Run manually or from other scripts. See
 [`claude/scripts/README.md`](../claude/scripts/README.md) for the same content grouped with the
-hooks and shared modules that serve the same workflow, rather than split across two sections.
+hooks and shared modules that serve the same workflow, rather than split across two sections. Its
+rows stop at the scripts that existed on 2026-11-07, so a newer utility appears only here.
 
 | Script | Invocation | What it does |
 |--------|-----------|-------------|

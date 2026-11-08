@@ -201,12 +201,14 @@ class TestTestingIndexMerge(unittest.TestCase):
 
     def test_merged_tree_passes_both_parity_gates(self):
         for first, second in NEW_FILE_PAIRS:
-            result = self._merge_both(first, second)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            for gate in PARITY_GATES:
-                with self.subTest(pair=first, gate=gate):
-                    run = self._run_gate(gate)
-                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            # One subTest per pair, so a failed merge of one pair still runs the next.
+            with self.subTest(pair=f"{first}+{second}"):
+                result = self._merge_both(first, second)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for gate in PARITY_GATES:
+                    with self.subTest(gate=gate):
+                        run = self._run_gate(gate)
+                        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_old_numbered_way_conflicts(self):
         """Known-bad reference: without this, the clean merges above could be a blind harness."""
@@ -271,9 +273,11 @@ class TestTestingIndexMerge(unittest.TestCase):
 
     def test_written_script_procedure_is_the_one_the_fixtures_follow(self):
         readme = (REPO_ROOT / "claude/scripts/README.md").read_text(encoding="utf-8")
-        for phrase in ("Don't add a row to this file", "`Purpose:`"):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, readme)
+        marker = "## Adding a new script"
+        self.assertIn(marker, readme, "claude/scripts/README.md lost its 'Adding a new script' section")
+        # The section must still send a new script to a `Purpose:` line, as script-a and
+        # script-b do; its wording can change freely.
+        self.assertIn("`Purpose:`", readme.split(marker, 1)[1])
 
 
 if __name__ == "__main__":
