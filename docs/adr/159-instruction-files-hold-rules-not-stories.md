@@ -48,3 +48,16 @@ Gate calibration, per [ADR-144](144-gate-calibration-pass-3-dimension.md): the m
 - **Open PRs that edit moved lines will conflict once.** Their rule edits should go in as a short line, with any story in Instruction Detail.
 - **The rest of the start is untouched.** Tool definitions and the project `CLAUDE.md` are separate decisions, tracked in follow-up issues.
 - **Rollback:** revert the PR. The test and the file go together.
+
+## Amendment 1: the project file too (2026-11-07)
+
+[dev-env#1297](https://github.com/brownm09/dev-env/issues/1297) applies the same decision to the repo-root `CLAUDE.md`, dev-env's project file, which loads in every dev-env session. It had grown from 52,943 bytes when the issue was filed to 56,572.
+
+1. **Stories move to two homes.** The `## Testing` index keeps each item's number, title, triggering files, companion items and command; what each test pins and why stays in `docs/TESTING.md` under the same number, which already held most of it. The other sections' stories (hook output streams, the launcher and settings sync, routines, the board fallback and REST commands) move to a new `docs/REFERENCE.md` → Project Instruction Detail, with `Project detail:` headings so the global file's every-detail-heading-is-linked check doesn't claim them. Unlike the global move, that section holds only what `CLAUDE.md` doesn't say, so no rule exists in two wordings that could drift apart; review of the first draft found a verbatim copy already diverging.
+2. **The same test caps it.** `test_claude_md_size.py` checks both files from one table: the project file fails above 38,500 bytes, about 4% over the 36,860 left after the trim, every local link must resolve from the repo root, and every `Project detail:` heading needs a link.
+
+Gate calibration: the measured property is the same normalized byte count. Known-bad: 52,943 and 56,572 bytes, the file at filing and before the trim, both rejected, and both shown failing by running the test against those files. Known-good: the trimmed file, 1,640 bytes (about 4%) under the ceiling. The not-vacuous assertion carries over. The margin is close to the global file's 5%, and it is deliberately tight. On the day #1297 was filed the file grew 3,543 bytes: 1,438 in `## Testing` items, which the item-118 freeze (ADR-074 Amendment 1) now stops, and 2,191 in other sections. Growth at that rate will hit the ceiling within days, and that is the intent: a change that needs room moves a story to Project Instruction Detail, or raises the ceiling with a reason in its PR.
+
+At the fitted 0.395 tokens per byte, the 19,712 bytes removed are about 7,800 tokens off every call of every dev-env session. As in the original decision, that is arithmetic on the request, not a measured change in spend.
+
+Rejected: shortening each command by naming a common prefix once (`claude/scripts/tests/`) would save about 4k more bytes, but a command an agent can't paste as written invites mistakes, so commands stay whole.
