@@ -568,7 +568,12 @@ For a one-line navigational map of the older tests, see
     ```
 
 18. **posttooluse-inert-advisory test** — required when changing
-    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    `claude/scripts/posttooluse-inert-advisory.py`. Since dev-env#1331 (ADR-055's 2026-11-07 amendment)
+    it also pins the narrowed decision: a `gh pr merge` refused by an API rate limit is no merge; a create
+    inside a call marked `is_error` fires even when `bash_state` was written later, labelled as a failed
+    call; a silent successful create with `bash_state` written after the call started stays silent; a file
+    older than the call, no file, or no call timestamp fires as before; and an end-to-end run plants the
+    file under the isolated HOME to show `main()` reads it. Exercises the pure transcript-scanning helpers offline
     (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
     `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
     proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
@@ -942,7 +947,9 @@ For a one-line navigational map of the older tests, see
     cases -> `[]`), `_result_text` (string / list-joined / `toolUseResult` stdout+stderr fallback /
     empty -> `''`), `iter_bash_calls` (id-pairing returning `(command, output, cwd)`, out-of-order
     parallel results not crossing, default `cwd=''`, and non-dict/non-Bash/orphan records -> `[]`
-    without raising), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
+    without raising), `iter_bash_call_details` (dev-env#1331: the same pairing plus the result's
+    `is_error`, counted only when literally `True`, and the issuing record's timestamp;
+    `iter_bash_calls` is its first three fields), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
     lines), and `load_records` (reads a JSONL file to its object records). Imported by
     `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
     `token-tracker.py` ([ADR-064](adr/064-shared-hookutil-sentinel-transcript-locate.md),
