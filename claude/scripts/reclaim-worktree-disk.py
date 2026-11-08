@@ -281,13 +281,14 @@ def free_gb(path: str) -> float:
     return shutil.disk_usage(path).free / (1024 ** 3)
 
 
-def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seconds: int) -> int:
-    """Reclaim from idle worktrees in a single repo. Returns total bytes reclaimed."""
+def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seconds: int) -> "tuple[int, list[str]]":
+    """Reclaim from idle worktrees in a single repo. Returns (total bytes reclaimed, the
+    worktrees an unexpected exception stopped) (dev-env#1344)."""
     try:
         gh_repo = detect_gh_repo(repo)
     except RuntimeError as exc:
         print(f"  SKIP {repo}: {exc}")
-        return 0
+        return 0, []
 
     print(f"\nRepo: {gh_repo} ({repo})")
 
@@ -298,61 +299,70 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
         print(f"  ERROR: git worktree list failed: {result.stderr}", file=sys.stderr)
-        return 0
+        return 0, []
 
     worktrees = parse_worktree_porcelain(result.stdout)
     primary = primary_worktree_path(worktrees)
 
     total = 0
     skipped: list[tuple[str, str]] = []
+    errors: list[str] = []
 
     for wt in worktrees:
         branch = wt["branch"]
         path = str(Path(wt["path"]).resolve())
 
-        if path == primary or path == protect_cwd:
-            skipped.append((path, "primary or protected worktree"))
-            continue
-        # Skip a worktree with a live Claude session (recent transcript activity).
-        # --protect-cwd only shields THIS session; stripping node_modules out from under a
-        # build/dev-server running in *another* worktree breaks it (dev-env#383, ADR-051).
-        # Additive: only ever adds a skip, never reclaims more than the checks below.
-        if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
-            skipped.append((path, "active Claude session (recent transcript activity)"))
-            continue
-        if not is_claude_managed_worktree(path):
-            skipped.append((path, "not under .claude/worktrees/ (no auto-reinstall safety net)"))
-            continue
-        if is_dirty(path):
-            skipped.append((path, "has uncommitted changes"))
-            continue
-        if not branch or branch == "<detached>":
-            # No resolvable branch ref: ahead/merged checks would evaluate the
-            # range against the primary repo's HEAD (run cwd=repo), silently
-            # misclassifying. Conservative — never strip when the branch is unknown.
-            skipped.append((path, "no resolvable branch (detached or unnamed)"))
-            continue
+        # An unexpected error is this worktree's alone: the repo's other worktrees are still
+        # handled and counted (dev-env#1344).
+        try:
+            if path == primary or path == protect_cwd:
+                skipped.append((path, "primary or protected worktree"))
+                continue
+            # Skip a worktree with a live Claude session (recent transcript activity).
+            # --protect-cwd only shields THIS session; stripping node_modules out from under a
+            # build/dev-server running in *another* worktree breaks it (dev-env#383, ADR-051).
+            # Additive: only ever adds a skip, never reclaims more than the checks below.
+            if worktree_session_is_live(path, window_seconds=liveness_window_seconds):
+                skipped.append((path, "active Claude session (recent transcript activity)"))
+                continue
+            if not is_claude_managed_worktree(path):
+                skipped.append((path, "not under .claude/worktrees/ (no auto-reinstall safety net)"))
+                continue
+            if is_dirty(path):
+                skipped.append((path, "has uncommitted changes"))
+                continue
+            if not branch or branch == "<detached>":
+                # No resolvable branch ref: ahead/merged checks would evaluate the
+                # range against the primary repo's HEAD (run cwd=repo), silently
+                # misclassifying. Conservative — never strip when the branch is unknown.
+                skipped.append((path, "no resolvable branch (detached or unnamed)"))
+                continue
 
-        # Compute the cheap local ahead-count first and short-circuit: an idle
-        # worktree (zero commits ahead of origin/main) is eligible without the
-        # network `gh pr list` fallback that is_merged() may trigger. is_merged()
-        # is only needed to catch squash-merged branches that still show as ahead.
-        ahead = commits_ahead(branch, repo, default_branch)
-        merged = ahead != 0 and is_merged(branch, gh_repo, repo, default_branch)
-        if not is_idle_eligible(merged, ahead):
-            skipped.append((path, f"{ahead if ahead is not None else '?'} commit(s) ahead, not merged"))
-            continue
+            # Compute the cheap local ahead-count first and short-circuit: an idle
+            # worktree (zero commits ahead of origin/main) is eligible without the
+            # network `gh pr list` fallback that is_merged() may trigger. is_merged()
+            # is only needed to catch squash-merged branches that still show as ahead.
+            ahead = commits_ahead(branch, repo, default_branch)
+            merged = ahead != 0 and is_merged(branch, gh_repo, repo, default_branch)
+            if not is_idle_eligible(merged, ahead):
+                skipped.append((path, f"{ahead if ahead is not None else '?'} commit(s) ahead, not merged"))
+                continue
 
-        bytes_here = reclaim_worktree(path, dry_run)
-        total += bytes_here
-        verb = "[dry-run] would reclaim" if dry_run else "reclaimed"
-        print(f"  {verb} {_fmt_gb(bytes_here)} from {path} ({branch})")
+            bytes_here = reclaim_worktree(path, dry_run)
+            total += bytes_here
+            verb = "[dry-run] would reclaim" if dry_run else "reclaimed"
+            print(f"  {verb} {_fmt_gb(bytes_here)} from {path} ({branch})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- left as it was")
+            traceback.print_exc()
+            errors.append(path)
 
-    print(f"  Done — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(total)}, skipped {len(skipped)}")
+    error_note = f", errors {len(errors)}" if errors else ""
+    print(f"  Done — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(total)}, skipped {len(skipped)}{error_note}")
     for path, reason in skipped:
         print(f"    skipped {path}: {reason}")
 
-    return total
+    return total, errors
 
 
 def main() -> None:
@@ -387,10 +397,14 @@ def main() -> None:
         for repo in repos:
             # One repo's hung git call or unexpected error must not stop the sweep (dev-env#1087).
             try:
-                grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
+                reclaimed, errors = reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
             except Exception as exc:  # noqa: BLE001
                 print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its bytes are not in the total")
                 traceback.print_exc()
+                error_repos.append(repo)
+                continue
+            grand_total += reclaimed
+            if errors:
                 error_repos.append(repo)
         summary = f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}"
         if error_repos:
@@ -399,7 +413,8 @@ def main() -> None:
         if error_repos:
             sys.exit(1)
     else:
-        reclaim_one(single_repo, dry_run, protect_cwd, liveness_window_seconds)
+        if reclaim_one(single_repo, dry_run, protect_cwd, liveness_window_seconds)[1]:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
