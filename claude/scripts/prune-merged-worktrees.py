@@ -537,6 +537,10 @@ def prune_one(
                         skipped.append((path, "parked, but git worktree remove timed out — retry manually"))
                         pruned.append(path)
                         continue
+                    except OSError as exc:
+                        skipped.append((path, f"parked but remove failed: {exc}"))
+                        pruned.append(path)
+                        continue
                     if rm.returncode != 0:
                         skipped.append((path, f"parked but remove failed: {rm.stderr.strip()}"))
                         pruned.append(path)
@@ -598,15 +602,20 @@ def prune_one(
                 skipped.append((path, f"worktree remove failed: {r.stderr.strip()}"))
                 continue
 
-            r = run(["git", "branch", "-d", branch], cwd=repo)
-            if r.returncode != 0:
-                # Worktree already gone; branch delete failure is non-fatal
-                print(f"  WARNING: branch delete failed for {branch} in {repo}: {r.stderr.strip()}")
+            # Worktree already gone; branch delete failure is non-fatal
+            try:
+                r = run(["git", "branch", "-d", branch], cwd=repo)
+                delete_error = r.stderr.strip() if r.returncode != 0 else ""
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                delete_error = f"{type(exc).__name__}: {exc}"
+            if delete_error:
+                print(f"  WARNING: branch delete failed for {branch} in {repo}: {delete_error}")
 
             pruned.append(path)
             print(f"  pruned: {path} ({branch})")
         except Exception as exc:  # noqa: BLE001
-            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- left as it was")
+            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- stopped partway, so check its state; "
+                  f"it is not in the total")
             traceback.print_exc()
             errors.append(path)
 
@@ -699,7 +708,8 @@ def main() -> None:
             sys.exit(1)
     else:
         repo = str(Path(args.repo_path).resolve()) if args.repo_path is not None else _DEFAULT_REPO
-        if prune_one(repo, dry_run, liveness_window_seconds, include_named)[3]:
+        *_, errors = prune_one(repo, dry_run, liveness_window_seconds, include_named)
+        if errors:
             sys.exit(1)
 
 

@@ -947,6 +947,20 @@ def test_error_in_one_worktree_leaves_the_others_handled() -> str:
     return "either worktree failing: the other is removed and counted, the failing one is named, exit 1"
 
 
+def test_branch_delete_error_after_removal_still_counts_as_pruned() -> str:
+    """The worktree is already gone when `git branch -d` raises: a warning, not an error."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        repo.age_all_git_state()
+        out, err, code = repo.run_main_failing_on(prune, repo.branch, "--repo-path", str(repo.primary),
+                                                  only_for=("branch", "-d"))
+        if repo.worktree.exists() or code != 0 or "ERROR" in out:
+            raise AssertionError(f"exit {code}: the removal should stand as a clean prune\n{out}\n{err}")
+        if "WARNING: branch delete failed" not in out or "Done — pruned 1," not in out:
+            raise AssertionError(f"should warn and count the removal\n{out}")
+    return "git branch -d raising after the removal: warned, counted as pruned, exit 0"
+
+
 def test_draft_squat_fetch_timeout_counts_as_not_pushed() -> str:
     """_origin_ahead_count has its own fetch: a hang there means 'not provably pushed'."""
     with unittest.mock.patch("subprocess.run", side_effect=_timeout(["fetch"])):
@@ -1320,6 +1334,7 @@ def main() -> int:
         ("scan: failed and timed-out fetches listed separately", test_scan_reports_failed_and_timed_out_separately),
         ("scan: unexpected error -> next repo reached, named, exit 1", test_scan_continues_after_unexpected_error),
         ("error in one worktree: the others still pruned and counted, exit 1", test_error_in_one_worktree_leaves_the_others_handled),
+        ("branch delete error after removal: still pruned, exit 0", test_branch_delete_error_after_removal_still_counts_as_pruned),
         ("draft squat: fetch timeout -> not provably pushed",test_draft_squat_fetch_timeout_counts_as_not_pushed),
         ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),
         ("real repo: origin/HEAD set -> believed without the remote", test_real_origin_head_is_believed_without_asking_the_remote),

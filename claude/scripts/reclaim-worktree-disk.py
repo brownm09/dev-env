@@ -353,7 +353,8 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
             verb = "[dry-run] would reclaim" if dry_run else "reclaimed"
             print(f"  {verb} {_fmt_gb(bytes_here)} from {path} ({branch})")
         except Exception as exc:  # noqa: BLE001
-            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- left as it was")
+            print(f"  ERROR: {path}: {type(exc).__name__}: {exc} -- stopped partway, so check its state; "
+                  f"its bytes are not in the total")
             traceback.print_exc()
             errors.append(path)
 
@@ -413,7 +414,8 @@ def main() -> None:
         if error_repos:
             sys.exit(1)
     else:
-        if reclaim_one(single_repo, dry_run, protect_cwd, liveness_window_seconds)[1]:
+        _, errors = reclaim_one(single_repo, dry_run, protect_cwd, liveness_window_seconds)
+        if errors:
             sys.exit(1)
 
 
