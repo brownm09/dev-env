@@ -77,12 +77,11 @@ import _hookutil
 import re
 import sys
 
-# Shared transcript-record readers (ADR-090). `_result_text` is imported only so
-# it stays reachable as a module attribute for the existing test suite (the
-# module itself uses it solely via iter_bash_calls) — the same
-# module-attribute-indirection the tests rely on (ADR-073).
-from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
-from _hookutil import _content_items, iter_tool_uses
+# Shared transcript-record readers (ADR-090). The module pairs calls through
+# `iter_bash_call_details` (dev-env#1331). `iter_bash_calls` and `_result_text`
+# are imported only so they stay reachable as module attributes for the test
+# suite — the same module-attribute-indirection the tests rely on (ADR-073).
+from _hookutil import iter_bash_calls, iter_bash_call_details, load_records, _result_text  # noqa: F401
 from datetime import datetime
 
 # mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17) masks
@@ -288,33 +287,6 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
             if pr:
                 actions.append({"action": "merge", "label": f"PR #{pr}"})
     return actions
-
-
-def iter_bash_call_details(records: list[dict]) -> list[tuple[str, str, str, bool, str]]:
-    """`iter_bash_calls` plus what the decision needs per call:
-    ``(command, output, cwd, is_error, started)``. *started* is the ISO timestamp
-    of the assistant record that issued the call, and *is_error* is the result's
-    own flag."""
-    issued: dict = {}
-    for _i, rec, item in iter_tool_uses(records):
-        if item.get("name") == "Bash" and item.get("id"):
-            issued[item["id"]] = (
-                (item.get("input") or {}).get("command", ""),
-                rec.get("cwd", "") or "",
-                rec.get("timestamp", "") or "",
-            )
-    calls: list = []
-    for rec in records:
-        if not isinstance(rec, dict) or rec.get("type") != "user":
-            continue
-        for item in _content_items(rec):
-            if isinstance(item, dict) and item.get("type") == "tool_result":
-                tid = item.get("tool_use_id")
-                if tid in issued:
-                    command, cwd, started = issued[tid]
-                    calls.append((command, _result_text(item, rec), cwd,
-                                  item.get("is_error") is True, started))
-    return calls
 
 
 def _dispatched_since(started: str, bash_state_mtime: float | None) -> bool:
