@@ -129,6 +129,15 @@ on that line. Those counts and check 6 (component completeness, which existed on
 gone. A new test there carries its own entry instead of a row (check 1), and a new check refuses a new
 row, since a row conflicts as a count does (`FROZEN_TEST_ROWS`). `claude/scripts/README.md` is unchanged. Decision and alternatives: [ADR-074 Amendment 1](074-pre-merge-numbering-collision-check.md).
 
+## Amendment 2 (2026-11-07): the scripts README has no counts either
+
+The same change for `claude/scripts/README.md` ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)).
+Its file count and `### Section (N)` counts are gone, along with checks 4 and 5, which now gated
+nothing. A new script carries a `Purpose:` line near its top instead of a row (check 1), and the
+frozen-row check covers this README too (`FROZEN_SCRIPT_ROWS`). The gate keeps four checks: row
+coverage, orphan rows, exemptions, frozen rows. Decision and alternatives:
+[ADR-074 Amendment 2](074-pre-merge-numbering-collision-check.md).
+
 ## References
 
 - [dev-env#901](https://github.com/brownm09/dev-env/issues/901) — this issue

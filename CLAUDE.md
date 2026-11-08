@@ -26,8 +26,9 @@ nothing to this section, `docs/TESTING.md` or `claude/scripts/tests/README.md`, 
 each add a test can't conflict
 ([ADR-074 Amendment 1](docs/adr/074-pre-merge-numbering-collision-check.md)). A new check must be
 such a file, so the runner finds it, not an inline command. Cite a newer test by its file name.
-Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, or a test in
-`claude/scripts/tests/` with neither a row nor an entry; nothing gates `claude/hooks/tests/`. To
+Item 76 refuses a numbered line past 118 and item 84 refuses a new README row, a test in
+`claude/scripts/tests/` with neither a row nor an entry, or a script in `claude/scripts/` with
+neither a row nor a `Purpose:` line; nothing gates `claude/hooks/tests/`. To
 find the tests for a script, from the repo root:
 `git grep -l <script-name> -- claude/scripts/tests claude/hooks/tests`. No hit doesn't mean no
 test, because a test may cover a script without naming it.
@@ -128,7 +129,7 @@ older tests is [claude/scripts/tests/README.md](claude/scripts/tests/README.md).
 81. **new-day-journal-check day-rollover + stale-canonical-recovery test** — required when changing `claude/scripts/new-day-journal-check.py` or `claude/scripts/_journal_late.py`. Run: `py -3 claude/scripts/tests/test_new_day_journal_check.py`
 82. **composed-output stray-terminal-scan test** — required when changing `claude/scripts/_composed_output_scan.py` or `claude/scripts/validate-composed-output.py`. Run: `py -3 claude/scripts/tests/test_composed_output_scan.py`
 83. **journal-compose-replay conflict-recovery test** — required when changing `claude/scripts/journal-compose-replay.sh` or the Step 10.5 recovery block in `claude/skills/journal-compose/SKILL.md`. Run: `bash claude/scripts/tests/test-journal-compose-replay.sh`
-84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, or a new test's own entry; no new row in the tests README; orphan rows; `claude/scripts/README.md`'s header and section `(N)` counts). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
+84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` (it gates each directory's README against the directory: row coverage, or a new file's own entry, `Required when` and `Run:` lines for a test or a `Purpose:` line for a script; no new row in either README; orphan rows). Run: `py -3 claude/scripts/tests/test_readme_index_parity.py`
 85. **skill-file-size-guard test** — required when changing `claude/scripts/pre-tool-use-skill-file-size-guard.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_guard.py`
 86. **skill-file-size-advisory test** — required when changing `claude/scripts/skill-file-size-advisory.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size_advisory.py`
 87. **`_skill_file_size` shared-module test** — required when changing `claude/scripts/_skill_file_size.py`. Run: `py -3 claude/scripts/tests/test_skill_file_size.py`
