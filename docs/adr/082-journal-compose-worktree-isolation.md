@@ -605,11 +605,12 @@ checkout can pull the branch out from under a concurrent stub-writing session, w
 tasks were held back when the scheduled tasks moved to a PC running many more concurrent sessions.
 
 **Decision.** Neither routine runs `sync-routine-worktree` against engineering-journal or moves that
-checkout's branch or index. Step 0 is a read-only `git fetch origin`. The report is committed from a
-disposable worktree detached at `origin/main` and pushed with `HEAD:refs/heads/<prefix>/<date>`. Only
-`biweekly-retro` reads journals, so it creates its worktree in Step 1 and reads from there, and the
-newest prior retro comes from `ls-tree origin/main`. `weekly-memory-audit` creates its worktree in
-Step 5.
+checkout's branch or index. Step 0 is `git fetch --prune origin`, which changes only remote-tracking
+refs. The report is committed from a disposable worktree detached at `origin/main` and pushed with
+`HEAD:refs/heads/<prefix>/<date>`. Only `biweekly-retro` reads journals, so it creates its worktree in
+Step 1 and reads from there, and the newest prior retro comes from `ls-tree origin/main`.
+`weekly-memory-audit` drafts its report first and creates its worktree only to publish it, so a failed
+create still leaves a draft.
 
 **Judgment calls.**
 
@@ -620,13 +621,19 @@ Step 5.
   note, which pointed at a file left dirty in the shared checkout.
 - **A same-day re-run continues the pushed branch** rather than forcing it, so a run that pushed but
   failed at `gh pr create` still recovers. Without this a detached commit on `origin/main` would be
-  rejected as a non-fast-forward for the rest of that day.
-- **The start of each run removes every `<prefix>-*` worktree**, not only today's. A crashed run's
+  rejected as a non-fast-forward for the rest of that day. Step 0 prunes, so a branch whose PR merged
+  and was deleted earlier that day is not continued and pushed back. When the PR already exists, the
+  block falls back to `gh pr view` for its URL.
+- **The start of each run removes crashed runs' worktrees, by name and registration.** A crashed run's
   worktree carries an old date, holds nothing the draft does not, and is not something the prune
-  tooling removes, because a detached worktree is skipped (Judgment calls above). Only the routine makes
-  worktrees under that prefix, and the scheduler runs one at a time.
+  tooling removes, because a detached worktree is skipped (top-level Judgment calls, the prune-tooling
+  point). The sweep matches only `<prefix>-YYYY-MM-DD`, so a session's worktree such as
+  `retro-action-fixes` is never touched. It leaves a locked worktree alone, and uses `rm -rf` only on
+  a directory git no longer has registered.
 - **No concurrency lock**, unlike compose's. Compose locks because several invocations can target one
-  date; these routines have one run per schedule.
+  date; these routines have one run per schedule. Both routines state the assumption as a constraint:
+  one run at a time on one machine. A manual run overlapping the scheduled one would lose its worktree
+  to the sweep, and two machines would race on the push.
 
 **Alternatives rejected.**
 
@@ -639,14 +646,20 @@ Step 5.
   working as written.
 
 **Gate calibration.** `claude/scripts/tests/test_routine_journal_isolation.py` keys on two literal
-properties: a `REPO` value naming engineering-journal, and a fenced-block `git -C <shared> <verb>` or
-`cd <shared>`. There is no numeric threshold. Known-good: all 9 routines at this commit, including
-`retro-chain-backstop`'s documented `merge --ff-only`, which `merge` is left out of the verb list to
-allow, and `daily-journal-compose`'s prose naming the old call. Known-bad: both routines as they stood
-before this change, and the seven snippets in the test. Hit rates: 0 of 9 known-good flagged, all
-known-bad flagged, so the worst known-good observation sits on the far side of a literal match, not
-near a threshold. The check asserts its own extraction is non-empty, and the end-to-end cases run the
-routines' real blocks against a bare origin, where the sequence removed here does go red.
+properties: a `REPO` value naming engineering-journal, and, in any `bash`, `sh`, `shell` or unlabelled
+fence, a `git` command aimed at the checkout (by `-C`, `--git-dir` or `--work-tree`, after any global
+options) whose verb moves a branch, the index or files, or a `cd`/`pushd` into it. The checkout is
+recognized by its `C:/`, `/c/`, `~/` or `$HOME/` path or a variable assigned one. `merge` passes only
+with `--ff-only`, `branch` and `symbolic-ref` only in their read forms. There is no numeric threshold.
+Known-good: all 9 routines at this commit, including `retro-chain-backstop`'s documented
+`merge --ff-only` and `daily-journal-compose`'s prose naming the old call, plus eight snippets in the
+test. Known-bad: both routines as they stood before this change, and 25 snippets in the test, among
+them `clean`, `branch -f`, `update-ref`, a plain `merge`, `--no-pager`, `--git-dir`, `cd` after `;`,
+`&&` or `(`, `pushd`, and `sh` and unlabelled fences, which the first version of the check missed
+(found in review). Hit rates: 0 of 9 known-good routines flagged, all known-bad flagged, so the worst
+known-good observation sits on the far side of a literal match, not near a threshold. The check
+asserts its own extraction is non-empty, and the end-to-end cases run the routines' real blocks against
+a bare origin, where the sequence removed here does go red.
 
 **Consequences.**
 

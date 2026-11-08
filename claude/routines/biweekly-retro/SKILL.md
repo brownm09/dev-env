@@ -44,12 +44,13 @@ user on 2026-06-09 (see dev-env#343).
 ## Step 0 — Fetch the engineering-journal repo (read-only)
 
 ```bash
-git -C C:/Users/brown/Git/engineering-journal fetch origin
+git -C C:/Users/brown/Git/engineering-journal fetch --prune origin
 ```
 
 If the fetch fails, push-notify `biweekly-retro: git fetch failed — check
 C:/Users/brown/Git/engineering-journal` and exit cleanly: do not commit, do not open a PR, do not
-create an issue.
+create an issue. `--prune` drops remote-tracking refs for deleted branches (it touches nothing
+else), so Step 5.3 never continues a report branch whose PR already merged.
 
 That path is the **shared canonical checkout**, where concurrent sessions commit journal stubs all
 day, usually on `draft/YYYY-MM-DD`. This routine only fetches into it and registers one disposable
@@ -87,18 +88,28 @@ RUN_DATE=YYYY-MM-DD
 WT="$EJ/.claude/worktrees/retro-${RUN_DATE}"
 WINDOW_START=$(date -d "${RUN_DATE} -28 days" +%Y-%m-%d)   # trailing 4 weeks, inclusive
 mkdir -p "$SCRATCH"
-# Only this routine makes retro-* worktrees, and one left by a crashed run holds nothing: Step 5's
-# draft lives in scratch and the rest is regenerable from origin.
-for OLD in "$EJ"/.claude/worktrees/retro-*; do
+# Remove what a crashed run left: only this routine names worktrees retro-<date>, and one holds
+# nothing, since Step 5's draft lives in scratch and the rest comes from origin. A locked worktree
+# is left alone, and rm -rf is only for a directory git no longer has registered.
+git -C "$EJ" worktree prune
+for OLD in "$EJ"/.claude/worktrees/retro-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
   [ -d "$OLD" ] || continue
-  git -C "$EJ" worktree remove --force "$OLD" || { rm -rf "$OLD"; git -C "$EJ" worktree prune; }
+  if git -C "$EJ" worktree list --porcelain | grep -qxF "worktree $OLD"; then
+    git -C "$EJ" worktree remove --force "$OLD" || echo "left $OLD in place (locked or in use)"
+  else
+    rm -rf "$OLD"
+  fi
 done
 git -C "$EJ" worktree add --detach "$WT" refs/remotes/origin/main
 [ -f "$WT/sessions/meta/README.md" ]
 ```
 
-If that block exits non-zero, push-notify `biweekly-retro: could not create the worktree at ${WT}`
-and exit cleanly, as in Step 0.
+If that block exits non-zero, push-notify `biweekly-retro: could not create the worktree at ${WT}`,
+remove the worktree if it was created (Step 5.5's command), and exit cleanly.
+
+**One run at a time, on one machine.** Nothing locks this: a second run the same day (a manual
+"run now" during the scheduled one) would remove the first one's worktree, and the same routine
+registered on two machines would race on the `retro/<date>` push. Register it on one machine only.
 
 `$WT` is detached at `origin/main`, the same isolation `/journal-compose` uses (ADR-082). **Read every
 journal from `$WT`, never from `$EJ/sessions/`**: the shared checkout's files depend on whichever
@@ -122,6 +133,10 @@ Enumerate every project directory under `${WT}/sessions/` (each subdirectory is 
 2. Collect composed journal files whose leading `YYYY-MM-DD` falls within the window:
 
 ```bash
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/retro-${RUN_DATE}"
+WINDOW_START=$(date -d "${RUN_DATE} -28 days" +%Y-%m-%d)
 for proj in "$WT"/sessions/*/; do
   name=$(basename "$proj")
   for f in "$proj"/20??-??-??-*.md; do
@@ -168,7 +183,9 @@ and continue with a partial report.
 
 The window starts at the previous retro's date rather than `WINDOW_START`, so each closure is read
 once and a skipped run loses nothing. Set it in this same block, because shell state doesn't carry
-over from earlier steps:
+over from earlier steps. It reads `origin/main`, so a previous retro whose PR hasn't merged yet is not
+seen: this run then starts from the retro before it, and may list a closure that one already listed.
+The same applies to §3's trend baseline in Step 4.
 
 ```bash
 PREVIOUS_RETRO=$(git -C C:/Users/brown/Git/engineering-journal ls-tree --name-only origin/main sessions/meta/retro/ | sed 's#.*/##' | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}-retro\.md$' | sort | tail -1 | cut -c1-10)
@@ -271,16 +288,17 @@ git -C "$WT" diff --cached --quiet || git -C "$WT" commit -m "[docs] Biweekly re
 git -C "$WT" push origin "HEAD:refs/heads/$BRANCH"
 ```
 
-4. Open the PR and capture its URL. On a same-day re-run `gh` reports that a PR for the branch already
-   exists: the push above has already updated it, so use that PR's URL.
+4. Open the PR and capture the URL it prints. On a same-day re-run the PR already exists and the push
+   above has updated it, so the block prints that PR's URL instead; only a non-zero exit is a failure.
 
 ```bash
 RUN_DATE=YYYY-MM-DD
-WINDOW_START=YYYY-MM-DD   # from Step 1
+WINDOW_START=$(date -d "${RUN_DATE} -28 days" +%Y-%m-%d)
 gh pr create --repo brownm09/engineering-journal \
   --base main --head "retro/${RUN_DATE}" \
   --title "Biweekly retro ${RUN_DATE}" \
-  --body "Automated biweekly retrospective covering ${WINDOW_START}..${RUN_DATE}. Companion issue with the action checklist: <filled in Step 6>."
+  --body "Automated biweekly retrospective covering ${WINDOW_START}..${RUN_DATE}. Companion issue with the action checklist: <filled in Step 6>." \
+  || gh pr view "retro/${RUN_DATE}" --repo brownm09/engineering-journal --json url -q .url
 ```
 
 5. Remove the worktree, whether or not steps 3 and 4 succeeded:
@@ -328,6 +346,8 @@ has zero genuinely-new findings this run, **file nothing** for it.
 **For each repo with new findings**, ensure the label exists then file the consolidated issue:
 
 ```bash
+RUN_DATE=YYYY-MM-DD
+WINDOW_START=$(date -d "${RUN_DATE} -28 days" +%Y-%m-%d)
 gh label create retro-action --repo "brownm09/${R}" --color 5319e7 \
   --description "Action item surfaced by a biweekly-retro run" 2>/dev/null || true
 gh issue create --repo "brownm09/${R}" --label retro-action \
