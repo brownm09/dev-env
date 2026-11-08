@@ -105,7 +105,9 @@ For a one-line navigational map of the older tests, see
    with its exception swallowed as the old code did, must be recorded. Without it the empty-list
    assertions could pass vacuously.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
-   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
+   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting only `expired`
+   carries an advisory (an `expiring` token is used, so it has none,
+   [#1328](https://github.com/brownm09/dev-env/issues/1328)) and that an expired
    token now yields a user-facing advisory rather than the silent skip it did before
    [#355](https://github.com/brownm09/dev-env/issues/355). Also exercises the pure
    `merge_confirmed(command, output)` predicate offline: pins that a worktree-merge payload (gh's
