@@ -3,6 +3,7 @@
 **Date:** 2026-11-06
 **Status:** Accepted
 **Amended:** 2026-11-07 (the re-run is also inconclusive, see below)
+**Amended:** 2026-11-07 (#1275 is shelved, untested, see below)
 **Closes:** [dev-env#1260](https://github.com/brownm09/dev-env/issues/1260)
 **Tags:** retrieval, embeddings, vector-search, duplicate-issues, experiment, tier-1, privacy, local-model, cost-model, adr-115
 **Related:** [ADR-115](115-experimental-rigor-protocol.md), [ADR-048](048-memory-immortalization-issue-pairing.md), [ADR-154](154-token-attribution-and-shared-pricing.md)
