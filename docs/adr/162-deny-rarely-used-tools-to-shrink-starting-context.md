@@ -58,10 +58,11 @@ For deferred tool names, no MCP setting reaches the desktop app's connectors, be
 
 - **Deny the other five rows too.** Not chosen: the user left `ScheduleWakeup` and `SearchPlugins` unselected and stated no preference on `mcp__visualize__show_widget`, `mcp__visualize__read_me` and `ReportFindings`.
 - **Deny per project.** Rejected: the table covers every project, and the saving would then need a rule in each repo.
-- **Deny only the unused tools, keeping `PowerShell` and `Artifact`.** Rejected by the user: those two are about 83% of the bytes removed.
+- **Deny only the unused tools, keeping `PowerShell` and `Artifact`.** Not what the user chose, and those two are about 83% of the bytes removed.
 
 ## Consequences
 
 - **A project can't turn a tool back on.** "If a tool is denied at any level, no other level can allow it" ([permissions](https://code.claude.com/docs/en/permissions)), so a project that needs `Artifact` needs this list changed.
 - **A session already running keeps a definition it has seen,** while tool search is active, though it can't call the tool ([prompt caching](https://code.claude.com/docs/en/prompt-caching#denying-an-entire-tool)). The saving starts with new sessions.
+- **Prompts that say "use PowerShell" now run it through Bash.** The two PC health scheduled tasks did, and their prompts (machine-local, under `~/.claude/scheduled-tasks/`) now say to run `powershell -NoProfile -Command` with the commands in single quotes, or a `.ps1` file for anything longer. A single-quoted command keeps `$_` and `$(...)` intact. Originals are backed up in `~/.claude/backups/scheduled-tasks-2026-11-07/`.
 - **Rollback:** remove the entries in a PR. The next sync replaces the live value.
