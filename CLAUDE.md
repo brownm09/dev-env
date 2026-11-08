@@ -278,7 +278,11 @@ canonical `SKILL.md` at run time and falls back to an embedded copy, as `weekly-
 **Routine authoring:** a routine that reads repo-resident files at run time invokes the
 `sync-routine-worktree` skill as Step 0, before reading them, passing `REPO`, `VERIFY_FILE` and
 `PREFIX` and treating the return as a guard. Pattern: `claude/routines/nightly-cover-letters/SKILL.md`;
-rationale: [ADR-013](docs/adr/013-sync-routine-worktree-skill.md).
+rationale: [ADR-013](docs/adr/013-sync-routine-worktree-skill.md). **Never point it at the shared
+engineering-journal checkout**, where it would rebase a branch other sessions commit to: fetch, then
+read or commit through a disposable detached worktree, as `biweekly-retro` does
+([ADR-082 addendum](docs/adr/082-journal-compose-worktree-isolation.md); enforced by
+`test_routine_journal_isolation.py`).
 
 **Doc-reconciliation checkpoint**, at the three ADR-warrant moments (after plan approval, after
 `gh pr create`, before `gh pr merge`): if the change adds, removes, renames or changes the

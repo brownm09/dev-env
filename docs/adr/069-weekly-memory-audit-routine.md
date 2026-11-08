@@ -53,7 +53,9 @@ Implement the `weekly-memory-audit` routine in
 
 **Step 0 — Sync.** `sync-routine-worktree` with `REPO=engineering-journal`. Other repos are read via
 `git fetch` + `git show origin/main:<path>` for instruction-home verification — no working-tree sync
-needed. Memory dirs are machine-local live state, not a repo.
+needed. Memory dirs are machine-local live state, not a repo. **Superseded 2026-11-07:** Step 0 is now
+a read-only fetch, and Step 5 commits through a disposable worktree, per the
+[ADR-082 addendum](082-journal-compose-worktree-isolation.md) (dev-env#657).
 
 **Step 2 — Classification.** Parallel background `Explore` subagents (one per project, all spawned
 in a single message — no synchronous preflight). `Explore` cannot Edit/Write, structurally enforcing

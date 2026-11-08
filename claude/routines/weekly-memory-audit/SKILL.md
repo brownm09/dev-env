@@ -12,7 +12,7 @@ schedule: "0 9 * * 1"
 py -3 ~/.claude/scripts/routine-findings.py save --routine weekly-memory-audit --file C:/Users/brown/.claude/scratch/routine-finding-weekly-memory-audit-<HHMMSS>.txt
 ```
 
-It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output.
 
 Reconcile agent memory against the version-controlled instructions across every project. Run
 **fully autonomously** — never call `AskUserQuestion`, never wait for input, never prompt for
@@ -46,17 +46,23 @@ were chosen by the user on 2026-06-30 (see dev-env#439, child of dev-env#363).
 
 ---
 
-## Step 0 — Sync the engineering-journal working tree
+## Step 0 — Fetch the engineering-journal repo (read-only)
 
-Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its Behavior section end-to-end
-with these parameters:
+```bash
+git -C C:/Users/brown/Git/engineering-journal fetch --prune origin
+```
 
-- `REPO` = `C:/Users/brown/Git/engineering-journal`
-- `VERIFY_FILE` = `sessions/meta/README.md`
-- `PREFIX` = `weekly-memory-audit`
+If the fetch fails, push-notify `weekly-memory-audit: git fetch failed — check
+C:/Users/brown/Git/engineering-journal` and exit cleanly: do not commit, do not open a PR, do not
+create an issue. `--prune` drops remote-tracking refs for deleted branches (it touches nothing
+else), so Step 5.3 never continues a report branch whose PR already merged.
 
-On **SUCCESS**, continue. On **ABORT**, exit cleanly — the push notification has already been sent;
-do not commit, do not open a PR, do not create an issue.
+That path is the **shared canonical checkout**, where concurrent sessions commit journal stubs all
+day, usually on `draft/YYYY-MM-DD`. This routine reads no journal content, and only writes its report
+through a disposable worktree (Step 5): it never rebases, resets or switches branches there, so it
+does not use the sync skill other routines start with. See the
+[ADR-082 addendum (2026-11-07)](../../../docs/adr/082-journal-compose-worktree-isolation.md) and
+dev-env#657.
 
 The other repos (lifting-logbook, career-playbook, dev-env, …) are **not** synced here — their
 instruction homes are verified by reading `origin/main` directly (`git fetch` + `git show
@@ -285,18 +291,28 @@ they go to the report only (Step 5).
 
 ## Step 5 — Write and PR the reconciliation report
 
-1. Ensure the audit folder exists, then create a one-time README if it is missing:
+The draft is written first and the worktree created only to publish it, so every git failure from
+here on leaves a draft to recover.
+
+1. Write both files with the Write tool into the staging folder
+   `C:/Users/brown/.claude/scratch/memory-audit-${RUN_DATE}/` (`$STAGE` below), never into a worktree:
+   the harness refuses Write/Edit into another worktree
+   ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and a heredoc is blocked too
+   ([ADR-138](../../../docs/adr/138-shell-content-write-guard.md)). Step 5.4 copies them across. The
+   draft in `$STAGE` also outlives the worktree, so it is what a failed run recovers from. Clear any
+   draft left by a failed run today, as its own Bash call (otherwise the Write tool refuses to
+   overwrite a file this session has not read), then check whether the one-time README is missing
+   from `origin/main` (a read of the fetched ref; nothing is checked out):
 
 ```bash
-EJ="C:/Users/brown/Git/engineering-journal"
-AUDIT_DIR="$EJ/sessions/meta/memory-audit"
-mkdir -p "$AUDIT_DIR"
-ls "$AUDIT_DIR/README.md"   # absent -> write it with the Write tool, below
+rm -f C:/Users/brown/.claude/scratch/memory-audit-YYYY-MM-DD/*.md
 ```
 
-If that `ls` reports the file is missing, write `${AUDIT_DIR}/README.md` **with the Write tool**
-(never a heredoc — `claude/CLAUDE.md` → Authoring File Content, [ADR-138](../../../docs/adr/138-shell-content-write-guard.md);
-`pre-tool-use-shell-content-write-guard.py` blocks the shell form) with this content:
+```bash
+git -C C:/Users/brown/Git/engineering-journal cat-file -e refs/remotes/origin/main:sessions/meta/memory-audit/README.md   # non-zero -> write it to $STAGE with the Write tool, below
+```
+
+If that command exits non-zero, write `${STAGE}/README.md` with this content:
 
 ```markdown
 # Cross-Project Memory→Repo Reconciliation Audits
@@ -310,7 +326,7 @@ issues (label `memory-audit`) for never-ported durables, routed to the correct r
 are reported here only. See ADR-069, ADR-038, ADR-048.
 ```
 
-2. Write the report to `${AUDIT_DIR}/${RUN_DATE}-audit.md`:
+2. Write the report to `${STAGE}/${RUN_DATE}-audit.md`:
    - A title + the run date + the projects scanned.
    - A one-line summary: `<N> projects, <F> memory files; <G> never-ported durables → <I> issues
      filed (<D> deduped); <S> stale/drift/index-drift findings (report-only)`.
@@ -335,26 +351,81 @@ are reported here only. See ADR-069, ADR-038, ADR-048.
      Omit this section entirely when every subagent returned `scanned: true`. A missing section means
      "no scan failures" — not that failures were silently swallowed.
 
-3. Commit on a dedicated branch and open a PR to `main` (this repo squash-merges; do **not** commit
-   to `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user
-   reviews and merges):
+3. Create the disposable worktree, detached at `origin/main`, the same isolation `/journal-compose`
+   uses (ADR-082). A same-day re-run starts from the branch an earlier run pushed, so the push still
+   fast-forwards. Drive `$WT` with `git -C` and absolute paths and never `cd` into it, so it can be
+   removed. Shell state does not persist between Bash calls, so restate `EJ`, `WT` and `RUN_DATE` at
+   the top of any later block that uses them.
 
 ```bash
-git -C "$EJ" checkout -b "memory-audit/${RUN_DATE}" origin/main 2>/dev/null \
-  || git -C "$EJ" checkout "memory-audit/${RUN_DATE}"
-git -C "$EJ" add "sessions/meta/memory-audit/${RUN_DATE}-audit.md" "sessions/meta/memory-audit/README.md"
-git -C "$EJ" diff --cached --quiet \
-  || git -C "$EJ" commit -m "[docs] Weekly memory audit ${RUN_DATE} (cross-project reconciliation)"
-git -C "$EJ" push -u origin "memory-audit/${RUN_DATE}"
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/memory-audit-${RUN_DATE}"
+# Remove what a crashed run left: only this routine names worktrees memory-audit-<date>, and one
+# holds nothing, since the draft lives in scratch and the rest comes from origin. A locked worktree
+# is left alone, and rm -rf is only for a directory git no longer has registered.
+git -C "$EJ" worktree prune
+for OLD in "$EJ"/.claude/worktrees/memory-audit-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
+  [ -d "$OLD" ] || continue
+  if git -C "$EJ" worktree list --porcelain | grep -qxF "worktree $OLD"; then
+    git -C "$EJ" worktree remove --force "$OLD" || echo "left $OLD in place (locked or in use)"
+  else
+    rm -rf "$OLD"
+  fi
+done
+START=refs/remotes/origin/main
+if git -C "$EJ" show-ref --verify --quiet "refs/remotes/origin/memory-audit/${RUN_DATE}"; then
+  START="refs/remotes/origin/memory-audit/${RUN_DATE}"
+fi
+git -C "$EJ" worktree add --detach "$WT" "$START"
+[ -f "$WT/sessions/meta/README.md" ]
+```
+
+   If that block exits non-zero, treat it as a failed git/PR step (below): run step 6, then notify.
+
+4. Commit in the worktree and push a dedicated branch (this repo squash-merges; do **not** commit to
+   `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user reviews
+   and merges). `$WT` has its own index, so another session's staged files cannot be swept in, and
+   stays detached, so no local branch is created:
+
+```bash
+set -e
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/memory-audit-${RUN_DATE}"
+STAGE="C:/Users/brown/.claude/scratch/memory-audit-${RUN_DATE}"
+BRANCH="memory-audit/${RUN_DATE}"
+mkdir -p "$WT/sessions/meta/memory-audit"
+cp "$STAGE"/*.md "$WT/sessions/meta/memory-audit/"
+git -C "$WT" add sessions/meta/memory-audit
+git -C "$WT" diff --cached --quiet \
+  || git -C "$WT" commit -m "[docs] Weekly memory audit ${RUN_DATE} (cross-project reconciliation)"
+git -C "$WT" push origin "HEAD:refs/heads/$BRANCH"
+```
+
+5. Open the PR and capture the URL it prints. On a same-day re-run the PR already exists and the push
+   above has updated it, so the block prints that PR's URL instead; only a non-zero exit is a failure.
+
+```bash
+RUN_DATE=YYYY-MM-DD
 gh pr create --repo brownm09/engineering-journal \
   --base main --head "memory-audit/${RUN_DATE}" \
   --title "Weekly memory audit ${RUN_DATE}" \
-  --body "Automated cross-project memory→repo reconciliation for ${RUN_DATE}. Read-only on memory (no memory file was edited or deleted). Promote issues filed: <Step 4 urls>. Stale/drift findings are report-only — see the report."
+  --body "Automated cross-project memory→repo reconciliation for ${RUN_DATE}. Read-only on memory (no memory file was edited or deleted). Promote issues filed: <Step 4 urls>. Stale/drift findings are report-only — see the report." \
+  || gh pr view "memory-audit/${RUN_DATE}" --repo brownm09/engineering-journal --json url -q .url
+```
+
+6. Remove the worktree, whether or not steps 4 and 5 succeeded:
+
+```bash
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/memory-audit-${RUN_DATE}"
+git -C "$EJ" worktree remove --force "$WT" || { rm -rf "$WT"; git -C "$EJ" worktree prune; }
 ```
 
 If any git/PR step fails, push-notify `weekly-memory-audit: report git/PR step failed — draft at
-${AUDIT_DIR}/${RUN_DATE}-audit.md` and continue to Step 6 (the report file still exists locally for
-recovery).
+${STAGE}/${RUN_DATE}-audit.md` and continue to Step 6 (the draft stays in `$STAGE` for recovery).
 
 ---
 
@@ -369,7 +440,7 @@ weekly-memory-audit ${RUN_DATE} complete — <N> projects, <F> memory files.
 Report PR: <url>
 ```
 
-Clean up any scratch files this run created.
+Clean up any scratch files this run created, except the `$STAGE` draft if Step 5 failed.
 
 ---
 
@@ -381,7 +452,11 @@ Clean up any scratch files this run created.
 - **Memory stores:** `C:/Users/brown/.claude/projects/*/memory/`; exclude `*--claude-worktrees-*`
   project dirs.
 - **Engineering-journal repo:** `C:/Users/brown/Git/engineering-journal`; report path
-  `sessions/meta/memory-audit/YYYY-MM-DD-audit.md`.
+  `sessions/meta/memory-audit/YYYY-MM-DD-audit.md`. **Shared checkout: fetch into it and register
+  worktrees only.** Commit in `$WT` (ADR-082, dev-env#657).
+- **One run at a time, on one machine.** Nothing locks Step 5: a second run the same day would
+  remove the first one's worktree, and the routine registered on two machines would race on the
+  `memory-audit/<date>` push. Register it on one machine only.
 - **Cadence:** weekly Monday 09:00 local trigger — **no parity gate** (runs every week).
 - **One promote issue per never-ported durable**, labelled `memory-audit`, deduped by the
   project-qualified `memory-slug`. **Never** call `AskUserQuestion`.

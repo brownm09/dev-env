@@ -639,9 +639,12 @@ cron in local time). The weekly trigger is gated to **even ISO week numbers** (`
 effective cadence is every other Sunday. Known minor caveat: a year-boundary ISO 52→1 / 53→1
 transition can nudge one cycle by a week.
 
-Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
-`VERIFY_FILE=sessions/meta/README.md`). Reads the trailing **28 days** of composed daily journals
-(`YYYY-MM-DD-<slug>.md`) across every project under `engineering-journal/sessions/`, fans out one
+Step 0 is `git fetch --prune origin` of the shared engineering-journal checkout (remote-tracking refs
+only), never `sync-routine-worktree`. The report work runs in a disposable worktree detached at
+`origin/main` (`.claude/worktrees/retro-YYYY-MM-DD`), so the shared checkout's branch and index are
+never touched ([ADR-082 addendum](adr/082-journal-compose-worktree-isolation.md)). Each run removes
+crashed runs' `retro-<date>` worktrees, so it must run once at a time, on one machine. Reads the trailing **28 days** of
+composed daily journals (`YYYY-MM-DD-<slug>.md`) across every project under that worktree's `sessions/`, fans out one
 background `Explore` subagent per active project to digest each project's window, then synthesizes a
 retrospective in a fixed **v2 structure**: **§1** global cross-repo readout (+ global action items)
 → **§2** per-repo sections (each with its own action items) → **§3** a tracked
@@ -656,9 +659,10 @@ retrospective in a fixed **v2 structure**: **§1** global cross-repo readout (+ 
   repo's existing open `retro-action` issues and skips findings already covered, so the biweekly
   cadence never re-files the same item. Origin of this routing: dev-env#348.
 
-**Resilience:** an off-week parity gate, an empty-window check, and the Step-0 sync ABORT all exit
+**Resilience:** an off-week parity gate, an empty-window check, and a failed Step-0 fetch all exit
 cleanly with a push notification; a single project's subagent failure degrades to a partial report
-rather than aborting the run.
+rather than aborting the run. The report is drafted in `~/.claude/scratch/retro-YYYY-MM-DD/`, which
+outlives the worktree, so a failed push or PR step loses nothing.
 
 **Step 6.5 — chain refill (dev-env#967).** Immediately after Step 6 finishes filing/updating this
 run's `retro-action` queue issues, invokes the shared `retro-chain-refill` skill against the
@@ -705,8 +709,13 @@ The engine is the on-demand `reconcile-project-board.py` (Utilities below). [ADR
 **Schedule:** `0 9 * * 1` — Monday 09:00 **local** time (the `scheduled-tasks` scheduler evaluates
 cron in local time). Weekly every Monday — **no parity gate** (unlike `biweekly-retro`).
 
-Runs `sync-routine-worktree` as Step 0 (`REPO=engineering-journal`,
-`VERIFY_FILE=sessions/meta/README.md`). Enumerates every project's memory store under
+Step 0 is `git fetch --prune origin` of the shared engineering-journal checkout (remote-tracking refs
+only), never `sync-routine-worktree`. The report is drafted first in
+`~/.claude/scratch/memory-audit-YYYY-MM-DD/`, then committed from a disposable worktree detached at
+`origin/main` (`.claude/worktrees/memory-audit-YYYY-MM-DD`); each run removes crashed runs'
+`memory-audit-<date>` worktrees, so it must run once at a time, on one machine
+([ADR-082 addendum](adr/082-journal-compose-worktree-isolation.md)).
+Enumerates every project's memory store under
 `~/.claude/projects/*/memory/`, excluding Claude-managed worktree project dirs
 (`*--claude-worktrees-*`). Decodes each project dir to its repo working tree and GitHub slug via the
 actual `git remote get-url origin` (not the dir name — handles mismatches like
