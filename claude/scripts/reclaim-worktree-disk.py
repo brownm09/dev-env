@@ -19,6 +19,9 @@ Eligibility (a worktree is stripped only when ALL hold):
   - its working tree is clean (no uncommitted or untracked changes), AND
   - its branch is merged into origin/main OR has zero commits ahead of origin/main.
 
+"main" and "origin/main" here stand for each repo's discovered default branch (see
+_default_branch.py, dev-env#1088).
+
 Dirty worktrees and worktrees with unpushed commits ahead of main are never
 touched — only artifacts that are trivially regenerable AND belong to idle work
 are removed.
@@ -57,8 +60,10 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
+from _default_branch import fetch_default_branch
 from _repo_scan import find_git_repos
 from _worktree_liveness import liveness_minutes_arg, worktree_session_is_live
 from _worktree_topology import parse_worktree_porcelain
@@ -141,9 +146,9 @@ def detect_gh_repo(repo: str) -> str:
     raise RuntimeError(f"Cannot parse GitHub repo from remote URL: {url!r}")
 
 
-def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
-    # Regular merge: commit is an ancestor of origin/main.
-    r = run(["git", "merge-base", "--is-ancestor", branch, "origin/main"], cwd=repo)
+def is_merged(branch: str, gh_repo: str, repo: str, base: str) -> bool:
+    # Regular merge: commit is an ancestor of origin/<base>.
+    r = run(["git", "merge-base", "--is-ancestor", branch, f"origin/{base}"], cwd=repo)
     if r.returncode == 0:
         return True
     # Squash merge: commit SHA diverges from main — ask GitHub instead.
@@ -154,9 +159,9 @@ def is_merged(branch: str, gh_repo: str, repo: str) -> bool:
     return False
 
 
-def commits_ahead(branch: str, repo: str) -> int | None:
-    """Number of commits `branch` is ahead of origin/main, or None if undeterminable."""
-    r = run(["git", "rev-list", "--count", f"origin/main..{branch}"], cwd=repo)
+def commits_ahead(branch: str, repo: str, base: str) -> int | None:
+    """Number of commits `branch` is ahead of origin/<base>, or None if undeterminable."""
+    r = run(["git", "rev-list", "--count", f"origin/{base}..{branch}"], cwd=repo)
     if r.returncode != 0:
         return None
     try:
@@ -168,7 +173,9 @@ def commits_ahead(branch: str, repo: str) -> int | None:
 def is_dirty(path: str) -> bool:
     if not Path(path).exists():
         return True
-    r = run(["git", "status", "--porcelain"], cwd=path)
+    # --no-optional-locks: a plain status can rewrite the index, which the prune reads as recent
+    # activity in the worktree (ADR-051 Amendment 1).
+    r = run(["git", "--no-optional-locks", "status", "--porcelain"], cwd=path)
     return bool(r.stdout.strip())
 
 
@@ -284,9 +291,9 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
 
     print(f"\nRepo: {gh_repo} ({repo})")
 
-    r = run(["git", "fetch", "origin", "main"], cwd=repo)
-    if r.returncode != 0:
-        print(f"  WARNING: fetch failed — merge/ahead checks may use stale origin/main: {r.stderr.strip()}")
+    default_branch, fetch_problem, fetch_detail, _ = fetch_default_branch(repo)
+    if fetch_problem:
+        print(f"  WARNING: fetch {fetch_problem} — merge/ahead checks may use stale origin/{default_branch}: {fetch_detail}")
 
     result = run(["git", "worktree", "list", "--porcelain"], cwd=repo)
     if result.returncode != 0:
@@ -330,8 +337,8 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
         # worktree (zero commits ahead of origin/main) is eligible without the
         # network `gh pr list` fallback that is_merged() may trigger. is_merged()
         # is only needed to catch squash-merged branches that still show as ahead.
-        ahead = commits_ahead(branch, repo)
-        merged = ahead != 0 and is_merged(branch, gh_repo, repo)
+        ahead = commits_ahead(branch, repo, default_branch)
+        merged = ahead != 0 and is_merged(branch, gh_repo, repo, default_branch)
         if not is_idle_eligible(merged, ahead):
             skipped.append((path, f"{ahead if ahead is not None else '?'} commit(s) ahead, not merged"))
             continue
@@ -376,9 +383,21 @@ def main() -> None:
             sys.exit(0)
         print(f"Found {len(repos)} repos under {scan_dir}")
         grand_total = 0
+        error_repos: list[str] = []
         for repo in repos:
-            grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
-        print(f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}")
+            # One repo's hung git call or unexpected error must not stop the sweep (dev-env#1087).
+            try:
+                grand_total += reclaim_one(repo, dry_run, protect_cwd, liveness_window_seconds)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ERROR: {repo}: {type(exc).__name__}: {exc} -- its bytes are not in the total")
+                traceback.print_exc()
+                error_repos.append(repo)
+        summary = f"\nTotal — {'would reclaim' if dry_run else 'reclaimed'} {_fmt_gb(grand_total)}"
+        if error_repos:
+            summary += f", error in {len(error_repos)} repo(s): {', '.join(error_repos)}"
+        print(summary)
+        if error_repos:
+            sys.exit(1)
     else:
         reclaim_one(single_repo, dry_run, protect_cwd, liveness_window_seconds)
 

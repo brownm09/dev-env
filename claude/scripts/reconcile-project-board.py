@@ -3,9 +3,10 @@
 
 Backstop for the gap ADR-053 documents: the `post-tool-use.py` PostToolUse hook
 auto-adds each newly-created issue to the configured project board and prompts for
-its required fields (Impact / Why on dev-env's board #3) — but PostToolUse hooks are
-inert in background / SDK-launched sessions, so issues filed from such
-a session are silently never added to the board, missing their Impact, Why, and the
+its required fields (Impact / Why on dev-env's board #3) — but it only runs when
+PostToolUse runs for the create call (a chain that exits non-zero runs none, and
+in the rare inert session none run at all; ADR-053's 2026-11-07 amendment), so
+issues filed that way are silently never added to the board, missing their Impact, Why, and the
 Status workflow entirely (motivating instance: dev-env #434/#435/#436, filed by the
 background memory-audit session #363).
 
@@ -37,7 +38,7 @@ canonicalization never applies to them.
 
 Usage:
     py -3 reconcile-project-board.py [--repo-root PATH] [--dry-run]
-    py -3 reconcile-project-board.py --scan-dir PATH [--dry-run]
+    py -3 reconcile-project-board.py --scan-dir PATH [--dry-run] [--full] [--state-file PATH]
 
     --repo-root PATH   repo whose .claude/hook-config.json drives the reconcile
                        (default: the canonical checkout of this script's repo)
@@ -45,7 +46,15 @@ Usage:
                        has a .claude/hook-config.json with repo/project_number/
                        project_owner set (repos without one are skipped, not failed).
                        Takes precedence over --repo-root when both are given.
-    --dry-run          report orphans + missing fields without adding anything
+                       Lists only the needs-attention issues that are new or changed
+                       since the last --scan-dir run; a missing or unreadable state
+                       file gives the full list (dev-env#1307, ADR-161).
+    --dry-run          report orphans + missing fields without adding anything; compares
+                       against the stored state but doesn't update it
+    --full             with --scan-dir: print the full list, and neither read nor update
+                       the stored state
+    --state-file PATH  with --scan-dir: where the last run's findings are stored
+                       (default: ~/.claude/scratch/last-run/reconcile-project-board.json)
 
 Exit 0  — single-repo mode ran successfully; or a --scan-dir sweep completed (even if
           individual repos were skipped/failed — see repos_skipped/repos_failed in the
@@ -86,10 +95,15 @@ import subprocess
 import sys
 
 from _gh_project import add_to_project, write_item_cache_entries
+from _last_run import STATE_DIR, LastRun
 from _repo_scan import find_git_repos
 from _worktree_canon import canonical_repo_root
 
 CONFIG_FILE = ".claude/hook-config.json"
+
+DEFAULT_STATE_FILE = STATE_DIR / "reconcile-project-board.json"
+ATTENTION_SECTION = "needs_attention"
+FAILED_SECTION = "failed"
 
 # Item keys a required field's name must not collide with. normalize_board_node emits only
 # `id` and `content` besides the required fields themselves, so those two are the real
@@ -323,11 +337,43 @@ def _added_and_failed(orphans: list[dict], dry_run: bool) -> tuple[int, int]:
     return added, len(orphans) - added
 
 
+def needs_attention(
+    orphans: list[dict], preexisting_missing: list[dict], required_names: list[str]
+) -> list[dict]:
+    """Every issue needing a field: orphans (all required fields) + pre-existing gaps, sorted
+    by number. Orphans were never on the board, so they cannot also appear in
+    preexisting_missing - the two lists are disjoint."""
+    attention = [
+        {
+            "number": o["number"],
+            "url": o["url"],
+            "item_id": o.get("item_id"),
+            "missing": list(required_names),
+        }
+        for o in orphans
+    ]
+    attention.extend(preexisting_missing)
+    attention.sort(key=lambda a: a["number"])
+    return attention
+
+
+def attention_findings(attention: list[dict]) -> dict[str, str]:
+    """{issue number: what it lacks}, the form the last-run state compares. An issue with no
+    item id isn't on the board yet, so one that finally gets added counts as changed: only
+    now can the report print its edit commands."""
+    return {
+        str(a["number"]): ("" if a.get("item_id") else "not on board: ") + ", ".join(a["missing"])
+        for a in attention
+    }
+
+
 def render_report(
     orphans: list[dict],
     preexisting_missing: list[dict],
     config: dict,
     dry_run: bool = False,
+    new_numbers: set[int] | None = None,
+    no_longer: list[int] | None = None,
 ) -> str:
     """Build the full stdout report (ending in a machine-readable RESULT line).
 
@@ -335,6 +381,9 @@ def render_report(
                   succeeded; absent/None in --dry-run or on add failure).
     `preexisting_missing` — [{number, url, item_id, missing:[...]}] board items already
                   present but lacking a required field.
+    `new_numbers` — when set, list only these needs-attention issues and summarize the rest
+                  (None lists all of them).
+    `no_longer` — issue numbers flagged last run and not now.
 
     Pure: emits `gh project item-edit` commands for every field that needs a human
     decision but sets nothing itself. Returns the report text, ending in
@@ -371,28 +420,22 @@ def render_report(
         )
 
     # --- needs-attention = orphans (all required fields) + pre-existing gaps -
-    # Orphans were never on the board, so they cannot also appear in
-    # preexisting_missing — the two lists are disjoint.
-    attention: list[dict] = []
-    for o in orphans:
-        attention.append(
-            {
-                "number": o["number"],
-                "url": o["url"],
-                "item_id": o.get("item_id"),
-                "missing": list(required_names),
-            }
-        )
-    attention.extend(preexisting_missing)
-    attention.sort(key=lambda a: a["number"])
+    attention = needs_attention(orphans, preexisting_missing, required_names)
+    listed = attention if new_numbers is None else [a for a in attention if a["number"] in new_numbers]
 
-    if attention:
+    if listed:
         lines.append("")
-        lines.append(
-            f"{len(attention)} issue(s) need a required field set "
-            f"(NOT guessed - set them yourself):"
-        )
-        for a in attention:
+        if new_numbers is None:
+            lines.append(
+                f"{len(attention)} issue(s) need a required field set "
+                f"(NOT guessed - set them yourself):"
+            )
+        else:
+            lines.append(
+                f"{len(listed)} of {len(attention)} issue(s) needing a required field are new "
+                f"since the last run (NOT guessed - set them yourself; --full lists all):"
+            )
+        for a in listed:
             lines.append(f"  #{a['number']} missing: {', '.join(a['missing'])}")
             item_id = a.get("item_id")
             if not item_id:
@@ -404,8 +447,15 @@ def render_report(
                 field = by_name.get(name)
                 if field:
                     lines.append(_edit_command(item_id, field, node_id))
+    elif attention:
+        lines.append(
+            f"{len(attention)} issue(s) still need a required field, none new since the "
+            f"last run (--full lists them)."
+        )
     else:
         lines.append("All open board issues have their required fields set.")
+    if no_longer:
+        lines.append("No longer flagged since the last run: " + ", ".join(f"#{n}" for n in no_longer))
 
     lines.append("")
     lines.append(
@@ -423,6 +473,7 @@ def render_scan_summary(
     add_failed: int,
     needs_attention: int,
     dry_run: bool = False,
+    last_run: LastRun | None = None,
 ) -> str:
     """The final aggregate line --scan-dir mode prints after every per-repo report, so
     "read the final RESULT: line" (the routine's existing instruction) still means the
@@ -432,13 +483,24 @@ def render_scan_summary(
     repos_skipped  — of those, repos with no (or an incomplete) hook-config.json
     repos_failed   — repos with valid config where a non-scope `gh` call failed
     orphans_added / add_failed / needs_attention — summed across every successfully
-        reconciled repo, same semantics as render_report's RESULT line."""
-    return (
+        reconciled repo, same semantics as render_report's RESULT line.
+    last_run — when given, also reports what changed since the last run, which is what the
+        routine's push notification keys on (dev-env#1307)."""
+    line = (
         f"RESULT: repos_scanned={repos_scanned} repos_skipped={repos_skipped} "
         f"repos_failed={repos_failed} orphans_added={orphans_added} "
         f"add_failed={add_failed} needs_attention={needs_attention} "
         f"dry_run={'true' if dry_run else 'false'}"
     )
+    if last_run is not None:
+        line += (
+            f" new_needs_attention={last_run.changed[ATTENTION_SECTION]}"
+            f" no_longer_needs_attention={last_run.gone[ATTENTION_SECTION]}"
+            f" new_repos_failed={last_run.changed[FAILED_SECTION]}"
+            f" no_longer_repos_failed={last_run.gone[FAILED_SECTION]}"
+            f" baseline={'true' if last_run.is_baseline else 'false'}"
+        )
+    return line
 
 
 # --- config ------------------------------------------------------------------
@@ -564,7 +626,7 @@ def _backfill_item_cache(items: list[dict], project_owner: str, project_number: 
         write_item_cache_entries(project_owner, project_number, entries)
 
 
-def _reconcile_repo(config: dict, dry_run: bool) -> dict:
+def _reconcile_repo(config: dict, dry_run: bool, last_run: LastRun | None = None) -> dict:
     """Fetch, compute orphans, add them (unless dry_run), and print the report for one
     repo whose config has already been validated (repo/project_number/project_owner
     present, no colliding required fields — see _validated_config). Returns
@@ -616,7 +678,23 @@ def _reconcile_repo(config: dict, dry_run: bool) -> dict:
                 )
                 scope_warned = True
 
-    print(render_report(orphans, preexisting_missing, config, dry_run=dry_run))
+    new_numbers = None
+    no_longer: list[int] = []
+    if last_run is not None:
+        attention = needs_attention(orphans, preexisting_missing, required_names)
+        changed, gone = last_run.record(repo, ATTENTION_SECTION, attention_findings(attention))
+        # Keys are issue numbers this script wrote; a non-numeric one (a hand edit) is
+        # ignored rather than crashing every run until the file is replaced.
+        no_longer = sorted(int(k) for k in gone if k.isdigit())
+        if not last_run.is_baseline:
+            new_numbers = {int(k) for k in changed if k.isdigit()}
+
+    print(
+        render_report(
+            orphans, preexisting_missing, config, dry_run=dry_run,
+            new_numbers=new_numbers, no_longer=no_longer,
+        )
+    )
 
     added_count, add_failed = _added_and_failed(orphans, dry_run)
     return {
@@ -698,7 +776,7 @@ def _main_single_repo(repo_root: str, dry_run: bool) -> int:
     return 0
 
 
-def _main_scan_dir(scan_dir: str, dry_run: bool) -> int:
+def _main_scan_dir(scan_dir: str, dry_run: bool, last_run: LastRun | None = None) -> int:
     repos = find_git_repos(scan_dir)
     if repos is None:
         # find_git_repos already printed the WARNING with the underlying OSError.
@@ -707,12 +785,12 @@ def _main_scan_dir(scan_dir: str, dry_run: bool) -> int:
         # zero-repos-found case below.
         print(f"[reconcile-board] scan of {scan_dir} failed - nothing was reconciled")
         print()
-        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run))
+        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run, last_run=last_run))
         return 1
     if not repos:
         print(f"[reconcile-board] no git repos found under {scan_dir}")
         print()
-        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run))
+        print(render_scan_summary(0, 0, 0, 0, 0, 0, dry_run=dry_run, last_run=last_run))
         return 0
     print(f"[reconcile-board] found {len(repos)} repo(s) under {scan_dir}")
 
@@ -733,7 +811,11 @@ def _main_scan_dir(scan_dir: str, dry_run: bool) -> int:
             continue
 
         print(f"\nRepo: {config.get('repo', '')} ({repo_root})")
-        result = _reconcile_repo(config, dry_run)
+        result = _reconcile_repo(config, dry_run, last_run)
+        if last_run is not None and result["status"] != "scope-error":
+            failed = {"gh": "failed"} if result["status"] == "gh-error" else {}
+            if last_run.record(config.get("repo", ""), FAILED_SECTION, failed)[1]:
+                print(f"[reconcile-board] gh works again for {config.get('repo', '')}")
         if result["status"] == "scope-error":
             print(
                 "[reconcile-board] gh is missing the 'project' scope. Run:\n"
@@ -766,12 +848,16 @@ def _main_scan_dir(scan_dir: str, dry_run: bool) -> int:
             scope_aborted = True
             break
 
+    # A scope abort saves nothing: the routine stops without committing, and the repos already
+    # reconciled tonight are reported again next run rather than marked as delivered.
+    if last_run is not None and not dry_run and not scope_aborted:
+        last_run.save()
     print()
     print(
         render_scan_summary(
             len(repos), repos_skipped, repos_failed,
             totals["orphans_added"], totals["add_failed"], totals["needs_attention"],
-            dry_run=dry_run,
+            dry_run=dry_run, last_run=last_run,
         )
     )
     return 1 if scope_aborted else 0
@@ -804,10 +890,22 @@ def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="report without adding anything"
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="with --scan-dir: print the full list, and neither read nor update the stored "
+        "state (by default only what changed since the last run is listed)",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=str(DEFAULT_STATE_FILE),
+        help="with --scan-dir: where the last run's findings are stored",
+    )
     args = parser.parse_args()
 
     if args.scan_dir:
-        return _main_scan_dir(args.scan_dir, args.dry_run)
+        last_run = None if args.full else LastRun(args.state_file)
+        return _main_scan_dir(args.scan_dir, args.dry_run, last_run)
 
     repo_root = args.repo_root or default_repo_root()
     return _main_single_repo(repo_root, args.dry_run)

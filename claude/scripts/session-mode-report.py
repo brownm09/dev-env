@@ -41,11 +41,12 @@ import json
 import re
 import sys
 
+import _hookutil
+
 DEFAULT_LOG = "C:/Users/brown/.claude/scratch/session-mode-prompt.log"
 
-# Automated triggers use XML-tagged prompts; human prompts never start with <tag>.
-# Mirrors the detection in session-mode-prompt.py.
-_AUTOMATED_PREFIX = re.compile(r"^\s*<[a-z]")
+# Automated triggers use XML-tagged prompts; the same pattern session-mode-prompt.py uses.
+_AUTOMATED_PREFIX = _hookutil.AUTOMATED_PROMPT
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 

@@ -1,7 +1,7 @@
 # Scripts Index — `claude/scripts/`
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
-scripts: **112 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
+scripts: **115 files** at the top level (wired Claude Code hooks, shared `_foo.py` modules, and
 utility/setup scripts across `.py`/`.sh`/`.ps1`), indexed per file below
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)). The top-level file count and the
 per-section `(N)` counts below are gated by `tests/test_readme_index_parity.py` (dev-env#901).
@@ -33,8 +33,10 @@ exercises these scripts: `py -3 claude/scripts/run-hook-tests.py`.
 `_foo.py` files — imported by other scripts, never directly invoked or wired as a hook
 themselves. None of these get their own row in `docs/REFERENCE.md`'s Hooks/Utilities tables
 (they're described in prose paragraphs at the top of the Hooks section instead); this table is
-the one place all 22 are listed together. Each has its own test file in
-[`tests/README.md`](tests/README.md) → Shared support modules.
+the one place all 28 are listed together. Most have their own test file in
+[`tests/README.md`](tests/README.md) → Shared support modules. `_default_branch.py` is covered by
+`test_prune_merged_worktrees.py` and `test_reclaim_worktree_disk.py`, which run it against real
+throwaway repos.
 
 | Module | Purpose | Consumers |
 |---|---|---|
@@ -42,6 +44,7 @@ the one place all 22 are listed together. Each has its own test file in
 | `_bash_state.py` | Per-session repo/branch state file, plus the shared drift-warning formatter and elapsed-time gate. | `post-tool-use-cwd-track.py` (writer); `pre-commit-branch-check.py`, `pre-pr-create-check.py`, `pre-merge-branch-check.py`, `pre-bash-drift-check.py` (readers) |
 | `_closing_negation.py` | The one definition of a closing keyword a PR body negates ("doesn't close #12"), which GitHub honors anyway (`closing_mentions`, `says_it_does_not_close`, `accidental_closes`, dev-env#1300). | `pre-merge-findings-gate.py`, `deferred-followup-sweep.py` |
 | `_composed_output_scan.py` | Fence- and code-span-aware scanner for stray terminal output in composed journal markdown (`scan_text`, `find_signature_hits`, `strip_code_spans`). | `validate-composed-output.py` |
+| `_default_branch.py` | Finds a repo's default branch on origin and fetches it, returning a hung remote as a result rather than raising (`fetch_default_branch`, dev-env#1087, dev-env#1088). | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py` |
 | `_gh_issue_state.py` | Shared GitHub issue/PR REST state helpers (`repo_from_issue_url`, `issue_number_from_url`, `issue_states_from_rows`, `should_stop_paging`, `is_closed`, `check_issue_state`) extracted from `reconcile-pending-tiles.py`: strict URL validation, PR-vs-issue row filtering, and `state` case normalization. | `reconcile-pending-tiles.py`, `retro-chain-status.py` |
 | `_gh_project.py` | `gh project item-add` subprocess wrapper (`add_to_project`), UTF-8-safe, plus a best-effort project-scoped item-ID cache (`write_item_cache_entry`/`write_item_cache_entries`/`lookup_cached_item_id`/`evict_item_cache_entry`, dev-env#1057, ADR-141) that lets a later lookup skip its live query. | `post-tool-use.py`, `reconcile-project-board.py`, `get-project-item.sh`, `post-pr-merge-project.py` |
 | `_hook_launch.py` | The hook launcher every wired command runs through (`pyw -3 ~/.claude/hook-launch.py <script>`): a present script runs in-process as `__main__` with stdio, argv and exit code untouched; a missing one fails **open** (exit 0 plus a `systemMessage`) instead of Python's exit 2, which Claude Code reads as a machine-wide block. The source of an installed copy that lives outside every junction, so it is stdlib-only and imported by nothing ([ADR-148](../../docs/adr/148-missing-hook-script-fails-open-via-launcher.md)). | `_settings_sync.py` (installs it); every hook command in `claude/settings.shared.json` |
@@ -51,6 +54,7 @@ the one place all 22 are listed together. Each has its own test file in
 | `_hookutil.py` | Sentinel-file helpers, transcript-locate, transcript-record readers, and `record_heartbeat()` (called first-thing by every wired hook's `main()`). | Most Stop/UserPromptSubmit hooks |
 | `_journal_canon.py` | Shared engineering-journal canonical-path resolution (`resolve_journal_path`, `normalize_journal_path`) — env-override-or-default plus one canonical comparison normalization, single-sourcing what four hooks each independently duplicated. | `pre-tool-use-canonical-mutate-guard.py`, `journal-canonical-guard.py`, `pre-tool-use-journal-draft-worktree-guard.py`, `pre-tool-use-worktree-path-check.py` |
 | `_journal_compose_force.py` | Marker read/write/freshness helpers behind `/journal-compose`'s mechanical `--force` enforcement. | `journal-compose-force-resolve.py` (writer), `pre-tool-use-journal-compose-force-guard.py` (reader) |
+| `_last_run.py` | Stored findings of a `--scan-dir` run, so a repeat run prints only what changed (`LastRun`, ADR-161); `py -3 _last_run.py commit <state-file>` promotes a run's pending findings once the routine has notified. | `prune-merged-worktrees.py`, `reconcile-project-board.py` |
 | `_journal_late.py` | What counts as a late commit on a journal draft branch (`late_commits`), plus the reconciled-tag prefix and branch-name pattern, so the warning and the script that acts on it can't disagree. | `new-day-journal-check.py`, `reconcile-late-stubs.py` |
 | `_journal_schema.py` | Shared manifest/open-PR/tile shard schema + validation. Presence checks (`missing_required_fields`, `missing_open_pr_fields`, `missing_tile_fields`) and *shape* checks for a present-but-wrong value (`malformed_manifest_fields` — `tokens`; `malformed_tile_fields` — `cwd`/`stub`/`task_id`), plus `parse_manifest_text` / `decode_shard_bytes`. | `validate-manifest.py`, `journal-shard-write-advisory.py`, `stub-push-archive-reminder.py` |
 | `_journal_shards.py` | Shared numeric-shard + legacy `open-prs.jsonl` reader (`iter_numeric_shards`, with `iter_pr_shards` / `iter_tile_shards` as named delegations; `read_legacy_entries`), plus `project_dirs` — the `sessions/<project>/` walk both reconcile hooks run before reading either shard kind. | `reconcile-open-prs.py`, `reconcile-pending-tiles.py`, `post-compact.py` |
@@ -59,10 +63,10 @@ the one place all 22 are listed together. Each has its own test file in
 | `_settings_sync.py` | Applies dev-env's tracked `claude/settings.shared.json` into the real, machine-local `~/.claude/settings.json` — `OWNED_KEYS` (`hooks`, `permissions`) replaced wholesale, `SEED_KEYS` (`model`, `effortLevel`) written only if absent, every app-written key left alone — plus the one-time symlink→real-file migration. Ends the class where the app dirtied a tracked file and blocked the canonical's fast-forward forever ([ADR-139](../../docs/adr/139-machine-local-settings-with-shared-source-sync.md)). Also runnable directly: `py -3 ~/.claude/scripts/_settings_sync.py`. | `dev-env-sync.py`, `setup.sh` |
 | `_shell_write_detect.py` | Shared shell-syntax write-detection primitives (`mask_first_line_quotes` with its load-bearing `<<` neutralization, `neutralize_unquoted_escaped_quotes`, `find_redirect_targets`, `next_token`, `first_line`, `segments_or_whole`, `tokenize_posix`, `tokenize_powershell`). Extracted from `pre-tool-use-journal-shell-write-guard.py` as a pure move so the two content-write guards share one copy of quote-state logic ADR-129 Amendment 1 already had to fix twice. Answers only "what does this command's shell syntax say", never "is that a problem". | `pre-tool-use-journal-shell-write-guard.py`, `pre-tool-use-shell-content-write-guard.py` |
 | `_skill_file_size.py` | Shared `SKILL.md` basename match (`is_skill_md`) and `.claude/hook-config.json` loader (`load_config` — returns `(warn_bytes, limit_bytes)`, one shared fallback contract for both fields). | `pre-tool-use-skill-file-size-guard.py`, `skill-file-size-advisory.py` |
-| `_token_pricing.py` | Model prices (`PRICING`, one copy) and cost arithmetic. An unknown model gets `None` from `get_pricing`, never another model's rates. | `token-tracker.py`, `token-report.py`, `backfill-tokens.py` |
+| `_token_pricing.py` | Model prices (`PRICING`, one copy), cost arithmetic, and `ResponseTotals`, which counts each API response once. An unknown model gets `None` from `get_pricing`, never another model's rates. | `token-tracker.py`, `token-report.py`, `backfill-tokens.py` |
 | `_winsubp.py` | Windows subprocess defaults (`CREATE_NO_WINDOW`, forced UTF-8 text mode) every subprocess-spawning script must `import`. | ~20 subprocess-using scripts |
 | `_worktree_canon.py` | Shared worktree-path-to-canonical-root regex/resolution (`canonical_root_from_worktree`, `is_worktree_path`). | `post-tool-use.py`, `reconcile-project-board.py`, `pre-tool-use-canonical-mutate-guard.py`, `pre-tool-use-worktree-path-check.py`, `usage-snapshot.py` |
-| `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. Also exposes an `exclude_session_id` param so a hook running *as* one of the candidate sessions can ask "is some other session here" instead of always matching itself (ADR-130). | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `session-start-sync.py` |
+| `_worktree_liveness.py` | Active-session liveness check — stops prune/reclaim from severing a worktree with a live Claude session in it. Prune also reads the worktree's own git state, for a session whose transcript is elsewhere (ADR-051 Amendment 1). Also exposes an `exclude_session_id` param so a hook running *as* one of the candidate sessions can ask "is some other session here" instead of always matching itself (ADR-130). | `prune-merged-worktrees.py`, `reclaim-worktree-disk.py`, `session-start-sync.py` |
 | `_worktree_recovery.py` | Single-sourced orphaned-worktree recovery recipe (`RECOVERY_STEPS`, `recovery_recipe`) — the block message a stuck session reads, pinned against the `docs/REFERENCE.md` runbook so the two can't drift ([ADR-116](../../docs/adr/116-single-source-worktree-recovery-recipe.md)). | `pre-tool-use-worktree-path-check.py` |
 | `_worktree_topology.py` | Worktree-on-`main` squat detection/diagnosis and park-target decisions. | `prune-merged-worktrees.py`, `post-pr-merge-pull.py`, `dev-env-sync.py`, `journal-canonical-guard.py` |
 
@@ -136,7 +140,7 @@ invocation instead.
 |---|---|---|
 | `post-tool-use.py` | PostToolUse (Bash/PowerShell), `gh issue create`/`gh pr create` | Auto-adds the item to the configured GitHub Project and prints the `required_fields` commands to run. |
 | `post-pr-merge-project.py` | PostToolUse (Bash/PowerShell), confirmed `gh pr merge` or the two-step REST merge fallback | Auto-moves the linked issue (`Closes #N`) to Done on the configured board. |
-| `reconcile-project-board.py` | `py -3 reconcile-project-board.py [--repo-root\|--scan-dir] [--dry-run]` | Finds open issues missing from the board and open board items missing a required field; add-only, never guesses a value. |
+| `reconcile-project-board.py` | `py -3 reconcile-project-board.py [--repo-root\|--scan-dir] [--dry-run] [--full]` | Finds open issues missing from the board and open board items missing a required field; add-only, never guesses a value. |
 | `get-project-item.sh` | `ITEM_ID=$(bash get-project-item.sh <issue-number> ...)` | Resolves a GitHub Project item node ID from an issue/PR number. |
 
 ### Worktrees & disk management (7)
@@ -147,11 +151,11 @@ invocation instead.
 | `worktree-npm-install.py` | UserPromptSubmit | Auto-runs `npm ci`/`install` in a worktree missing `node_modules`; gates on free space, refuses below a 5 GB floor. Also audits a present-but-truncated tree once per session and repairs it with a gated `npm ci`. |
 | `pre-tool-use-worktree-path-check.py` | PreToolUse (Write/Edit/NotebookEdit) | Blocks a write whose absolute path escapes to the canonical root, or any write from an orphaned worktree. |
 | `multi-worktree-alert.py` | UserPromptSubmit | Lists active worktrees in `repo:branch` format when ≥2 are open. |
-| `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path\|--scan-dir] [--include-named]` | Removes merged/idle worktrees and parks any squatting `main`; engine behind the `prune-stale-worktrees` routine. |
+| `prune-merged-worktrees.py` | `py -3 prune-merged-worktrees.py [--dry-run] [--repo-path\|--scan-dir] [--include-named] [--full]` | Removes merged/idle worktrees and parks any squatting `main`; engine behind the `prune-stale-worktrees` routine. |
 | `reclaim-worktree-disk.py` | `py -3 reclaim-worktree-disk.py [--dry-run] [--repo-path\|--scan-dir] [--min-free-gb N]` | Strips regenerable `node_modules`/`.turbo` from idle worktrees; engine behind the `reclaim-worktree-disk` routine and the disk-check hook's detached spawn. |
 | `sweep-scratch-debris.py` | `py -3 sweep-scratch-debris.py [--apply] [--max-age-days N]` | One-time/on-demand force-sweep of accumulated per-session sentinel/marker files in `~/.claude/scratch/`. |
 
-### Session state, reliability & token tracking (30)
+### Session state, reliability & token tracking (31)
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
@@ -168,13 +172,14 @@ invocation instead.
 | `session-start-auto-resume.py` | SessionStart (`resume`, `asyncRewake`) | When a session's CLI starts and its transcript ended mid-turn, and the session is opted in, waits `settleSeconds`, re-checks nothing new arrived, then exits 2 to wake the model with a check-for-errors-and-continue message. [ADR-152](../../docs/adr/152-auto-resume-interrupted-desktop-sessions.md) |
 | `turn-count-hook.py` | UserPromptSubmit | Warns when context growth since the session's first turn, or the prompt count, crosses a threshold; nudges a journal-stub update once per band of context growth (ADR-150). |
 | `idle-refresher.py` | UserPromptSubmit | After a long idle gap, injects a cue to open the reply with a refresher of prior state, state the context size the return re-caches, and suggest `/clear` with a hand-off if the task has changed. |
+| `routine-findings.py` | UserPromptSubmit, and `py -3 routine-findings.py save --routine NAME --file PATH` | Routines save a finding when their push wasn't delivered; the hook shows saved findings once, on the next prompt in a person's session. See [ADR-160](../../docs/adr/160-routine-findings-delivery-fallback.md). |
 | `hook-liveness-check.py` | UserPromptSubmit | Warns when a wired hook's heartbeat has gone stale (hasn't recorded in its expected cadence). |
 | `hook-timing-report.py` | `py -3 hook-timing-report.py [--since-hours N] [--dir PATH]` | Per-hook run-time and (sampled) launch-time percentiles from the `<hook>.dur.jsonl` lines every heartbeat appends (dev-env#848). Read-only. Before/after evidence for hot-path gating and the hook dispatcher. |
 | `awake-blocker.py` | UserPromptSubmit / Stop / Notification | Holds a Windows system-sleep lock via a detached watcher while Claude is processing. |
 | `memory-write-advisory.py` | PostToolUse (Write) | Reminds Claude to pair a durable memory write with an immortalization issue when none is linked. |
 | `skill-file-size-advisory.py` | PostToolUse (Write/Edit) | Non-blocking nudge when a `SKILL.md` write/edit lands at/above a lower watermark (default 200KB), ahead of the hard-block guard's ceiling. See [ADR-127](../../docs/adr/127-skill-file-size-guard.md). |
 | `stop-experiment-verdict-gate.py` | Stop | Blocks the stop when an assistant message states a process-experiment conclusion with no `/experiment-audit` run and no skip override (the verdict half of the Experimental Rigor protocol, ADR-115). |
-| `posttooluse-inert-advisory.py` | Stop | Safety net for background/SDK sessions where PostToolUse hooks never fired despite a `gh issue/pr create`/`merge`. |
+| `posttooluse-inert-advisory.py` | Stop | Safety net: a dev-env `gh issue/pr create`/`merge` ran and no PostToolUse hook printed anything all session. |
 | `token-tracker.py` | Stop | Aggregates session token usage to `scratch/token-sessions.jsonl`. |
 | `token-report.py` | `py -3 token-report.py [--date\|--days\|--project\|--latest\|--show-subagents\|--attribution --since --until]` | Generates markdown/JSON token usage reports from the token-tracker log. `--attribution` reads session transcripts and shows where spend went. |
 | `backfill-tokens.py` | `py -3 backfill-tokens.py` | Backfills token data for sessions predating the token-tracker hook; idempotent on `session_id`. |

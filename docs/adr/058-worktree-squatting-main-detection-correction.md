@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-22
 **Status:** Accepted
-**Amended:** 2026-07-01, 2026-07-03, 2026-07-09 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-03, 2026-07-09, 2026-11-07 (see Amendment sections below)
 **Tags:** worktrees, main, squat, canonical, prune, dev-env-sync, post-merge, park, safety, hooks, symlinks, detached-head, adr-093
 
 ---
@@ -250,3 +250,18 @@ foundation for [ADR-093](093-journal-canonical-hijack-guard.md) — a standalone
 amendment here, since it targets a different repo under a materially different "healthy" invariant) for
 a sibling corrective hook that defends the engineering-journal canonical against a related hijack
 pattern (dev-env#630).
+
+## Amendment (2026-11-07) — The squat rule follows a repo's default branch in `prune-merged-worktrees.py` (dev-env#1088)
+
+`prune-merged-worktrees.py` now discovers each repo's default branch instead of assuming `main`, so
+its merge checks compare against the right ref. That made a new removal possible: with
+`--include-named`, a secondary worktree on `master` counts as merged by definition, so the script
+would remove it and delete the branch. Two changes close that:
+
+- `main_squatter()` takes a `default_branch` argument (default `main`). The prune script passes the
+  discovered branch, so a squatter on `master` is parked exactly as one on `main` is. The other
+  callers are unchanged.
+- The prune loop now skips any worktree still on the default branch after the squatter check. This
+  is the legitimate home described above (a bare or detached primary). The same removal already
+  existed for `main` under `--include-named`, and the skip closes that too. When the default
+  branch can't be discovered, the skip covers both `main` and `master`, not just the `main` fallback.

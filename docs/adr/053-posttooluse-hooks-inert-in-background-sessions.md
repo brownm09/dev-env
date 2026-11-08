@@ -126,3 +126,116 @@ SDK `settingSources` that omits the file) are ruled out: the same file's UserPro
 - Observability framing (echoing [ADR-049](049-hook-payload-output-field.md)): a silent automation gap
   is the hazard. Here the gap is upstream and unfixable in-repo, so the in-repo mitigation is this
   documentation plus the proposed reliable-event advisory — both keep the gap from being invisible.
+
+## Amendment (2026-11-07) — `start_session` sessions aren't inert, and zero attachments doesn't mean inert
+
+[dev-env#1320](https://github.com/brownm09/dev-env/issues/1320). Tiles now launch with
+`start_session`, and the launch language above had no measurement behind it for that path.
+
+**Answer: sessions launched with `start_session` are not in the inert state.** All 162 transcripts
+the app links to a `start_session` call show their PostToolUse hooks running, including the 20 with
+no PostToolUse attachment. The inert state hasn't been seen in any launch path since 2026-10-14.
+This doesn't show it can't recur, and the 2026-06 case above stands as recorded.
+
+### How it was measured
+
+A read-only scan on 2026-11-07 of the 356 top-level transcripts then on this machine. Sessions still
+running at that time count as they stood then, so a session with no attachments may gain one later.
+
+- **Which sessions.** The app's session metadata carries `spawnedFrom`, and `cliSessionId` names the
+  transcript. The spawning tool comes from the parent transcript, whose tool result names the same
+  task ID. This replaces matching by prompt text.
+- **Attachments.** Records with `attachment.hookEvent == "PostToolUse"`, the signal
+  `posttooluse-inert-advisory.py` uses.
+- **A signal that doesn't depend on hook output.** `post-tool-use-cwd-track.py` runs after every
+  successful Bash or PowerShell call, prints nothing, and is the only writer of
+  `~/.claude/scratch/bash_state_<session-id>.json`. The file existing means PostToolUse dispatched in
+  that session, and its modified time says when it last did.
+- **Per call.** `post-tool-use-cwd-track.dur.jsonl` records each hook run, but not which session ran
+  it. A line was credited to a call only when no other transcript, subagents included, had a shell
+  result within 5 seconds. The same window 30 seconds later, where nobody had a shell result, is the
+  control.
+
+### Results
+
+| # | Launch path | Transcripts | With attachments | Without | Without, and `bash_state` file exists |
+|---|---|---|---|---|---|
+| 1 | `start_session` | 162 | 142 | 20 | 20 |
+| 2 | `spawn_task` | 51 | 45 | 6 | 6 |
+| 3 | Linked, spawning tool not found | 11 | 10 | 1 | 1 |
+| 4 | Not linked (top-level) | 132 | 98 | 34 | 17 |
+
+In row 4, 9 of the 17 without a file never ran a shell call, and the other 8 predate 2026-10-14.
+
+- **Why attachments mislead.** A hook leaves an attachment only when it prints something, so only
+  1,387 of 26,305 successful shell calls carry one. A session that creates and merges nothing can
+  run its hooks all day and leave none. PR creation is the closest thing to a reliable trigger:
+  131 of 133 in `start_session` sessions left one. Pushes and merges often don't (265 of 899 and
+  82 of 168).
+- **The file's calibration.** Since the last missing file, on 2026-10-14, 275 of 275 transcripts with
+  a successful shell call have the file, 43 of them with no attachments. None of the 9 transcripts
+  with no shell call has one. For 19 of the 20 `start_session` transcripts without attachments, the
+  file was written within 60 seconds of the last successful shell call. The other was written 6,263
+  seconds after it, which still shows dispatch.
+- **Per call.** In `start_session` sessions without attachments, 45 of 45 attributable shell results
+  have a ledger line within 5 seconds, against 0 in the control windows. Sessions with attachments,
+  as the known-good reference, scored 640 of 641, with 1 in the control windows. The ledger only
+  reaches back to 2026-11-06, so this covers 11 of the 20 sessions.
+- **The limit of the file.** It has no known-bad reference in its window, because no inert session
+  has occurred since it became reliable. Its evidence is that only that hook writes it. Absence
+  before 2026-10-14 proves nothing: the oldest surviving file is from 2026-10-10, and 21 sessions
+  with attachments from that period have none.
+
+### The 11 transcripts with no attachments in the earlier scan
+
+The earlier scan found 147 of 158 by prompt text. Rebuilding it from records written before its
+timestamp reproduces exactly 158, 147 and 11. They are neither short sessions as a class nor inert
+sessions:
+
+- **1 never ran a tool.** It has one user record and no assistant turn.
+- **10 ran their hooks silently.** All 10 have the file. For 9 it was written within 60 seconds of
+  the last successful shell call, and for the other it was written later. Their tool-call counts at
+  scan time ranged from 10 to 171. One of them later produced 3 attachments.
+
+### What still can't be settled
+
+Three top-level sessions from 2026-10-08, on version 2.1.286, created a PR with no attachment and
+left none all session. These are the only sessions where PR creation stayed silent and the whole
+session did too. All three predate `start_session`, whose first transcript is from 2026-10-16. Their
+files are gone, and absence proves nothing from that period, so they remain undetermined. That week
+also had silent PR creates in sessions that did have attachments, which weakens the case further.
+
+### Corrections to the Decision above
+
+- **The detection signature in Decision 2 no longer identifies this state.**
+  - `{"command":"callback"}` in `stop_hook_summary` doesn't discriminate: 292 transcripts have it and
+    have attachments.
+  - `promptSource: "sdk"` appears on nearly every desktop session.
+  - The `spawn_task` chip condition has no equivalent now that tiles are `start_session` cards.
+- **Use this check instead.** Find `bash_state_<session-id>.json` and compare its modified time with
+  the session's last successful shell call. If it's current, hooks ran, so look for a reason the
+  specific hook stayed silent. If it's missing despite successful shell calls in a recent session,
+  that is the inert signature.
+- **A failed tool call runs no PostToolUse hook.** 0 of 892 errored shell calls carry an attachment,
+  which matches the separate
+  [`PostToolUseFailure` event](https://code.claude.com/docs/en/hooks). A chain whose last command
+  exits non-zero therefore skips the board add even when its `gh pr create` succeeded.
+- **Decision 4 no longer applies as written.** Launch path isn't a reason to prefer an interactive
+  session. The manual fallbacks in Decision 3 stay correct whenever a side effect is really missing.
+
+### The advisory
+
+`posttooluse-inert-advisory.py` fired for real in 5 transcripts, and its message blamed a
+"background/SDK-launched" session each time:
+
+| # | Transcripts | What it was |
+|---|---|---|
+| 1 | 2 (`start_session`) | Hooks were fine: PostToolUse attachments appeared later in the same session |
+| 2 | 1 (`start_session`) | Hooks were fine: 6 of 6 attributable calls ran. The create was in a chain that exited non-zero, so its board add really was skipped, and the merge printed nothing |
+| 3 | 1 (linked) | Hooks were fine: the `gh pr merge` had failed on a rate limit, so nothing was missing |
+| 4 | 1 (top-level, 2026-10-08) | Undetermined, one of the three above |
+
+So the message now states what was observed, says this doesn't prove hooks didn't run, gives the
+check above, and no longer names a launch path. Its detection is unchanged. It still points at a real
+gap in row 2, and stopping it from firing is a separate decision with its own calibration:
+[dev-env#1331](https://github.com/brownm09/dev-env/issues/1331).

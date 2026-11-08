@@ -24,6 +24,13 @@
       "Bash(gh issue view *)",
       "mcp__ccd_pr__set_monitor"
     ],
+    "deny": [
+      "Artifact",
+      "PowerShell",
+      "Workflow",
+      "SuggestPluginInstall",
+      "SuggestSkills"
+    ],
     "defaultMode": "plan"
   },
   "model": "sonnet",
@@ -273,6 +280,11 @@
           {
             "type": "command",
             "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/idle-refresher.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "pyw -3 C:/Users/brown/.claude/hook-launch.py C:/Users/brown/.claude/scripts/routine-findings.py",
             "timeout": 10
           },
           {

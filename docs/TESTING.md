@@ -105,7 +105,9 @@ For a one-line navigational map of the older tests, see
    with its exception swallowed as the old code did, must be recorded. Without it the empty-list
    assertions could pass vacuously.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
-   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
+   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting only `expired`
+   carries an advisory (an `expiring` token is used, so it has none,
+   [#1328](https://github.com/brownm09/dev-env/issues/1328)) and that an expired
    token now yields a user-facing advisory rather than the silent skip it did before
    [#355](https://github.com/brownm09/dev-env/issues/355). Also exercises the pure
    `merge_confirmed(command, output)` predicate offline: pins that a worktree-merge payload (gh's
@@ -556,8 +558,10 @@ For a one-line navigational map of the older tests, see
     become `-`), the recency boundary (incl. unknown and future mtimes), exact-slug and basename-suffix
     transcript-dir resolution, recursive newest-`.jsonl` mtime (incl. `subagents/`), the live/stale/no-session
     verdicts that stop prune/reclaim from severing an active session, and the prune=24h / reclaim=6h default
-    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). The git-driven prune/reclaim loops are
-    exercised by `--dry-run` in the PR, not here.
+    windows ([ADR-051](adr/051-worktree-liveness-guard.md)). Also pins `git_activity_skip_reason()` against
+    real throwaway worktrees: work in the worktree reads as active, while `git gc` and a fetch in the primary
+    don't, and unreadable git state keeps the worktree ([ADR-051 Amendment 1](adr/051-worktree-liveness-guard.md#amendment-1-2026-11-07-a-worktrees-own-git-state),
+    dev-env#1330). The git-driven prune/reclaim loops are exercised by `--dry-run` in the PR, not here.
 
     ```bash
     py -3 claude/scripts/tests/test_worktree_liveness.py
@@ -862,6 +866,10 @@ For a one-line navigational map of the older tests, see
     ```
 
 26. **prune-merged-worktrees test** — required when changing `claude/scripts/prune-merged-worktrees.py`.
+    The `test_scan_*` tests run the real script twice against a throwaway repo with an unmerged detached
+    worktree and a broken fetch: a repeat `--scan-dir` lists neither and keeps `RESULT:`, a new worktree is
+    the only one listed, a missing or corrupt state file gives the full report, and `--full` and `--dry-run`
+    leave the state alone ([dev-env#1307](https://github.com/brownm09/dev-env/issues/1307), [ADR-161](adr/161-maintenance-routines-report-what-changed.md)).
     Exercises `prune_one()` via subprocess mocking (subprocess.run mocking, unlike the other offline
     pure-helper tests): pins that a `subprocess.TimeoutExpired` from a slow `git worktree remove` is caught, the timed-out
     worktree is counted as skipped, and the prune loop continues rather than propagating the exception
@@ -903,6 +911,14 @@ For a one-line navigational map of the older tests, see
     stops there rather than reaching the real dev-env repo. Abbreviated flags and empty paths are tested
     at parser level only, because a regression that ignored `--repo-pat` or an empty `--repo-path` would
     go live on the real repo.
+
+    Also required when changing `claude/scripts/_default_branch.py`. In `--scan-dir` mode, a `git fetch`
+    or `ls-remote` that raises `subprocess.TimeoutExpired`, and any other exception from one repo, must
+    still reach the next repo, with the summary naming timed-out, failed and errored repos separately
+    ([dev-env#1087](https://github.com/brownm09/dev-env/issues/1087)). Throwaway repos with a non-`main`
+    default branch cover `origin/HEAD` unset and set, discovery failure, a squatter on that branch, and a
+    worktree on the default branch under a detached primary, which `--include-named` must not remove
+    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)).
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -1062,6 +1078,10 @@ For a one-line navigational map of the older tests, see
     ```
 
 29. **reconcile-project-board test** — required when changing `claude/scripts/reconcile-project-board.py`.
+    The `test_scan_dir_*` tests run the real `main()` with only the `gh` boundary and the production item
+    cache patched out: a repeat `--scan-dir` lists no issue and keeps `RESULT:`, one new issue is the only
+    one listed, a missing or corrupt state file gives the full list, and a failed repo doesn't make its old
+    issues read as new ([dev-env#1307](https://github.com/brownm09/dev-env/issues/1307), [ADR-161](adr/161-maintenance-routines-report-what-changed.md)).
     Exercises the pure helpers offline (no network/gh/disk): pins `canonical_repo_root` (a Claude-managed
     worktree path resolves to the canonical checkout where the machine-local hook-config lives), `field_key`
     (field name -> item-list JSON key), `board_items_query` (names each required field through a variable and
@@ -1082,7 +1102,9 @@ For a one-line navigational map of the older tests, see
     py -3 claude/scripts/tests/test_reconcile_project_board.py
     ```
 
-30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py`.
+30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`.
+    Also covers a throwaway repo with a non-`main` default branch, and a `--scan-dir` run reaching the
+    next repo after a fetch timeout or unexpected error.
     Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
     `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
@@ -2949,7 +2971,12 @@ For a one-line navigational map of the older tests, see
     `…`/`—` lived only in the dropped echoes) — verified by item 61's gate. `main()`'s remaining I/O
     (stdin parse, transcript locate, the log write/rewrite, the emission) is not covered (pure-helper
     convention); the emission channel is pinned by items 60/61 (`test_hookout.py` / the output-contract
-    gate).
+    gate). `_count_turns` and `aggregate_session` count each API response once through
+    `_token_pricing.ResponseTotals` (dev-env#1223): three records of one message id give the last record's
+    usage and one turn, in a main file and a subagent; a later record with no tokens or a synthetic model
+    changes nothing; records with no id stay separate; and an unhashable id skips that record instead of
+    losing the session. A mixed fixture holds `aggregate_session` to `token-report.py`'s `read_transcript`,
+    and its last record for one id is smaller than the one before, so a "largest wins" rule would fail.
 
     ```bash
     py -3 claude/scripts/tests/test_token_tracker.py
@@ -5144,6 +5171,9 @@ For a one-line navigational map of the older tests, see
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
+     To stay well inside the runner's 300-second cap on a busy machine (dev-env#1325), most tests
+     copy a shared snapshot of the repositories, and tests run side by side, each in its own process.
+     Pass a test's name to run just that one.
      A moved stub and manifest take the target branch's date, checked with the same glob
      `/journal-compose` uses, and the manifest's `stub` field names the new path in whichever form
      it had: a bare filename or a `sessions/<project>/` path, since both occur in real shards. A
@@ -5191,8 +5221,9 @@ For a one-line navigational map of the older tests, see
      rows, and `backfill-tokens.py`'s `process_transcript` records `model_unpriced`. The empty-extraction
      check asserts tables rendered before it checks their `#` columns. Deliberately not covered: whether
      the bands, `CHARS_PER_TOKEN` and `PREFIX_LOST_RATIO` are the right values. They only sort spend into
-     rows, and no check acts on them. Each message-id rule here stops at `--attribution`:
-     `token-tracker.py`, `backfill-tokens.py` and `read_subagents` still sum every record (dev-env#1223).
+     rows, and no check acts on them. `_count_turns_from_jsonl` and `read_subagents` count a repeated
+     message id once through `_token_pricing.ResponseTotals`, each checked with three records of growing
+     output (dev-env#1223). Item 65 holds that class and `read_transcript` to the same rule.
 
      ```bash
      py -3 claude/scripts/tests/test_token_attribution.py

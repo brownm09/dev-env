@@ -23,7 +23,15 @@ If `VERIFY_FILE` is omitted, skip the post-sync existence check.
 
 ## Push notifications
 
-Every abort path below sends a push notification using the `PushNotification` tool: `title` = `${PREFIX}`, `body` = the message string shown in the step. The notification is the user's only signal that an autonomous run aborted, so it must fire on every ABORT path before the skill returns.
+Every abort path below sends a push notification using the `PushNotification` tool, with `message` = the message string shown in the step and `status` = `proactive`. The notification is the user's only signal that an autonomous run aborted, so it must fire on every ABORT path before the skill returns.
+
+A scheduled run usually has no Remote Control connection, so the push often isn't delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)). Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-${PREFIX}-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine "${PREFIX}" --file "C:/Users/brown/.claude/scratch/routine-finding-${PREFIX}-<HHMMSS>.txt"
+```
+
+It saves the finding for the next interactive session unless the push was handed off. If the command fails for any reason, put its error and the push text in the run's final output.
 
 ---
 

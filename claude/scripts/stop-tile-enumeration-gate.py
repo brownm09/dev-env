@@ -128,8 +128,8 @@ blocking.
 Complements — does not replace — the command-keyed hook: that one is the
 immediate in-the-moment nudge when ``gh pr merge`` runs; this one is the
 Stop-time verification that the enumeration actually happened, covering every
-merge path (and, since ADR-092, the dangling-issue path too). It is also NOT
-inert in background / SDK-launched sessions (ADR-053), where every
+merge path (and, since ADR-092, the dangling-issue path too). It also still
+fires in an inert session (ADR-053), where every
 PostToolUse hook — including the command-keyed sibling — silently never
 fires; the Stop event still dispatches, so this is the only tile enforcement
 that survives there.

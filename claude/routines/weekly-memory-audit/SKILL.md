@@ -6,6 +6,14 @@ schedule: "0 9 * * 1"
 # Weekly, every week — NO parity gate (unlike biweekly-retro, which gates to even ISO weeks).
 ---
 
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run, including one sent just before stopping. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-weekly-memory-audit-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine weekly-memory-audit --file C:/Users/brown/.claude/scratch/routine-finding-weekly-memory-audit-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output. `sync-routine-worktree` does this itself on its abort paths.
+
 Reconcile agent memory against the version-controlled instructions across every project. Run
 **fully autonomously** — never call `AskUserQuestion`, never wait for input, never prompt for
 approval.

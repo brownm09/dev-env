@@ -71,9 +71,11 @@ Exit 0 = all pass.
 """
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
@@ -85,6 +87,8 @@ from _throwaway_repo import ThrowawayRepo
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+
+from _last_run import commit as commit_state, pending_path  # noqa: E402
 
 _MODULE_PATH = SCRIPTS_DIR / "prune-merged-worktrees.py"
 _spec = importlib.util.spec_from_file_location("prune_merged_worktrees", _MODULE_PATH)
@@ -126,11 +130,13 @@ def _dispatch(args, **_kwargs):
     """Route subprocess.run calls to canned responses; raise TimeoutExpired for worktree remove."""
     if args[1:2] == ["remote"]:              # git remote get-url origin
         return _ok("git@github.com:brownm09/dev-env.git\n")
+    if args[1:2] == ["symbolic-ref"]:        # default-branch discovery
+        return _ok("refs/remotes/origin/main\n")
     if args[1:3] == ["fetch", "origin"]:     # git fetch
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
         return _ok(_PORCELAIN)
-    if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
+    if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
     if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
@@ -145,11 +151,13 @@ def _dispatch_named(args, **_kwargs):
     """
     if args[1:2] == ["remote"]:              # git remote get-url origin
         return _ok("git@github.com:brownm09/dev-env.git\n")
+    if args[1:2] == ["symbolic-ref"]:        # default-branch discovery
+        return _ok("refs/remotes/origin/main\n")
     if args[1:3] == ["fetch", "origin"]:     # git fetch
         return _ok()
     if args[1:3] == ["worktree", "list"]:    # git worktree list --porcelain
         return _ok(_PORCELAIN_NAMED)
-    if args[1:3] == ["status", "--porcelain"]:  # is_dirty → not dirty
+    if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty → not dirty
         return _ok("")
     if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged → merged (returncode 0)
         return _ok()
@@ -238,6 +246,8 @@ def _make_dispatch_draft_squat(remove_result=None, remove_exception=None):
         calls.append(list(args))
         if args[1:2] == ["remote"]:                    # git remote get-url origin
             return _ok("git@github.com:brownm09/engineering-journal.git\n")
+        if args[1:2] == ["symbolic-ref"]:               # default-branch discovery
+            return _ok("refs/remotes/origin/main\n")
         if args[1:3] == ["fetch", "origin"]:            # git fetch origin main, AND
             return _ok()                                # _origin_ahead_count's git fetch origin <branch>
         if args[1:3] == ["worktree", "list"]:           # git worktree list --porcelain
@@ -406,6 +416,8 @@ def _make_dispatch_detached(merge_base_ok: bool, rev_parse_ok: bool = True):
         cwd = kwargs.get("cwd")
         if args[1:2] == ["remote"]:                # git remote get-url origin
             return _ok("git@github.com:brownm09/dev-env.git\n")
+        if args[1:2] == ["symbolic-ref"]:           # default-branch discovery
+            return _ok("refs/remotes/origin/main\n")
         if args[1:3] == ["fetch", "origin"]:        # git fetch origin main
             return _ok()
         if args[1:3] == ["worktree", "list"]:       # git worktree list --porcelain
@@ -414,7 +426,7 @@ def _make_dispatch_detached(merge_base_ok: bool, rev_parse_ok: bool = True):
             if rev_parse_ok and cwd == _DETACHED_WORKTREE_PATH:
                 return _ok(f"{_DETACHED_SHA}\n")
             return types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: not a git repository")
-        if args[1:3] == ["status", "--porcelain"]:  # is_dirty -> not dirty
+        if args[1:4] == ["--no-optional-locks", "status", "--porcelain"]:  # is_dirty -> not dirty
             return _ok("")
         if args[1:3] == ["merge-base", "--is-ancestor"]:  # is_merged: ancestor check
             return _ok() if merge_base_ok else types.SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -441,13 +453,14 @@ def test_detached_head_merged_commit_pruned() -> str:
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                            repo="/FAKE_REPO_DETACHED",
+                            dry_run=False,
+                            liveness_window_seconds=86400,
+                            include_named=True,
+                        )
     assert pruned_count == 1, f"expected 1 pruned (detached commit is merged), got {pruned_count}"
     assert skipped_count == 1, f"expected 1 skipped (primary only), got {skipped_count}"
     assert not fetch_failed, "fetch should not be marked failed"
@@ -461,18 +474,22 @@ def test_detached_head_unmerged_commit_skipped() -> str:
     actually skipped for a resolved SHA (skip_pr_fallback=True): the dispatch's ["pr", "list"]
     branch would return a non-empty match here if it were ever called, so a pass here means
     is_merged() genuinely never issued that call for the detached path."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (detached commit is not merged), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + not-merged detached), got {skipped_count}"
+    assert ": not merged into origin/main\n" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, commit is NOT merged: correctly skipped, not force-pruned, gh pr list fallback skipped"
 
 
@@ -480,18 +497,22 @@ def test_detached_head_rev_parse_failure_skipped() -> str:
     """When the detached worktree's own `git rev-parse HEAD` itself fails (e.g. a corrupted
     worktree), the fix must fail safe -- skip with a distinct reason -- rather than crash or
     silently fall through to a misleading generic message (dev-env#979)."""
+    out = io.StringIO()
     with unittest.mock.patch("subprocess.run", side_effect=_make_dispatch_detached(merge_base_ok=True, rev_parse_ok=False)):
         with unittest.mock.patch("pathlib.Path.exists", return_value=True):
             with unittest.mock.patch.object(prune, "worktree_session_is_live", return_value=False):
-                with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
-                    pruned_count, skipped_count, fetch_failed = prune.prune_one(
-                        repo="/FAKE_REPO_DETACHED",
-                        dry_run=False,
-                        liveness_window_seconds=86400,
-                        include_named=True,
-                    )
+                with unittest.mock.patch.object(prune, "git_activity_skip_reason", return_value=None):
+                    with unittest.mock.patch.object(prune, "is_dirty", return_value=False):
+                        with redirect_stdout(out):
+                            pruned_count, skipped_count, fetch_failed = prune.prune_one(
+                                repo="/FAKE_REPO_DETACHED",
+                                dry_run=False,
+                                liveness_window_seconds=86400,
+                                include_named=True,
+                            )
     assert pruned_count == 0, f"expected 0 pruned (commit unresolvable), got {pruned_count}"
     assert skipped_count == 2, f"expected 2 skipped (primary + unresolvable), got {skipped_count}"
+    assert "commit unresolvable" in out.getvalue(), f"wrong skip reason:\n{out.getvalue()}"
     return "detached HEAD, rev-parse HEAD itself fails: fails safe (skipped, reason distinct), no crash"
 
 
@@ -687,6 +708,7 @@ def test_cli_control_dry_run_keeps_and_plain_run_prunes() -> str:
     """Proves the two tests above can fail: this same repo really is prunable."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo = ThrowawayRepo(Path(tmp))
+        repo.age_git_state()
         r = repo.run_script(_MODULE_PATH, "--dry-run")
         if r.returncode != 0 or "would remove" not in r.stdout or not repo.worktree.exists():
             raise AssertionError(f"--dry-run: exit {r.returncode}, should report and keep\n{r.stdout}\n{r.stderr}")
@@ -697,6 +719,59 @@ def test_cli_control_dry_run_keeps_and_plain_run_prunes() -> str:
         if r.returncode != 0 or repo.worktree.exists() or repo.branch_exists():
             raise AssertionError(f"plain run: exit {r.returncode}, should prune\n{r.stdout}\n{r.stderr}")
     return "--dry-run keeps the worktree; a plain run removes it and deletes its branch"
+
+
+# --- Worktrees in use by a session whose transcript is elsewhere (dev-env#1330).
+
+def test_recent_git_activity_keeps_worktree_with_no_transcript() -> str:
+    """The real incident shape: fresh, 0 commits ahead, so merged by ancestry, no transcript."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "would remove" in r.stdout or "recent git activity" not in r.stdout:
+            raise AssertionError(f"--dry-run should report it as active\n{r.stdout}")
+        r = repo.run_script(_MODULE_PATH)
+        if r.returncode != 0 or not repo.worktree.exists() or not repo.branch_exists():
+            raise AssertionError(f"plain run removed a worktree in use\n{r.stdout}\n{r.stderr}")
+    return "fresh worktree with no transcript: kept and reported; the control test removes it once aged"
+
+
+def test_idle_zero_commit_worktree_is_still_removed() -> str:
+    """ADR-051 Amendment 1 keeps a zero-commit branch counting as merged, once it is idle."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        ahead = subprocess.run(
+            ["git", "rev-list", "--count", f"main..{repo.branch}"],
+            cwd=repo.primary, capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+        if ahead != "0":
+            raise AssertionError(f"fixture should be 0 commits ahead, was {ahead!r}")
+        repo.age_git_state(25 * 60 * 60)
+        r = repo.run_script(_MODULE_PATH, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "would remove" not in r.stdout:
+            raise AssertionError(f"idle zero-commit worktree 25h old should be removable\n{r.stdout}")
+    return "zero commits ahead and idle 25h: still removable, so abandoned ones don't pile up"
+
+
+def test_is_dirty_does_not_refresh_the_index() -> str:
+    """A dry run must not renew the signal the guard reads."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        index = repo.admin_dir / "index"
+        stamp = repo.age_git_state()
+        # Touching a tracked file makes its cached stat data stale, which is what prompts a
+        # plain `git status` to rewrite the index.
+        (repo.worktree / ".gitignore").touch()
+        if prune.is_dirty(str(repo.worktree)):
+            raise AssertionError("touching a file without changing it should read as clean")
+        if abs(index.stat().st_mtime - stamp) > 1:
+            raise AssertionError("is_dirty rewrote the index")
+        repo._git(repo.worktree, "status", "--porcelain")
+        if abs(index.stat().st_mtime - stamp) <= 1:
+            raise AssertionError("plain git status left the index alone, so this test proves nothing")
+    return "is_dirty leaves the index's mtime alone where a plain git status moves it"
 
 
 def test_cli_parser_accepts_existing_callers() -> str:
@@ -732,11 +807,482 @@ def test_cli_parser_rejects_abbreviation_and_bad_values() -> str:
     return "abbreviations, empty paths and bad liveness windows exit 2"
 
 
+# --- dev-env#1087: one repo's hung fetch or unexpected error must not end a --scan-dir run ---
+
+_REPO_A = str(Path("/FAKE_SCAN_REPO_A").resolve())
+_REPO_B = str(Path("/FAKE_SCAN_REPO_B").resolve())
+
+
+def _make_scan_dispatch(fail_args: list, exception: Exception, origin_head: bool = True):
+    """subprocess.run stand-in: `exception` for repo A's git command starting with fail_args."""
+    seen_cwds = []
+
+    def dispatch(args, cwd=None, **_kwargs):
+        seen_cwds.append(cwd)
+        if cwd == _REPO_A and args[1:1 + len(fail_args)] == fail_args:
+            raise exception
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:owner/repo.git\n")
+        if args[1:2] == ["symbolic-ref"]:
+            if origin_head:
+                return _ok("refs/remotes/origin/main\n")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        if args[1:2] == ["ls-remote"]:
+            return _ok("ref: refs/heads/main\tHEAD\nabc123\tHEAD\n")
+        if args[1:3] == ["worktree", "list"]:
+            return _ok("worktree /FAKE_PRIMARY\nHEAD abc\nbranch refs/heads/main\n\n")
+        return _ok()
+
+    return dispatch, seen_cwds
+
+
+def _run_scan(dispatch) -> tuple:
+    """Run the real main() over repos A and B. Returns (stdout, exit code, what was raised)."""
+    out = io.StringIO()
+    code = 0
+    # --full: no last-run state, so the real state file is never read or written.
+    with unittest.mock.patch("subprocess.run", side_effect=dispatch), \
+            unittest.mock.patch.object(prune, "find_git_repos", return_value=[_REPO_A, _REPO_B]), \
+            unittest.mock.patch.object(sys, "argv", ["prune", "--scan-dir", "/FAKE_SCAN", "--full"]), \
+            redirect_stdout(out), redirect_stderr(io.StringIO()):
+        try:
+            prune.main()
+        except SystemExit as exc:
+            code = exc.code
+    return out.getvalue(), code
+
+
+def _timeout(args: list) -> subprocess.TimeoutExpired:
+    return subprocess.TimeoutExpired(cmd=["git", *args], timeout=30)
+
+
+def test_scan_continues_after_fetch_timeout() -> str:
+    """Known-bad reference: this exact TimeoutExpired used to end the run at repo A."""
+    dispatch, seen = _make_scan_dispatch(["fetch"], _timeout(["fetch"]))
+    out, code = _run_scan(dispatch)
+    if _REPO_B not in seen:
+        raise AssertionError(f"repo B was never reached\n{out}")
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out:
+        raise AssertionError(f"summary does not name the timed-out repo\n{out}")
+    if "fetch failed in" in out:
+        raise AssertionError(f"a timeout was folded into the failed count\n{out}")
+    if code:
+        raise AssertionError(f"exit {code}: a timed-out fetch stays a reported, non-fatal result")
+    return "repo B reached; summary reports repo A under 'fetch timed out'; exit 0"
+
+
+def test_scan_continues_after_discovery_timeout() -> str:
+    """origin/HEAD unset and the ls-remote fallback hangs: the same path, with no second wait."""
+    dispatch, seen = _make_scan_dispatch(["ls-remote"], _timeout(["ls-remote"]), origin_head=False)
+    out, _code = _run_scan(dispatch)
+    if _REPO_B not in seen:
+        raise AssertionError(f"repo B was never reached\n{out}")
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out:
+        raise AssertionError(f"summary does not name the timed-out repo\n{out}")
+    return "repo B reached; a hung ls-remote is reported as a timed-out fetch"
+
+
+def test_scan_reports_failed_and_timed_out_separately() -> str:
+    def dispatch(args, cwd=None, **_kwargs):
+        if args[1:2] == ["fetch"]:
+            if cwd == _REPO_A:
+                raise _timeout(["fetch"])
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="fatal: nope")
+        if args[1:2] == ["remote"]:
+            return _ok("git@github.com:owner/repo.git\n")
+        if args[1:2] == ["symbolic-ref"]:
+            return _ok("refs/remotes/origin/main\n")
+        if args[1:3] == ["worktree", "list"]:
+            return _ok("worktree /FAKE_PRIMARY\nHEAD abc\nbranch refs/heads/main\n\n")
+        return _ok()
+
+    out, _code = _run_scan(dispatch)
+    if f"fetch timed out in 1 repo(s): {_REPO_A}" not in out or f"fetch failed in 1 repo(s): {_REPO_B}" not in out:
+        raise AssertionError(f"each repo should be under its own label\n{out}")
+    return "timed-out and failed repos each listed under their own label"
+
+
+def test_scan_continues_after_unexpected_error() -> str:
+    """Any other exception from one repo: the next repo still runs, and the exit code says so."""
+    for exception in (_timeout(["worktree", "list"]), OSError("boom")):
+        dispatch, seen = _make_scan_dispatch(["worktree", "list"], exception)
+        out, code = _run_scan(dispatch)
+        if _REPO_B not in seen:
+            raise AssertionError(f"{exception!r}: repo B was never reached\n{out}")
+        if f"error in 1 repo(s): {_REPO_A}" not in out:
+            raise AssertionError(f"{exception!r}: summary does not name the errored repo\n{out}")
+        if " errors=1" not in out.splitlines()[-1]:
+            raise AssertionError(f"{exception!r}: the RESULT line should carry errors=1\n{out}")
+        if code != 1:
+            raise AssertionError(f"{exception!r}: exit {code}, expected 1")
+    return "repo B reached after a TimeoutExpired or OSError; summary names repo A; exit 1"
+
+
+def test_draft_squat_fetch_timeout_counts_as_not_pushed() -> str:
+    """_origin_ahead_count has its own fetch: a hang there means 'not provably pushed'."""
+    with unittest.mock.patch("subprocess.run", side_effect=_timeout(["fetch"])):
+        result = prune._origin_ahead_count("draft/2026-01-01", "/FAKE_REPO")
+    if result is not None:
+        raise AssertionError(f"expected None, got {result!r}")
+    return "a timed-out fetch returns None, the conservative park-only answer"
+
+
+# --- dev-env#1088: discover the default branch instead of assuming main ---------------------
+
+def _run_aged(repo: ThrowawayRepo, *args: str) -> subprocess.CompletedProcess:
+    """Run the script with every worktree's git state a week old, past the recent-activity guard."""
+    stamp = time.time() - 7 * 24 * 60 * 60
+    for admin in (repo.primary / ".git" / "worktrees").iterdir():
+        for path in (admin, *admin.iterdir()):
+            os.utime(path, (stamp, stamp))
+    return repo.run_script(_MODULE_PATH, *args)
+
+
+def test_real_non_main_with_origin_head_unset_is_fetched_and_pruned() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would remove" not in r.stdout:
+            raise AssertionError(f"--dry-run should fetch master and see a merged worktree\n{r.stdout}")
+        r = _run_aged(repo)
+        if repo.worktree.exists() or repo.branch_exists():
+            raise AssertionError(f"plain run should prune\n{r.stdout}\n{r.stderr}")
+    return "origin/HEAD unset, ls-remote finds master, the worktree is merged into origin/master and pruned"
+
+
+def test_real_origin_head_is_believed_without_asking_the_remote() -> str:
+    """origin/HEAD set: the remote is unreachable, yet the fetch names the local answer."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="trunk")
+        repo.set_origin_head("trunk")
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" not in r.stdout or "origin/trunk" not in r.stdout:
+            raise AssertionError(f"the warning should name origin/trunk\n{r.stdout}")
+        if "could not find" in r.stdout:
+            raise AssertionError(f"discovery should not have needed the remote\n{r.stdout}")
+    return "with origin/HEAD set, discovery stays local and the fetch failure names origin/trunk"
+
+
+def test_real_hostile_branch_name_is_not_a_fetch_option() -> str:
+    """Known-bad: `git fetch origin --upload-pack=echo` runs echo, and the protocol then breaks."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        hostile = "refs/heads/--upload-pack=echo"
+        repo._git(repo.origin, "update-ref", hostile, "main")
+        repo._git(repo.origin, "symbolic-ref", "HEAD", hostile)
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "protocol error" in r.stdout:
+            raise AssertionError(f"the branch name was read as an option\n{r.stdout}")
+        if "would remove" not in r.stdout:
+            raise AssertionError(f"the branch should be fetched as a ref and compared against\n{r.stdout}")
+    return "a default branch named --upload-pack=echo is fetched as refs/heads/..., not run"
+
+
+def test_real_stale_origin_head_asks_the_remote() -> str:
+    """origin/HEAD still names a branch the remote renamed: fetch fails, the remote is asked."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.set_origin_head("renamed-away")
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if "fetch failed" in r.stdout or "would remove" not in r.stdout:
+            raise AssertionError(f"should fall back to the remote's master\n{r.stdout}")
+    return "a stale origin/HEAD falls back to ls-remote, fetches master and sees the merged worktree"
+
+
+def test_real_discovery_failure_still_protects_master() -> str:
+    """Branch unknown: the fallback guess is main, but a worktree on master is still protected."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.git("checkout", "--detach")
+        repo.add_worktree_on_default_branch()
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run", "--include-named")
+        repo.assert_targets_repo(r)
+        if "on the default branch 'master'" not in r.stdout:
+            raise AssertionError(f"the master worktree should be skipped as the default branch\n{r.stdout}")
+    return "with discovery failed, a worktree on master is skipped as a default branch"
+
+
+def test_real_discovery_failure_lands_in_fetch_failed() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        repo.git("remote", "set-url", "origin", (repo.root / "github.com" / "owner" / "gone.git").as_posix())
+        r = _run_aged(repo, "--dry-run")
+        repo.assert_targets_repo(r)
+        if r.returncode != 0 or "could not find" not in r.stdout or "fetch failed" not in r.stdout:
+            raise AssertionError(f"exit {r.returncode}, should report and carry on\n{r.stdout}\n{r.stderr}")
+    return "origin/HEAD unset and remote gone: reported as fetch failed, exit 0"
+
+
+def test_real_non_main_squatter_is_parked_and_default_branch_survives() -> str:
+    """Primary off master, a worktree holding master: parked, even with --include-named."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp), default_branch="master")
+        repo.git("checkout", "-b", "elsewhere")
+        squat = repo.add_worktree_on_default_branch()
+        r = _run_aged(repo, "--dry-run", "--include-named")
+        repo.assert_targets_repo(r)
+        r = _run_aged(repo, "--include-named")
+        if not squat.exists() or not repo.branch_exists("master"):
+            raise AssertionError(f"master or its worktree was removed\n{r.stdout}\n{r.stderr}")
+        if repo.current_branch(squat) == "master":
+            raise AssertionError(f"the squatter was not parked off master\n{r.stdout}")
+    return "the worktree moved to its own branch; master and the worktree both survive"
+
+
+def test_real_default_branch_worktree_under_detached_primary_is_kept() -> str:
+    """Known-bad: merged by definition, so --include-named would delete the default branch."""
+    for default_branch in ("main", "master"):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp), default_branch=default_branch)
+            repo.git("checkout", "--detach")
+            home = repo.add_worktree_on_default_branch()
+            r = _run_aged(repo, "--dry-run", "--include-named")
+            repo.assert_targets_repo(r)
+            r = _run_aged(repo, "--include-named")
+            if not home.exists() or not repo.branch_exists(default_branch):
+                raise AssertionError(f"{default_branch} or its worktree was removed\n{r.stdout}\n{r.stderr}")
+            if "default branch" not in r.stdout:
+                raise AssertionError(f"{default_branch}: no skip reason\n{r.stdout}")
+            if repo.worktree.exists():
+                raise AssertionError(f"control: the merged worktree should still go\n{r.stdout}")
+    return "main and master each keep their worktree; the merged claude/* worktree beside it still goes"
+
+
+# --- --scan-dir twice: print only what changed since the last run (dev-env#1307, ADR-161).
+# The real script against a throwaway repo. An unmerged detached worktree stays skipped with no
+# network, because is_merged() skips its `gh` fallback for a commit with no branch name.
+
+def _scan(repo: ThrowawayRepo, state: Path, *flags: str, commit: bool = True):
+    """One --scan-dir run, then the routine's commit step unless commit=False."""
+    r = repo.run_script(_MODULE_PATH, "--scan-dir", str(repo.root), "--include-named",
+                        "--state-file", str(state), *flags)
+    if r.returncode != 0:
+        raise AssertionError(f"scan: exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    if commit and "--dry-run" not in flags and "--full" not in flags:
+        error = commit_state(state)
+        if error:
+            raise AssertionError(error)
+    return r.stdout
+
+
+def _result_field(stdout: str, name: str) -> str:
+    lines = [line for line in stdout.splitlines() if line.startswith("RESULT: ")]
+    if not lines:
+        raise AssertionError(f"no RESULT line\n{stdout}")
+    fields = dict(part.split("=", 1) for part in lines[-1].split()[1:])
+    return fields[name]
+
+
+def _add_unmerged_worktree(repo: ThrowawayRepo, name: str) -> str:
+    path = repo.primary / ".claude" / "worktrees" / name
+    repo._git(repo.primary, "worktree", "add", "--detach", str(path))
+    (path / "unmerged.txt").write_text(name, encoding="utf-8")
+    repo._git(path, "add", "unmerged.txt")
+    repo._git(path, "commit", "-m", name)
+    return str(path.resolve())
+
+
+def _break_fetch(repo: ThrowawayRepo) -> None:
+    repo._git(repo.root, "--git-dir", str(repo.origin), "update-ref", "-d", "refs/heads/main")
+
+
+def test_scan_second_run_lists_nothing_then_only_the_new_entries() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+        _break_fetch(repo)
+
+        first = _scan(repo, state)
+        if f"skipped {old}" not in first or "WARNING: fetch failed" not in first:
+            raise AssertionError(f"first run should list both\n{first}")
+        if _result_field(first, "baseline") != "true" or _result_field(first, "new_fetch_failed") != "1":
+            raise AssertionError(f"first run RESULT wrong\n{first}")
+
+        second = _scan(repo, state)
+        if str(repo.primary) in second:
+            raise AssertionError(f"second run still lists this repo's entries\n{second}")
+        checks = {"baseline": "false", "new_skipped": "0", "new_fetch_failed": "0", "fetch_failed": "1"}
+        for name, want in checks.items():
+            if _result_field(second, name) != want:
+                raise AssertionError(f"second run: {name} should be {want}\n{second}")
+        if _result_field(second, "skipped") != _result_field(first, "skipped"):
+            raise AssertionError(f"the skipped total should stay in RESULT\n{first}\n{second}")
+
+        new = _add_unmerged_worktree(repo, "new")
+        third = _scan(repo, state)
+        if f"skipped {new}" not in third or old in third:
+            raise AssertionError(f"third run should list only the new worktree\n{third}")
+        if _result_field(third, "new_skipped") != "1":
+            raise AssertionError(f"third run RESULT wrong\n{third}")
+
+        repo._git(repo.primary, "push", "origin", "main")
+        fourth = _scan(repo, state)
+        if f"fetch works again: {repo.primary}" not in fourth or "WARNING" in fourth:
+            raise AssertionError(f"a fetch that recovers should be reported once\n{fourth}")
+    return "repeat run lists no skip or fetch failure and keeps RESULT; only a new entry is listed"
+
+
+def test_scan_missing_or_unreadable_state_gives_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        _scan(repo, state)
+        if kept in _scan(repo, state):
+            raise AssertionError("control: the state file should silence the list")
+
+        state.write_text("{not json", encoding="utf-8")
+        out = _scan(repo, state)
+        if "no usable state" not in out or f"skipped {kept}" not in out or "Done" not in out:
+            raise AssertionError(f"an unreadable state file should give the full report\n{out}")
+
+        state.unlink()
+        out = _scan(repo, state)
+        if f"skipped {kept}" not in out or not state.exists():
+            raise AssertionError(f"a missing state file should give the full report and be rewritten\n{out}")
+    return "an unreadable or missing state file gives the full report, and is rewritten"
+
+
+def test_scan_full_and_dry_run_leave_the_state_alone() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        old = _add_unmerged_worktree(repo, "old")
+
+        _scan(repo, state, "--dry-run")
+        if state.exists() or pending_path(state).exists():
+            raise AssertionError("--dry-run wrote the state file")
+        _scan(repo, state)
+        before = state.read_bytes()
+        new = _add_unmerged_worktree(repo, "new")
+
+        full = _scan(repo, state, "--full")
+        if old not in full or new not in full or "new_skipped" in full:
+            raise AssertionError(f"--full should list everything\n{full}")
+        if state.read_bytes() != before:
+            raise AssertionError("--full updated the state")
+
+        dry = _scan(repo, state, "--dry-run")
+        if new not in dry or old in dry or state.read_bytes() != before:
+            raise AssertionError(f"--dry-run should preview the change only\n{dry}")
+
+        real = _scan(repo, state)
+        if new not in real or _result_field(real, "new_skipped") != "1":
+            raise AssertionError(f"--full and --dry-run used up the next run's news\n{real}")
+    return "--full lists all and --dry-run previews, and neither uses up the next run's news"
+
+
+def test_skip_findings_ignores_passing_skips_but_keeps_their_record() -> str:
+    prior = {"/known": "not merged into origin/main"}
+    findings = prune.skip_findings(
+        [("/primary", prune.SKIP_PRIMARY_OR_CURRENT), ("/live", prune.SKIP_LIVE_SESSION),
+         ("/known", prune.SKIP_LIVE_SESSION), ("/dirty", "has uncommitted changes")],
+        prior,
+    )
+    expected = {"/known": "not merged into origin/main", "/dirty": "has uncommitted changes"}
+    if findings != expected:
+        raise AssertionError(f"got {findings}")
+    return "primary/current/live skips aren't findings; a known worktree going live keeps its entry"
+
+
+def test_single_repo_mode_keeps_the_full_report() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        kept = _add_unmerged_worktree(repo, "kept")
+        for _ in range(2):
+            r = repo.run_script(_MODULE_PATH, "--include-named", "--state-file", str(state))
+            if f"skipped {kept}" not in r.stdout or "RESULT:" in r.stdout:
+                raise AssertionError(f"--repo-path changed behaviour\n{r.stdout}\n{r.stderr}")
+        if state.exists():
+            raise AssertionError("--repo-path wrote the state file")
+    return "--repo-path prints its full report every time and never touches the state"
+
+
+def test_scan_uncommitted_run_reports_again() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        new = _add_unmerged_worktree(repo, "new")
+        # The routine's push failed, so it never committed: the next run must say it again.
+        first = _scan(repo, state, commit=False)
+        second = _scan(repo, state)
+        for label, out in (("uncommitted", first), ("next", second)):
+            if f"skipped {new}" not in out or _result_field(out, "new_skipped") != "1":
+                raise AssertionError(f"{label} run should list the new worktree\n{out}")
+        if new in _scan(repo, state):
+            raise AssertionError("after a commit the worktree should no longer be listed")
+    return "a run that isn't committed is reported again next run, and is quiet once committed"
+
+
+def test_scan_unreadable_remote_is_a_finding() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        state = Path(tmp) / "state.json"
+        _scan(repo, state)
+        url = repo.origin.as_posix()
+        repo._git(repo.primary, "remote", "set-url", "origin", str(Path(tmp) / "elsewhere"))
+        broken = _scan(repo, state)
+        if f"SKIP {repo.primary}" not in broken or _result_field(broken, "new_remote_failed") != "1":
+            raise AssertionError(f"a remote that stops resolving should be reported\n{broken}")
+        if f"SKIP {repo.primary}" in _scan(repo, state):
+            raise AssertionError("the same remote failure was reported twice")
+        repo._git(repo.primary, "remote", "set-url", "origin", url)
+        fixed = _scan(repo, state)
+        if f"GitHub remote resolves again: {repo.primary}" not in fixed:
+            raise AssertionError(f"a fixed remote should be reported once\n{fixed}")
+    return "a GitHub remote that can't be read is reported once, and so is its recovery"
+
+
+def test_scan_unreadable_scan_dir_fails() -> str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo = ThrowawayRepo(Path(tmp))
+        not_a_dir = Path(tmp) / "file.txt"
+        not_a_dir.write_text("x", encoding="utf-8")
+        r = repo.run_script(_MODULE_PATH, "--scan-dir", str(not_a_dir),
+                            "--state-file", str(Path(tmp) / "state.json"))
+        if r.returncode != 1 or "RESULT:" not in r.stdout or "failed" not in r.stdout:
+            raise AssertionError(f"exit {r.returncode}\n{r.stdout}\n{r.stderr}")
+    return "a scan directory that can't be read exits 1 instead of reporting a clean night"
+
+
 def main() -> int:
     tests = [
+        ("scan: fetch timeout -> next repo reached, reported as timed out", test_scan_continues_after_fetch_timeout),
+        ("scan: discovery timeout -> next repo reached, reported as timed out", test_scan_continues_after_discovery_timeout),
+        ("scan: failed and timed-out fetches listed separately", test_scan_reports_failed_and_timed_out_separately),
+        ("scan: unexpected error -> next repo reached, named, exit 1", test_scan_continues_after_unexpected_error),
+        ("draft squat: fetch timeout -> not provably pushed", test_draft_squat_fetch_timeout_counts_as_not_pushed),
+        ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),
+        ("real repo: origin/HEAD set -> believed without the remote", test_real_origin_head_is_believed_without_asking_the_remote),
+        ("real repo: discovery failure -> fetch failed, run carries on", test_real_discovery_failure_lands_in_fetch_failed),
+        ("real repo: hostile branch name is not a fetch option", test_real_hostile_branch_name_is_not_a_fetch_option),
+        ("real repo: stale origin/HEAD -> asks the remote", test_real_stale_origin_head_asks_the_remote),
+        ("real repo: discovery failure still protects master", test_real_discovery_failure_still_protects_master),
+        ("real repo: non-main squatter parked, default branch survives", test_real_non_main_squatter_is_parked_and_default_branch_survives),
+        ("real repo: default-branch worktree under detached primary kept", test_real_default_branch_worktree_under_detached_primary_is_kept),
+        ("--scan-dir repeat lists nothing, then only the new entries", test_scan_second_run_lists_nothing_then_only_the_new_entries),
+        ("--scan-dir missing or unreadable state gives the full report", test_scan_missing_or_unreadable_state_gives_full_report),
+        ("--scan-dir --full and --dry-run leave the state alone", test_scan_full_and_dry_run_leave_the_state_alone),
+        ("--scan-dir uncommitted run reports again", test_scan_uncommitted_run_reports_again),
+        ("--scan-dir unreadable remote is a finding", test_scan_unreadable_remote_is_a_finding),
+        ("--scan-dir unreadable scan dir fails", test_scan_unreadable_scan_dir_fails),
+        ("skip_findings ignores passing skips, keeps their record", test_skip_findings_ignores_passing_skips_but_keeps_their_record),
+        ("--repo-path keeps the full report", test_single_repo_mode_keeps_the_full_report),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run prunes", test_cli_control_dry_run_keeps_and_plain_run_prunes),
+        ("recent git activity keeps a worktree with no transcript", test_recent_git_activity_keeps_worktree_with_no_transcript),
+        ("idle zero-commit worktree is still removed", test_idle_zero_commit_worktree_is_still_removed),
+        ("is_dirty does not refresh the index", test_is_dirty_does_not_refresh_the_index),
         ("CLI parser: existing callers still parse", test_cli_parser_accepts_existing_callers),
         ("CLI parser: abbreviation and bad values rejected", test_cli_parser_rejects_abbreviation_and_bad_values),
         ("--include-named unset: named branch still skipped (default unchanged)", test_named_branch_skipped_by_default),

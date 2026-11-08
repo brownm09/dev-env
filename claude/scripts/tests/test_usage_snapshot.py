@@ -178,11 +178,13 @@ def test_valid_token_proceeds_silently() -> str:
     return "5h remaining -> ok, no advisory"
 
 
-def test_expiring_within_hour_warns() -> str:
+def test_expiring_within_hour_has_no_advisory() -> str:
+    # main() uses an expiring token and shows the snapshot, so it must not carry
+    # warning text that never prints (dev-env#1328).
     state, advisory = classify_token(NOW_MS + 30 * 60_000, NOW_MS)
     assert state == "expiring", f"expected expiring, got {state}"
-    assert "within 1 hour" in advisory, f"advisory missing warning text: {advisory!r}"
-    return "30m remaining -> expiring, within-1h advisory"
+    assert advisory == "", f"expected empty advisory, got {advisory!r}"
+    return "30m remaining -> expiring, no advisory (main() still fetches the snapshot)"
 
 
 def test_expired_token_now_visible() -> str:
@@ -1062,7 +1064,7 @@ def main() -> int:
         ("format_snapshot static template is ASCII (dev-env#736)", test_format_snapshot_static_template_is_ascii),
         ("snapshot wire-safe via ascii_sanitize despite non-ASCII action (dev-env#736)", test_snapshot_wire_safe_even_with_non_ascii_action),
         ("valid token proceeds silently", test_valid_token_proceeds_silently),
-        ("token expiring within 1h warns", test_expiring_within_hour_warns),
+        ("token expiring within 1h has no advisory", test_expiring_within_hour_has_no_advisory),
         ("expired token now yields advisory", test_expired_token_now_visible),
         ("exact-expiry boundary is expired", test_exact_expiry_boundary_counts_as_expired),
         ("blanked creds accessToken='' reaches the no-token branch", test_get_access_token_blank_string_token),
