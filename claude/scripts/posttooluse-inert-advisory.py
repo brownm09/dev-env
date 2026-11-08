@@ -25,15 +25,21 @@ guard plus a per-session sentinel), then exits 0.
 Detection (no `gh` calls, no `project` scope — purely the transcript the Stop
 payload points at):
 
-  inert  ==  a dev-env (project #3) board action is present in the transcript
-             AND zero transcript `attachment` records carry
-             `attachment.hookEvent == "PostToolUse"`.
+  fire  ==  zero transcript `attachment` records carry
+            `attachment.hookEvent == "PostToolUse"`
+            AND a dev-env (project #3) board action is present whose call either
+            is marked `is_error`, or started after the session's
+            `bash_state_<session-id>.json` was last written (or there is no file).
 
 The harness writes an `attachment` record whenever a hook produces output; a
 PostToolUse hook that ran emits either a `hook_success` (exit 0) or a
 `hook_blocking_error` (exit 2, e.g. post-tool-use.py) attachment, and both carry
-`hookEvent == "PostToolUse"`. Zero such attachments alongside a board action that
-*would* have produced one in a healthy session is the inert signature.
+`hookEvent == "PostToolUse"`. But a hook that prints nothing leaves no attachment,
+so zero attachments alone also matched sessions whose hooks ran silently. The
+silent `post-tool-use-cwd-track.py` hook writes the `bash_state` file after every
+successful shell call, so a write at or after the call's start shows dispatch.
+A failed call runs no PostToolUse hook at all, so an `is_error` create that still
+printed its URL is a real skipped board add (dev-env#1331).
 
 False-positive guards:
   * Only **high-confidence dev-env actions** trigger: a `gh issue/pr create`
@@ -65,6 +71,7 @@ ADR-091/103 (the exit-2 Stop delivery contract).
 from __future__ import annotations
 
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import _bash_state
 import _hookout
 import _hookutil
 import re
@@ -75,6 +82,8 @@ import sys
 # module itself uses it solely via iter_bash_calls) — the same
 # module-attribute-indirection the tests rely on (ADR-073).
 from _hookutil import iter_bash_calls, load_records, _result_text  # noqa: F401
+from _hookutil import _content_items, iter_tool_uses
+from datetime import datetime
 
 # mask_prose_flag_values (dev-env#634, ADR-050 Amendment 17) masks
 # --subject/--body decoys before the dev-env PR-URL check -- see
@@ -121,7 +130,9 @@ _AUTO_FLAG_RE = re.compile(r"(?<!\S)--auto(?:=\S+)?(?=\s|$)")
 # A genuine merge *failure* (not the harmless issue-#275 worktree cleanup tail,
 # which means the PR merged but the local branch could not be deleted).
 _HARD_MERGE_FAIL_RE = re.compile(
-    r"not mergeable|merge conflict|failed to merge|GraphQL:.*mergeable",
+    r"not mergeable|merge conflict|failed to merge|GraphQL:.*mergeable"
+    # A rate-limited merge never reached GitHub's merge endpoint (dev-env#1331).
+    r"|API rate limit (?:already )?exceeded",
     re.IGNORECASE,
 )
 # cwd inside the dev-env repo (canonical `.../Git/dev-env`, a Claude-managed
@@ -279,13 +290,75 @@ def detect_board_actions(calls: list[tuple[str, str, str]]) -> list[dict]:
     return actions
 
 
-def should_emit(records: list[dict]) -> list[dict] | None:
-    """Return detected dev-env board actions when PostToolUse was inert this
-    session, else None. The presence of *any* PostToolUse attachment short-circuits
-    to None (dispatch worked → no advisory)."""
+def iter_bash_call_details(records: list[dict]) -> list[tuple[str, str, str, bool, str]]:
+    """`iter_bash_calls` plus what the decision needs per call:
+    ``(command, output, cwd, is_error, started)``. *started* is the ISO timestamp
+    of the assistant record that issued the call, and *is_error* is the result's
+    own flag."""
+    issued: dict = {}
+    for _i, rec, item in iter_tool_uses(records):
+        if item.get("name") == "Bash" and item.get("id"):
+            issued[item["id"]] = (
+                (item.get("input") or {}).get("command", ""),
+                rec.get("cwd", "") or "",
+                rec.get("timestamp", "") or "",
+            )
+    calls: list = []
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("type") != "user":
+            continue
+        for item in _content_items(rec):
+            if isinstance(item, dict) and item.get("type") == "tool_result":
+                tid = item.get("tool_use_id")
+                if tid in issued:
+                    command, cwd, started = issued[tid]
+                    calls.append((command, _result_text(item, rec), cwd,
+                                  item.get("is_error") is True, started))
+    return calls
+
+
+def _dispatched_since(started: str, bash_state_mtime: float | None) -> bool:
+    """True when `post-tool-use-cwd-track.py` wrote the session's `bash_state` file
+    at or after *started*, so PostToolUse dispatched after this call began (ADR-053's
+    2026-11-07 amendment). No file, or a timestamp that won't parse, is False, which
+    leaves the advisory as it was before the check existed."""
+    if bash_state_mtime is None or not started:
+        return False
+    try:
+        began = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return bash_state_mtime >= began
+
+
+def should_emit(records: list[dict], bash_state_mtime: float | None = None) -> list[dict] | None:
+    """Return the dev-env board actions whose PostToolUse automation may be
+    missing, else None.
+
+    Any PostToolUse attachment short-circuits to None, as before. Otherwise a
+    detected action is kept when (dev-env#1331):
+      * its call is marked ``is_error``: PostToolUse never runs for a failed call,
+        so a create that printed its URL inside a chain that exited non-zero
+        really skipped its board add, whatever the rest of the session shows; or
+      * the session's `bash_state` file (*bash_state_mtime*) is missing or older
+        than the call's start, so nothing shows PostToolUse dispatching after it.
+    A successful call followed by a `bash_state` write means the hooks ran and
+    stayed silent, which is what most past firings were.
+    """
     if posttooluse_attachment_present(records):
         return None
-    actions = detect_board_actions(iter_bash_calls(records))
+    actions: list[dict] = []
+    for command, output, cwd, is_error, started in iter_bash_call_details(records):
+        found = detect_board_actions([(command, output, cwd)])
+        if not found:
+            continue
+        if is_error:
+            actions.extend(
+                {**a, "label": f"{a['label']} (its call exited non-zero, so no PostToolUse hook ran for it)"}
+                for a in found
+            )
+        elif not _dispatched_since(started, bash_state_mtime):
+            actions.extend(found)
     return actions or None
 
 
@@ -302,9 +375,9 @@ def format_advisory(actions: list[dict]) -> str:
         "  Board-relevant gh command(s) ran with no PostToolUse output:\n"
         f"{labels}\n"
         "  Possibly missing: board add (create) / Done-move + usage snapshot (merge).\n"
-        "  This doesn't prove hooks didn't run: they can run silently, and a tool call "
-        "that exited non-zero runs none. If ~/.claude/scratch/bash_state_<session-id>.json "
-        "was updated at the last successful shell call, hooks ran.\n"
+        "  This doesn't prove hooks didn't run. A tool call that exited non-zero runs "
+        "none; for any other call listed, ~/.claude/scratch/bash_state_<session-id>.json "
+        "was missing or older than the call, so nothing shows a hook running after it.\n"
         "  If an item is really missing, apply the manual fallback: dev-env CLAUDE.md -> "
         "'GitHub Project' section -> Fallback (gh project item-add / item-edit). "
         "Advisory only; nothing was blocked."
@@ -357,7 +430,12 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    actions = should_emit(records)
+    try:
+        bash_state_mtime = _bash_state.state_path(session_id).stat().st_mtime if session_id else None
+    except OSError:
+        bash_state_mtime = None
+
+    actions = should_emit(records, bash_state_mtime)
     if actions:
         # The inert signature was detected. A Stop hook's exit-0 stdout is invisible
         # to Claude, so BLOCK (exit 2 + stderr) — the one Stop channel that reaches
