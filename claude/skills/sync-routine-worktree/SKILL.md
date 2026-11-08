@@ -102,6 +102,7 @@ See `docs/adr/013-sync-routine-worktree-skill.md` for the full rationale.
 
 This skill syncs a repo's working tree to `origin/main`. It does **not** handle:
 
-- Draft-branch workflows (e.g., journal-compose's `draft/YYYY-MM-DD` branch). Those are routine-specific and stay in the routine itself; the routine can call this skill first to ensure `origin/main` is current, then perform its own draft-branch logic.
+- **The shared engineering-journal checkout (`C:/Users/brown/Git/engineering-journal`). Never pass it as `REPO`:** concurrent sessions commit stubs there, and step 4's rebase or reset would act on their branch. Fetch read-only and work through a disposable detached worktree instead ([ADR-082](../../../docs/adr/082-journal-compose-worktree-isolation.md), dev-env#657).
+- Draft-branch workflows (e.g., journal-compose's `draft/YYYY-MM-DD` branch). Those are routine-specific and stay in the routine itself.
 - Multi-repo coordination. If a routine reads from two repos, it invokes this skill twice with different `REPO` values.
 - Pushing or merging anything. This is a read-only sync of the working tree.

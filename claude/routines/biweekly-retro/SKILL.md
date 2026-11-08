@@ -33,17 +33,22 @@ user on 2026-06-09 (see dev-env#343).
 
 ---
 
-## Step 0 — Sync the engineering-journal working tree
+## Step 0 — Fetch the engineering-journal repo (read-only)
 
-Read `~/.claude/skills/sync-routine-worktree/SKILL.md` and execute its Behavior section end-to-end
-with these parameters:
+```bash
+git -C C:/Users/brown/Git/engineering-journal fetch origin
+```
 
-- `REPO` = `C:/Users/brown/Git/engineering-journal`
-- `VERIFY_FILE` = `sessions/meta/README.md`
-- `PREFIX` = `biweekly-retro`
+If the fetch fails, push-notify `biweekly-retro: git fetch failed — check
+C:/Users/brown/Git/engineering-journal` and exit cleanly: do not commit, do not open a PR, do not
+create an issue.
 
-On **SUCCESS**, continue. On **ABORT**, exit cleanly — the push notification has already been sent;
-do not commit, do not open a PR, do not create an issue.
+That path is the **shared canonical checkout**, where concurrent sessions commit journal stubs all
+day, usually on `draft/YYYY-MM-DD`. This routine only fetches into it and registers one disposable
+worktree (Step 1): it never rebases, resets or switches branches there, so it does not use the sync
+skill other routines start with. See the
+[ADR-082 addendum (2026-11-07)](../../../docs/adr/082-journal-compose-worktree-isolation.md) and
+dev-env#657.
 
 ---
 
@@ -65,14 +70,35 @@ nudging one cycle by a week. This is acceptable for a retrospective.)
 
 ---
 
-## Step 1 — Define the analysis window
+## Step 1 — Define the analysis window and create the disposable worktree
 
 ```bash
 EJ="C:/Users/brown/Git/engineering-journal"
 SCRATCH="C:/Users/brown/.claude/scratch"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/retro-${RUN_DATE}"
 WINDOW_START=$(date -d "${RUN_DATE} -28 days" +%Y-%m-%d)   # trailing 4 weeks, inclusive
 mkdir -p "$SCRATCH"
+# Only this routine makes retro-* worktrees, and one left by a crashed run holds nothing: Step 5's
+# draft lives in scratch and the rest is regenerable from origin.
+for OLD in "$EJ"/.claude/worktrees/retro-*; do
+  [ -d "$OLD" ] || continue
+  git -C "$EJ" worktree remove --force "$OLD" || { rm -rf "$OLD"; git -C "$EJ" worktree prune; }
+done
+git -C "$EJ" worktree add --detach "$WT" refs/remotes/origin/main
+[ -f "$WT/sessions/meta/README.md" ]
 ```
+
+If that block exits non-zero, push-notify `biweekly-retro: could not create the worktree at ${WT}`
+and exit cleanly, as in Step 0.
+
+`$WT` is detached at `origin/main`, the same isolation `/journal-compose` uses (ADR-082). **Read every
+journal from `$WT`, never from `$EJ/sessions/`**: the shared checkout's files depend on whichever
+branch another session left it on. Drive `$WT` with `git -C` and absolute paths and never `cd` into
+it, so it can be removed. Shell state does not persist between Bash calls, so restate `EJ`, `WT` and
+`RUN_DATE` at the top of any later block that uses them.
+
+**Any exit after this step removes the worktree first** (Step 5.5 has the command).
 
 The window is `[WINDOW_START, RUN_DATE]`. Composed journals are named `YYYY-MM-DD-<slug>.md` where
 the leading 10 characters are the calendar date — compare that prefix against the window.
@@ -81,14 +107,14 @@ the leading 10 characters are the calendar date — compare that prefix against 
 
 ## Step 2 — Discover the journals in scope
 
-Enumerate every project directory under `${EJ}/sessions/` (each subdirectory is a project, e.g.
+Enumerate every project directory under `${WT}/sessions/` (each subdirectory is a project, e.g.
 `lifting-logbook`, `career-playbook`, `dev-env`, `meta`). For each project:
 
 1. Read its `README.md` index first to orient (token efficiency — do not blind-glob large dirs).
 2. Collect composed journal files whose leading `YYYY-MM-DD` falls within the window:
 
 ```bash
-for proj in "$EJ"/sessions/*/; do
+for proj in "$WT"/sessions/*/; do
   name=$(basename "$proj")
   for f in "$proj"/20??-??-??-*.md; do
     [ -e "$f" ] || continue
@@ -104,7 +130,8 @@ Exclude `README.md`, `*.stub.md`, and `*.manifest.jsonl` (the glob above already
 
 Build a per-project list of in-window journal paths. If **no** journals fall in the window across
 all projects, send a push notification — `biweekly-retro: no journal activity in the trailing 4
-weeks (${WINDOW_START}..${RUN_DATE}) — nothing to analyze` — and exit cleanly with status 0.
+weeks (${WINDOW_START}..${RUN_DATE}) — nothing to analyze`, remove the worktree, and exit cleanly
+with status 0.
 
 ---
 
@@ -136,7 +163,7 @@ once and a skipped run loses nothing. Set it in this same block, because shell s
 over from earlier steps:
 
 ```bash
-PREVIOUS_RETRO=$(ls C:/Users/brown/Git/engineering-journal/sessions/meta/retro | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}-retro\.md$' | sort | tail -1 | cut -c1-10)
+PREVIOUS_RETRO=$(git -C C:/Users/brown/Git/engineering-journal ls-tree --name-only origin/main sessions/meta/retro/ | sed 's#.*/##' | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}-retro\.md$' | sort | tail -1 | cut -c1-10)
 CLOSED_SINCE=${PREVIOUS_RETRO:-$(date -d "28 days ago" +%Y-%m-%d)}
 py -3 ~/.claude/scripts/deferred-followup-sweep.py --closed-since "$CLOSED_SINCE" \
   --repo brownm09/dev-env --repo brownm09/career-playbook --repo merickvaughn/lifting-logbook \
@@ -169,8 +196,9 @@ checklist** — these route to that repo in Step 6.
 
 **§3 — Process-to-product ratio (tracked metric).** Estimate the share of effort on
 process/tooling/automation vs. user-facing product. State the method (PR counts, themes) so runs are
-comparable, and **show the trend** vs. the previous retro (read the prior `*-retro.md` file's §3 to
-get the last value). A high ratio is fine if deliberate; a drifting one is the warning.
+comparable, and **show the trend** vs. the previous retro (read the prior `*-retro.md` file's §3,
+under `$WT/sessions/meta/retro/`, to get the last value). A high ratio is fine if deliberate; a
+drifting one is the warning.
 
 Tag each action item with the window(s) that surfaced it. Be specific and opinionated — the value is
 in the meta-observations, not an exhaustive log.
@@ -179,17 +207,25 @@ in the meta-observations, not an exhaustive log.
 
 ## Step 5 — Write and PR the committed report
 
-1. Ensure the retro folder exists, then create a one-time README if it is missing:
+Write both files with the Write tool into the staging folder
+`C:/Users/brown/.claude/scratch/retro-${RUN_DATE}/` (`$STAGE` below), never into `$WT`: the harness
+refuses Write/Edit into another worktree ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)),
+and a heredoc is blocked too ([ADR-138](../../../docs/adr/138-shell-content-write-guard.md)). Step 5.3
+copies them across. The draft in `$STAGE` also outlives the worktree, so it is what a failed run
+recovers from.
+
+1. Clear any draft left by a failed run today, as its own Bash call (otherwise the Write tool refuses
+   to overwrite a file this session has not read), then check whether the one-time README is missing:
 
 ```bash
-RETRO_DIR="$EJ/sessions/meta/retro"
-mkdir -p "$RETRO_DIR"
-ls "$RETRO_DIR/README.md"   # absent -> write it with the Write tool, below
+rm -f C:/Users/brown/.claude/scratch/retro-YYYY-MM-DD/*.md
 ```
 
-If that `ls` reports the file is missing, write `${RETRO_DIR}/README.md` **with the Write tool**
-(never a heredoc — `claude/CLAUDE.md` → Authoring File Content, [ADR-138](../../../docs/adr/138-shell-content-write-guard.md);
-`pre-tool-use-shell-content-write-guard.py` blocks the shell form) with this content:
+```bash
+ls C:/Users/brown/Git/engineering-journal/.claude/worktrees/retro-YYYY-MM-DD/sessions/meta/retro/README.md   # absent -> write it to $STAGE with the Write tool, below
+```
+
+If that `ls` reports the file is missing, write `${STAGE}/README.md` with this content:
 
 ```markdown
 # Biweekly Retrospectives
@@ -201,36 +237,56 @@ items) → §3 process-to-product ratio tracked over time. The routine files act
 the **correct repo** for each finding (cross-cutting → dev-env).
 ```
 
-2. Write the report to `${RETRO_DIR}/${RUN_DATE}-retro.md` in the **§1/§2/§3 structure from Step 4**
+2. Write the report to `${STAGE}/${RUN_DATE}-retro.md` in the **§1/§2/§3 structure from Step 4**
    (short title + the window it covers at the top).
 
-3. Commit on a dedicated branch and open a PR to `main` (this repo squash-merges; do **not** commit
-   to `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user
-   reviews and merges):
+3. Commit in the worktree and push a dedicated branch (this repo squash-merges; do **not** commit to
+   `main` directly, and do **not** auto-merge — auto-merge is disabled by ADR-031, the user reviews
+   and merges). `$WT` has its own index, so another session's staged files cannot be swept in, and
+   stays detached, so no local branch is created:
 
 ```bash
-cd "$EJ"
-git checkout -b "retro/${RUN_DATE}" origin/main 2>/dev/null || git checkout "retro/${RUN_DATE}"
-git add "sessions/meta/retro/${RUN_DATE}-retro.md" "sessions/meta/retro/README.md"
-# This checkout is shared by every concurrent Claude Code session — the explicit `--` pathspec keeps
-# this commit from sweeping in another session's already-staged files (see dev-env claude/CLAUDE.md →
-# Engineering Journal → Stub file workflow → "Commit with an explicit pathspec").
-git commit -m "[docs] Biweekly retro ${RUN_DATE} (trailing 4 weeks)" -- "sessions/meta/retro/${RUN_DATE}-retro.md" "sessions/meta/retro/README.md"
-git push -u origin "retro/${RUN_DATE}"
+set -e
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/retro-${RUN_DATE}"
+STAGE="C:/Users/brown/.claude/scratch/retro-${RUN_DATE}"
+BRANCH="retro/${RUN_DATE}"
+# A same-day re-run continues the branch an earlier run pushed, so the push still fast-forwards.
+if git -C "$EJ" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+  git -C "$WT" checkout --detach "refs/remotes/origin/$BRANCH"
+fi
+mkdir -p "$WT/sessions/meta/retro"
+cp "$STAGE"/*.md "$WT/sessions/meta/retro/"
+git -C "$WT" add sessions/meta/retro
+git -C "$WT" diff --cached --quiet || git -C "$WT" commit -m "[docs] Biweekly retro ${RUN_DATE} (trailing 4 weeks)"
+git -C "$WT" push origin "HEAD:refs/heads/$BRANCH"
 ```
 
-4. Open the PR and capture its URL:
+4. Open the PR and capture its URL. On a same-day re-run `gh` reports that a PR for the branch already
+   exists: the push above has already updated it, so use that PR's URL.
 
 ```bash
+RUN_DATE=YYYY-MM-DD
+WINDOW_START=YYYY-MM-DD   # from Step 1
 gh pr create --repo brownm09/engineering-journal \
   --base main --head "retro/${RUN_DATE}" \
   --title "Biweekly retro ${RUN_DATE}" \
   --body "Automated biweekly retrospective covering ${WINDOW_START}..${RUN_DATE}. Companion issue with the action checklist: <filled in Step 6>."
 ```
 
+5. Remove the worktree, whether or not steps 3 and 4 succeeded:
+
+```bash
+EJ="C:/Users/brown/Git/engineering-journal"
+RUN_DATE=YYYY-MM-DD
+WT="$EJ/.claude/worktrees/retro-${RUN_DATE}"
+git -C "$EJ" worktree remove --force "$WT" || { rm -rf "$WT"; git -C "$EJ" worktree prune; }
+```
+
 If any git/PR step fails, push-notify `biweekly-retro: report git/PR step failed — draft at
-${RETRO_DIR}/${RUN_DATE}-retro.md` and continue to Step 6 if possible (the report file still exists
-locally for recovery).
+${STAGE}/${RUN_DATE}-retro.md` and continue to Step 6 if possible (the draft stays in `$STAGE` for
+recovery).
 
 ---
 
@@ -323,14 +379,15 @@ Report PR: <url>   Issues filed: <repo#N, repo#N, ...>
 Chain refill (dev-env#967): <A> alive, <R> refilled, <M> ambiguous — see Step 6.5 summary.
 ```
 
-Clean up any scratch files this run created.
+Clean up any scratch files this run created, except the `$STAGE` draft if Step 5 failed.
 
 ---
 
 ## Constraints
 
 - **Engineering-journal repo:** `C:/Users/brown/Git/engineering-journal`; sessions root `sessions/`,
-  one subdirectory per project.
+  one subdirectory per project. **Shared checkout: fetch into it and register worktrees only.** Read
+  and commit in `$WT` (ADR-082, dev-env#657, dev-env#346).
 - **Window:** trailing 28 days, inclusive of `RUN_DATE`.
 - **Cadence:** weekly Sunday trigger, even-ISO-week parity gate → biweekly.
 - **Never** commit to `main`; open a PR. **Never** auto-merge (ADR-031). **Never** call
@@ -355,7 +412,7 @@ Clean up any scratch files this run created.
 > Step 6.5 addition above — needed here too, so that change actually takes effect live), the live
 > copy reads this canonical file at run time and defers to it when present, falling back to an
 > embedded copy only when it is missing or unreadable. In this routine's own step numbering, that
-> canonical read-through runs immediately after Step 0's sync and before Step 0.5's biweekly parity
+> canonical read-through runs immediately after Step 0's fetch and before Step 0.5's biweekly parity
 > gate — **not** as a literal "Step 0.5" heading, since that number is already taken by the parity
 > gate in this file; the live copy's self-reference is a run-time behavior of the live prompt, not a
 > renumbered step in this canonical document. This routine carried **no** dual-copy caveat at all

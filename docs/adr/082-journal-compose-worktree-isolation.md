@@ -594,11 +594,84 @@ automatically would not have produced an entry.
 
 ---
 
+## Addendum (2026-11-07): the report routines isolate themselves the same way
+
+The Companion section above removed the `sync-routine-worktree` call from `daily-journal-compose`
+only. `biweekly-retro` and `weekly-memory-audit` kept it, with `REPO` set to the shared checkout, and
+then ran `git checkout -b` there for their report branch
+([dev-env#657](https://github.com/brownm09/dev-env/issues/657),
+[dev-env#346](https://github.com/brownm09/dev-env/issues/346)). A rebase or branch switch in that
+checkout can pull the branch out from under a concurrent stub-writing session, which is why those two
+tasks were held back when the scheduled tasks moved to a PC running many more concurrent sessions.
+
+**Decision.** Neither routine runs `sync-routine-worktree` against engineering-journal or moves that
+checkout's branch or index. Step 0 is a read-only `git fetch origin`. The report is committed from a
+disposable worktree detached at `origin/main` and pushed with `HEAD:refs/heads/<prefix>/<date>`. Only
+`biweekly-retro` reads journals, so it creates its worktree in Step 1 and reads from there, and the
+newest prior retro comes from `ls-tree origin/main`. `weekly-memory-audit` creates its worktree in
+Step 5.
+
+**Judgment calls.**
+
+- **Drafts go to scratch, then `cp`.** The Write tool refuses other worktrees
+  ([dev-env#1119](https://github.com/brownm09/dev-env/issues/1119)), and a heredoc is blocked
+  ([ADR-138](138-shell-content-write-guard.md)). A draft outside the worktree also survives removal, so
+  the worktree can always be removed, and a failed push loses nothing. This replaces the old recovery
+  note, which pointed at a file left dirty in the shared checkout.
+- **A same-day re-run continues the pushed branch** rather than forcing it, so a run that pushed but
+  failed at `gh pr create` still recovers. Without this a detached commit on `origin/main` would be
+  rejected as a non-fast-forward for the rest of that day.
+- **The start of each run removes every `<prefix>-*` worktree**, not only today's. A crashed run's
+  worktree carries an old date, holds nothing the draft does not, and is not something the prune
+  tooling removes, because a detached worktree is skipped (Judgment calls above). Only the routine makes
+  worktrees under that prefix, and the scheduler runs one at a time.
+- **No concurrency lock**, unlike compose's. Compose locks because several invocations can target one
+  date; these routines have one run per schedule.
+
+**Alternatives rejected.**
+
+- *Only move the commit to a worktree, as #346 suggests, and keep the sync.* Step 0 is the larger half
+  of the hazard, and #657 exists because of it.
+- *Read with `git show origin/main:<path>` and no worktree in `biweekly-retro`.* Its `Explore` subagents
+  read many files by path, and a worktree gives them ordinary paths for one extra `worktree add`.
+- *Fix [dev-env#618](https://github.com/brownm09/dev-env/issues/618) and keep the sync.* That bug makes
+  the skill worse on a detached HEAD, but on a draft branch, the normal case, the rebase is the skill
+  working as written.
+
+**Gate calibration.** `claude/scripts/tests/test_routine_journal_isolation.py` keys on two literal
+properties: a `REPO` value naming engineering-journal, and a fenced-block `git -C <shared> <verb>` or
+`cd <shared>`. There is no numeric threshold. Known-good: all 9 routines at this commit, including
+`retro-chain-backstop`'s documented `merge --ff-only`, which `merge` is left out of the verb list to
+allow, and `daily-journal-compose`'s prose naming the old call. Known-bad: both routines as they stood
+before this change, and the seven snippets in the test. Hit rates: 0 of 9 known-good flagged, all
+known-bad flagged, so the worst known-good observation sits on the far side of a literal match, not
+near a threshold. The check asserts its own extraction is non-empty, and the end-to-end cases run the
+routines' real blocks against a bare origin, where the sequence removed here does go red.
+
+**Consequences.**
+
+- The live task prompts must not keep their own Step 0 sync. A live copy that reads this canonical file
+  at run time does so *after* its embedded Step 0, so re-registering it without this change would still
+  rebase the shared checkout before the read-through.
+- **Testing.** The test above, which the suite runner discovers on its own.
+- **Observability.** N/A — the push notifications are unchanged except for the draft's new path.
+- **Security.** N/A — no new credentials or auth surface.
+- **Resilience.** A failed push or PR step leaves the draft in scratch and no worktree behind; a crash
+  leaves a worktree that the next run removes.
+- **Data integrity.** The report branch is built from `origin/main`, so another session's staged or
+  dirty stubs cannot reach it.
+
+---
+
 ## References
 
 - `claude/skills/journal-compose/SKILL.md` — Step 0.6, 9.5, 6.5/6.6, and the Phase 2 coordinator
   gate
 - `claude/routines/daily-journal-compose/SKILL.md` — companion edit
+- `claude/routines/biweekly-retro/SKILL.md`, `claude/routines/weekly-memory-audit/SKILL.md` — Addendum
+  (2026-11-07)
+- [dev-env#657](https://github.com/brownm09/dev-env/issues/657),
+  [dev-env#346](https://github.com/brownm09/dev-env/issues/346) — Addendum (2026-11-07)
 - [dev-env#467](https://github.com/brownm09/dev-env/issues/467) — motivating issue (both original
   gaps, plus the 2026-07-03 incident comment)
 - [dev-env#578](https://github.com/brownm09/dev-env/issues/578) — Addendum (2026-07-05): resolves
