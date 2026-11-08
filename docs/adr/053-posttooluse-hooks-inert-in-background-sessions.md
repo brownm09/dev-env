@@ -238,4 +238,5 @@ also had silent PR creates in sessions that did have attachments, which weakens 
 So the message now states what was observed, says this doesn't prove hooks didn't run, gives the
 check above, and no longer names a launch path. Its detection is unchanged. It still points at a real
 gap in row 2, and stopping it from firing is a separate decision with its own calibration:
-[dev-env#1331](https://github.com/brownm09/dev-env/issues/1331).
+[dev-env#1331](https://github.com/brownm09/dev-env/issues/1331), since decided in
+[ADR-055's 2026-11-07 amendment](055-reliable-event-inert-posttooluse-advisory.md#amendment-2026-11-07-key-on-the-calls-own-outcome-and-the-bash_state-write).

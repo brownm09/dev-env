@@ -249,5 +249,53 @@ the gates' refusals.
 - An open PR that adds a numbered item fails item 76 once this merges, and the failure says what to
   change.
 - Adding a script still conflicts in `claude/scripts/README.md`, on its counts and rows. That's
-  tracked in [dev-env#1311](https://github.com/brownm09/dev-env/issues/1311).
+  tracked in [dev-env#1311](https://github.com/brownm09/dev-env/issues/1311), and Amendment 2 below
+  ends it.
 - To reverse this: revert the change, then give each test added since then a number and a row.
+
+## Amendment 2 (2026-11-07): new scripts take no row in `claude/scripts/README.md`
+
+**Trigger.** [dev-env#1311](https://github.com/brownm09/dev-env/issues/1311). A PR that added a script
+changed `claude/scripts/README.md`'s `**N files**` sentence and a `### Section (N)` heading, and
+added a row, because `test_readme_index_parity.py` required all three. Any two such PRs conflicted on
+the count line, and most new tests arrive with a new script.
+
+**Decision.** Amendment 1's approach, applied to the scripts README. The README loses its file count
+and its section counts, and its rows stop at the 115 it had (`FROZEN_SCRIPT_ROWS`). A new script edits
+only its own file: one line in its first 10 lines starting `Purpose:` and what it does. The line goes
+in a docstring or a comment, so it changes nothing about how a hook, a shared module, a `.sh` script or
+a `.ps1` script runs; a `#Requires` line in a `.ps1` still works above it. The gate refuses a script
+with neither a row nor that line, and refuses a row past 115, and both failures say what to write
+instead. One line rather than the two a test takes: a script has no single command that covers it,
+since a hook runs from its event and a shared module isn't run at all.
+
+Known good: the real README and directory; two branches that each add a script this way, which merge
+cleanly in either order with `git merge` and `git merge-tree`, and pass both parity gates. Known bad:
+a script with no entry, and a new row, which the gate refuses; two rows added at the same point, which
+conflict. `test_testing_index_merge.py` builds all of these on every CI run, and turns red when the
+ceiling is raised to 116 or the `Purpose:` line stops counting. `TestHasPurposeLine` pins 13 accepted
+and 8 refused shapes for the line itself.
+
+**Alternatives rejected.**
+
+- **Keep the rows, drop only the counts.** Two PRs appending to the same section table still conflict,
+  and the measured known-bad above is exactly that case.
+- **One row per file in separate index files.** The same objection Amendment 1 gave: a second file per
+  script, and a gate to keep the two matched, for what the script's own docstring already holds.
+- The custom merge driver and `merge=union` are rejected for the reasons in Amendment 1.
+
+**Ruled out: the tables in the root `README.md` and `docs/REFERENCE.md`.** The Hooks and Utilities
+tables there aren't an index of the directory. They hold the behavioral description the docs treat as
+authoritative, so replacing a row with a line in the script would move the documentation, not just
+an index. They have no file count or section count, and no gate requires a row, so no line changes on
+every PR. Two PRs still conflict when both add a row at the same point in the same table, and that
+conflict is resolved by keeping both rows, with no count or number to recompute.
+
+**Consequences.**
+
+- A session finds a newer script's entry with the `git grep` command at the top of
+  `claude/scripts/README.md`.
+- An open PR that adds a row to `claude/scripts/README.md` fails item 84 once this merges, and the
+  failure says what to write instead.
+- To reverse this: revert the change, then give each script added since then a row and restore the
+  counts.

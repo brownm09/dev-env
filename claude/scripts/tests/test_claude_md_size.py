@@ -15,30 +15,41 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 CLAUDE_MD = os.path.join(REPO, "claude", "CLAUDE.md")
 REFERENCE = os.path.join(REPO, "docs", "REFERENCE.md")
 
-# About 5% above the size after the #1216 trim. The margin is measured against that file:
-# 91,862 bytes.
-CEILING_BYTES = 96_500
-
-# The file before the trim: the size #1216 was filed against, and the size when it landed.
-KNOWN_BAD_SIZES = (166_696, 181_551)
-
-HOW_TO_FIX = (
-    "Write the new rule as a line or two and move its story to docs/REFERENCE.md -> Instruction "
-    "Detail. Raise CEILING_BYTES only with a reason in the PR body (ADR-159)."
-)
-
-PROJECT_CLAUDE_MD = os.path.join(REPO, "CLAUDE.md")
-
-# About 5% above the project file's size after the #1297 trim: 36,690 bytes.
-PROJECT_CEILING_BYTES = 38_500
-
-# The project file before the trim: the size #1297 was filed against, and the size when it landed.
-PROJECT_KNOWN_BAD_SIZES = (52_943, 56_486)
-
-PROJECT_HOW_TO_FIX = (
-    "Write the new rule as a line or two and move its story to docs/REFERENCE.md -> Project "
-    "Instruction Detail, or a Testing item's detail to docs/TESTING.md. Raise "
-    "PROJECT_CEILING_BYTES only with a reason in the PR body (ADR-159)."
+# One entry per capped instruction file. Each ceiling is 4-5% above the file's size after its
+# trim, and each known-bad size is the file before that trim: when the issue was filed, and when
+# the trim landed.
+CAPPED_FILES = (
+    {
+        "name": "claude/CLAUDE.md",
+        "path": CLAUDE_MD,
+        "ceiling": 96_500,  # trimmed to 91,862 bytes by #1216
+        "known_bad": (166_696, 181_551),
+        "min_links": 50,
+        "detail_section": "instruction-detail",
+        "detail_prefix": "detail-",
+        "detail_link": "../docs/REFERENCE.md#",
+        "min_details": 20,
+        "how_to_fix": (
+            "Write the new rule as a line or two and move its story to docs/REFERENCE.md -> "
+            "Instruction Detail. Raise its ceiling only with a reason in the PR body (ADR-159)."
+        ),
+    },
+    {
+        "name": "CLAUDE.md",
+        "path": os.path.join(REPO, "CLAUDE.md"),
+        "ceiling": 38_500,  # trimmed to 36,860 bytes by #1297
+        "known_bad": (52_943, 56_572),
+        "min_links": 20,
+        "detail_section": "project-instruction-detail",
+        "detail_prefix": "project-detail-",
+        "detail_link": "docs/REFERENCE.md#",
+        "min_details": 1,
+        "how_to_fix": (
+            "Write the new rule as a line or two and move its story to docs/REFERENCE.md -> "
+            "Project Instruction Detail, or a Testing item's detail to docs/TESTING.md. Raise its "
+            "ceiling only with a reason in the PR body (ADR-159)."
+        ),
+    },
 )
 
 # A link's target, optional anchor, and optional quoted title.
@@ -51,7 +62,12 @@ def size_of(path):
         return len(f.read().replace(b"\r\n", b"\n"))
 
 
-def over_ceiling(size, ceiling=CEILING_BYTES):
+def read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def over_ceiling(size, ceiling):
     return size > ceiling
 
 
@@ -90,8 +106,7 @@ def anchors_in(text):
 
 @functools.lru_cache(maxsize=None)
 def anchors_in_file(path):
-    with open(path, encoding="utf-8") as f:
-        return anchors_in(f.read())
+    return anchors_in(read(path))
 
 
 def exists_with_exact_case(path):
@@ -119,81 +134,62 @@ def broken_links(text, base_dir):
     return found, broken
 
 
-def test_file_is_under_the_ceiling():
-    size = size_of(CLAUDE_MD)
-    assert not over_ceiling(size), f"claude/CLAUDE.md is {size} bytes, over the {CEILING_BYTES} ceiling. {HOW_TO_FIX}"
+def test_each_file_is_under_its_ceiling():
+    for f in CAPPED_FILES:
+        size = size_of(f["path"])
+        assert not over_ceiling(size, f["ceiling"]), (
+            f"{f['name']} is {size} bytes, over the {f['ceiling']} ceiling. {f['how_to_fix']}"
+        )
 
 
-def test_the_old_file_would_have_failed():
-    for size in KNOWN_BAD_SIZES:
-        assert over_ceiling(size), f"the ceiling must reject the pre-trim size {size}"
+def test_each_old_file_would_have_failed():
+    for f in CAPPED_FILES:
+        for size in f["known_bad"]:
+            assert over_ceiling(size, f["ceiling"]), f"{f['name']}: the ceiling must reject the pre-trim size {size}"
 
 
-def test_the_measurement_is_not_vacuous():
-    assert size_of(CLAUDE_MD) > CEILING_BYTES // 2, "claude/CLAUDE.md read back far too small to be the real file"
+def test_each_measurement_is_not_vacuous():
+    for f in CAPPED_FILES:
+        assert size_of(f["path"]) > f["ceiling"] // 2, f"{f['name']} read back far too small to be the real file"
 
 
 def test_every_local_link_resolves():
-    with open(CLAUDE_MD, encoding="utf-8") as f:
-        text = f.read()
-    found, broken = broken_links(text, os.path.dirname(CLAUDE_MD))
-    assert found > 50, f"only {found} local links extracted; the extraction is broken, a vacuous pass"
-    assert not broken, f"broken links in claude/CLAUDE.md: {broken}"
+    for f in CAPPED_FILES:
+        found, broken = broken_links(read(f["path"]), os.path.dirname(f["path"]))
+        assert found > f["min_links"], (
+            f"{f['name']}: only {found} local links extracted; the extraction is broken, a vacuous pass"
+        )
+        assert not broken, f"broken links in {f['name']}: {broken}"
 
 
 def test_detail_links_exist_and_reach_the_detail_section():
-    with open(CLAUDE_MD, encoding="utf-8") as f:
-        text = f.read()
+    text = read(CLAUDE_MD)
     anchors = anchors_in_file(REFERENCE)
     details = re.findall(r"\(\.\./docs/REFERENCE\.md#(detail-[\w-]+)\)", text)
     assert len(details) > 20, f"only {len(details)} detail links found; the extraction is broken"
-    assert "instruction-detail" in anchors
     missing = sorted({d for d in details if d not in anchors})
     assert not missing, f"detail headings missing from docs/REFERENCE.md: {missing}"
 
 
 def test_every_detail_heading_is_linked():
-    with open(CLAUDE_MD, encoding="utf-8") as f:
-        text = f.read()
-    headings = {a for a in anchors_in_file(REFERENCE) if a.startswith("detail-")}
-    assert len(headings) > 20, f"only {len(headings)} detail headings found; the extraction is broken"
-    unlinked = sorted(h for h in headings if f"#{h})" not in text)
-    assert not unlinked, f"detail sections nothing in claude/CLAUDE.md points to: {unlinked}"
-
-
-def test_project_file_is_under_its_ceiling():
-    size = size_of(PROJECT_CLAUDE_MD)
-    assert not over_ceiling(size, PROJECT_CEILING_BYTES), (
-        f"CLAUDE.md is {size} bytes, over the {PROJECT_CEILING_BYTES} ceiling. {PROJECT_HOW_TO_FIX}"
-    )
-
-
-def test_the_old_project_file_would_have_failed():
-    for size in PROJECT_KNOWN_BAD_SIZES:
-        assert over_ceiling(size, PROJECT_CEILING_BYTES), f"the ceiling must reject the pre-trim size {size}"
-
-
-def test_the_project_measurement_is_not_vacuous():
-    assert size_of(PROJECT_CLAUDE_MD) > PROJECT_CEILING_BYTES // 2, "CLAUDE.md read back far too small to be the real file"
-
-
-def test_every_project_local_link_resolves():
-    with open(PROJECT_CLAUDE_MD, encoding="utf-8") as f:
-        text = f.read()
-    found, broken = broken_links(text, REPO)
-    assert found > 20, f"only {found} local links extracted; the extraction is broken, a vacuous pass"
-    assert not broken, f"broken links in CLAUDE.md: {broken}"
-
-
-def test_every_project_detail_heading_is_linked():
-    with open(PROJECT_CLAUDE_MD, encoding="utf-8") as f:
-        text = f.read()
     anchors = anchors_in_file(REFERENCE)
-    assert "project-instruction-detail" in anchors
-    headings = {a for a in anchors if a.startswith("project-detail-")}
-    assert len(headings) >= 3, f"only {len(headings)} project detail headings found; the extraction is broken"
-    unlinked = sorted(h for h in headings if f"(docs/REFERENCE.md#{h})" not in text)
-    assert not unlinked, f"project detail sections nothing in CLAUDE.md points to: {unlinked}"
+    for f in CAPPED_FILES:
+        assert f["detail_section"] in anchors, f"docs/REFERENCE.md has no {f['detail_section']} section"
+        headings = {a for a in anchors if a.startswith(f["detail_prefix"])}
+        assert len(headings) >= f["min_details"], (
+            f"only {len(headings)} {f['detail_prefix']} headings found: the extraction is broken, or "
+            f"detail sections were removed and min_details for {f['name']} needs lowering"
+        )
+        text = read(f["path"])
+        unlinked = sorted(h for h in headings if f"({f['detail_link']}{h})" not in text)
+        assert not unlinked, f"detail sections nothing in {f['name']} points to: {unlinked}"
+
+
+def test_the_detail_prefixes_do_not_overlap():
+    prefixes = [f["detail_prefix"] for f in CAPPED_FILES]
+    for a in prefixes:
+        for b in prefixes:
+            assert a == b or not b.startswith(a), f"{b} headings would also count as {a} headings"
 
 
 def test_the_link_check_catches_a_broken_link():

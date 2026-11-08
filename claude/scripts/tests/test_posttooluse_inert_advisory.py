@@ -76,10 +76,11 @@ WORKTREE_MERGE_TAIL = (
 
 # --- record builders -----------------------------------------------------------
 
-def bash_use(tid: str, command: str, cwd: str = DEVENV_CWD) -> dict:
+def bash_use(tid: str, command: str, cwd: str = DEVENV_CWD, ts: str | None = None) -> dict:
     return {
         "type": "assistant",
         "cwd": cwd,
+        **({"timestamp": ts} if ts else {}),
         "message": {
             "content": [
                 {"type": "tool_use", "id": tid, "name": "Bash",
@@ -89,13 +90,11 @@ def bash_use(tid: str, command: str, cwd: str = DEVENV_CWD) -> dict:
     }
 
 
-def tool_result(tid: str, output: str, tur: dict | None = None) -> dict:
-    rec = {
-        "type": "user",
-        "message": {
-            "content": [{"type": "tool_result", "tool_use_id": tid, "content": output}]
-        },
-    }
+def tool_result(tid: str, output: str, tur: dict | None = None, is_error: bool = False) -> dict:
+    item = {"type": "tool_result", "tool_use_id": tid, "content": output}
+    if is_error:
+        item["is_error"] = True
+    rec = {"type": "user", "message": {"content": [item]}}
     if tur is not None:
         rec["toolUseResult"] = tur
     return rec
@@ -559,6 +558,80 @@ def test_should_emit_inert_merge() -> str:
     return "dev-env merge + no PostToolUse attachment -> advise (inert detected)"
 
 
+# --- dev-env#1331: key on the call's own outcome and the bash_state write -------
+
+CALL_START = "2026-11-07T03:53:48.738Z"
+CALL_START_EPOCH = 1794023628.738  # CALL_START as a POSIX timestamp
+
+
+def test_epoch_constant_matches_call_start() -> str:
+    from datetime import datetime
+    got = datetime.fromisoformat(CALL_START.replace("Z", "+00:00")).timestamp()
+    assert abs(got - CALL_START_EPOCH) < 0.001, got
+    return "fixture epoch matches the fixture timestamp"
+
+
+def test_detect_merge_rate_limited_ignored() -> str:
+    # A `gh pr merge` refused by a GraphQL rate limit never merged, so there is no
+    # Done-move to miss. One of the advisory's 5 real firings was this (ADR-053's
+    # 2026-11-07 amendment); the old _HARD_MERGE_FAIL_RE didn't match it.
+    for out in (
+        "GraphQL: API rate limit already exceeded for user ID 1.\nmerge rc=1",
+        "API rate limit exceeded for user ID 1.",
+    ):
+        calls = [(f"gh pr merge {DEVENV_PR_URL} --squash --delete-branch", out, DEVENV_CWD)]
+        assert detect_board_actions(calls) == [], (out, detect_board_actions(calls))
+    return "gh pr merge refused by a GraphQL rate limit -> no merge action"
+
+
+def test_should_emit_errored_create_fires_despite_bash_state() -> str:
+    # The create printed its URL, so it succeeded, but the Bash call as a whole
+    # exited non-zero (a later command in the chain failed). PostToolUse never runs
+    # for a failed call (0 of 892 errored shell calls carry an attachment, ADR-053's
+    # amendment), so post-tool-use.py never added the item to the board. That is a
+    # real gap, the one true positive among the 5 recorded firings, so it fires even
+    # though bash_state shows the session's hooks dispatching afterwards.
+    recs = [
+        bash_use("t1", "gh pr create --fill && false", ts=CALL_START),
+        tool_result("t1", f"{DEVENV_PR_URL}\nExit code 1", is_error=True),
+    ]
+    actions = should_emit(recs, bash_state_mtime=CALL_START_EPOCH + 600)
+    assert actions and len(actions) == 1, actions
+    assert actions[0]["action"] == "create" and DEVENV_PR_URL in actions[0]["label"], actions
+    assert "exited non-zero" in actions[0]["label"], actions
+    assert "exited non-zero" in format_advisory(actions)
+    return "create inside a call marked is_error -> fires, labelled as a failed call"
+
+
+def test_should_emit_silent_create_with_current_bash_state_silent() -> str:
+    # No PostToolUse attachment, but post-tool-use-cwd-track.py wrote bash_state
+    # after the create started: the hooks ran and printed nothing. Most of the
+    # recorded firings were this, so it must stay silent.
+    recs = [
+        bash_use("t1", "gh issue create --repo brownm09/dev-env --title x", ts=CALL_START),
+        tool_result("t1", DEVENV_ISSUE_URL),
+    ]
+    assert should_emit(recs, bash_state_mtime=CALL_START_EPOCH + 9) is None
+    return "silent successful create + bash_state written after it -> silent (hooks ran)"
+
+
+def test_should_emit_stale_or_missing_bash_state_fires() -> str:
+    # The other side of the same check: a file last written before the call, or no
+    # file, or a call with no timestamp, gives no evidence of dispatch, so the
+    # advisory behaves as it did before bash_state was consulted.
+    recs = [
+        bash_use("t1", "gh issue create --repo brownm09/dev-env --title x", ts=CALL_START),
+        tool_result("t1", DEVENV_ISSUE_URL),
+    ]
+    expected = [{"action": "create", "label": f"issue {DEVENV_ISSUE_URL}"}]
+    assert should_emit(recs, bash_state_mtime=CALL_START_EPOCH - 1) == expected
+    assert should_emit(recs, bash_state_mtime=None) == expected
+    no_ts = [bash_use("t1", "gh issue create --repo brownm09/dev-env --title x"),
+             tool_result("t1", DEVENV_ISSUE_URL)]
+    assert should_emit(no_ts, bash_state_mtime=CALL_START_EPOCH + 9) == expected
+    return "bash_state older than the call, missing, or no call timestamp -> fires as before"
+
+
 def test_format_advisory_mentions_fallback() -> str:
     msg = format_advisory([{"action": "create", "label": f"issue {DEVENV_ISSUE_URL}"}])
     assert msg.startswith("[posttooluse-inert]")
@@ -688,6 +761,32 @@ def test_e2e_sentinel_suppresses_second_fire() -> str:
     return "e2e first Stop blocks + sets sentinel; second Stop -> exit 0 (fires at most once)"
 
 
+def test_e2e_current_bash_state_silent() -> str:
+    # main() reads the session's bash_state file from the real _bash_state path:
+    # planted after the create started, the same inert-looking transcript exits 0.
+    import _bash_state
+
+    recs = [
+        bash_use("t1", "gh issue create --repo brownm09/dev-env --title x", ts=CALL_START),
+        tool_result("t1", DEVENV_ISSUE_URL),
+        attachment("hook_success", "Stop"),
+    ]
+    with tempfile.TemporaryDirectory() as home:
+        scratch = Path(home) / ".claude" / "scratch"
+        scratch.mkdir(parents=True)
+        state = _bash_state.state_path("sess-e2e-1", scratch=scratch)
+        state.write_text("{}", encoding="utf-8")
+        os.utime(state, (CALL_START_EPOCH + 9, CALL_START_EPOCH + 9))
+        rc, out, err = _run_hook(home, recs, stop_hook_active=False)
+        # The silent Stop above left the session unresolved (no attachment, nothing
+        # to advise), so the same session can still fire once the file is stale.
+        os.utime(state, (CALL_START_EPOCH - 1, CALL_START_EPOCH - 1))
+        rc_stale, _o, err_stale = _run_hook(home, recs, stop_hook_active=False)
+    assert rc == 0 and "[posttooluse-inert]" not in err, (rc, err)
+    assert rc_stale == 2 and "[posttooluse-inert]" in err_stale, (rc_stale, err_stale)
+    return "e2e: current bash_state -> exit 0; same file older than the call -> exit 2"
+
+
 def test_devenv_merge_pr_repo_on_continued_line() -> str:
     # dev-env#831: _devenv_merge_pr routes through _repo_target.merge_args, which
     # now strips backslash+LF shell line-continuations before bounding the args
@@ -743,6 +842,11 @@ def main() -> int:
         ("should_emit: healthy create -> silent", test_should_emit_healthy_create_silent),
         ("should_emit: no action -> silent", test_should_emit_no_action_silent),
         ("should_emit: inert merge -> advise", test_should_emit_inert_merge),
+        ("fixture epoch matches timestamp", test_epoch_constant_matches_call_start),
+        ("detect: rate-limited merge ignored (dev-env#1331)", test_detect_merge_rate_limited_ignored),
+        ("should_emit: errored create fires despite bash_state (dev-env#1331)", test_should_emit_errored_create_fires_despite_bash_state),
+        ("should_emit: silent create + current bash_state -> silent (dev-env#1331)", test_should_emit_silent_create_with_current_bash_state_silent),
+        ("should_emit: stale/missing bash_state -> fires (dev-env#1331)", test_should_emit_stale_or_missing_bash_state_fires),
         ("format_advisory mentions fallback", test_format_advisory_mentions_fallback),
         ("format_advisory names no cause", test_format_advisory_names_no_cause),
         ("advisory is cp1252-safe (no vanish under cp1252 stderr)", test_advisory_is_cp1252_safe),
@@ -751,6 +855,7 @@ def main() -> int:
         ("e2e stop_hook_active does not block", test_e2e_stop_hook_active_does_not_block),
         ("e2e healthy session silent", test_e2e_healthy_session_silent),
         ("e2e sentinel suppresses second fire", test_e2e_sentinel_suppresses_second_fire),
+        ("e2e current bash_state silent, stale blocks (dev-env#1331)", test_e2e_current_bash_state_silent),
         ("_devenv_merge_pr: --repo/number on a continued line (dev-env#831)", test_devenv_merge_pr_repo_on_continued_line),
     ]
     failed = 0
