@@ -16,35 +16,32 @@ This is the directory<->README analogue of `test_testing_index_parity.py` (Testi
 subprocess, network, or git. Auto-discovered by `run-hook-tests.py`, so it also gates CI
 on every PR. Each README + directory is parsed once in `setUpClass`, matching the sibling.
 
-Six checks per indexed directory:
+Four checks per indexed directory:
   1. every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`,
      subdirectories, and a documented per-directory exemption set) appears in some
-     table's FIRST column; in `claude/scripts/tests/` a file the runner discovers must
-     instead carry its own entry, a `Required when` line and a `Run:` line near its top
-     (dev-env#1309), so adding a test edits no shared file;
+     table's FIRST column, or carries its own entry near its top: in
+     `claude/scripts/tests/` a `Required when` line and a `Run:` line on a file the
+     runner discovers (dev-env#1309), and in `claude/scripts/` a `Purpose:` line
+     (dev-env#1311), so adding a test or a script edits no shared file;
   2. every first-column filename exists on disk (catches a rename or delete that updates
      the file but not its row, leaving an orphan pointer);
   3. each exempt file both exists on disk and appears somewhere in the README -- so an
      exemption can never silently hide a file's deletion;
-  4. each header count sentence occurs exactly once and equals the live directory count;
-  5. every "### Section (N)" heading's N equals that section's first-column entry count,
-     AND the number of such numbered headings matches the per-directory expectation (so a
-     heading reworded past the "(N)" form cannot silently drop out of gating);
-  6. where a README's rows are frozen (`claude/scripts/tests/`), it has no more first-column
-     names than it had when they were frozen, since a new row is a conflict waiting for the
-     next PR that adds one. A count, so removing a test leaves room for one row.
-
-The gate is fail-closed throughout: a count sentence reworded past its regex fails check 4
-loudly (found 0), a duplicated count fails it too (found >1), and a numbered heading that
-loses its "(N)" fails check 5's heading-count assertion -- none of them pass on a count the
-gate can no longer see. That is the correct direction for a gate whose whole job is
-catching silent drift.
+  4. each README has no more first-column names than it had when its rows were frozen,
+     since a new row is a conflict waiting for the next PR that adds one. A count, so
+     removing a file leaves room for one row. Neither README carries a file count or a
+     "### Section (N)" count any more, because every new file changed them.
 
 Known latent gap (does not manifest today): neither parser strips fenced ``` code blocks,
 so a future README that put a "| `foo.py` |"-shaped line inside a fence could mis-parse it
 as a table row. Both READMEs currently contain zero code fences; ADR-122 records this as an
 accepted scope gap rather than carrying a fence state machine for a condition that does not
 occur -- the same call ADR-116/ADR-121 made only after fence-blindness actually bit them.
+
+A second accepted gap: the `Purpose:` check reads text, not syntax, so a code line in a
+script's first 10 lines that starts with `Purpose:` (an annotated variable `Purpose: int = 3`)
+would count as an entry. No script does this, and telling a docstring line from a code line
+would mean parsing three languages for a case that hasn't occurred.
 """
 import os
 import re
@@ -57,10 +54,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # A backticked filename token (.py / .sh / .ps1) as it appears in the README tables.
 FILENAME_RE = re.compile(r"`([A-Za-z0-9_.\-]+\.(?:py|sh|ps1))`")
-# A "## Title (N)" / "### Title (N)" heading carrying a self-declared entry count.
-SECTION_COUNT_RE = re.compile(r"^#{2,3} .+ \((\d+)\)\s*$")
-# Any markdown heading -- used to bound where a section's rows end.
-HEADING_RE = re.compile(r"^#{1,6} ")
 # Files a README is expected to index. Restricting to these extensions matches each
 # README's own declared scope and keeps a stray non-script artifact from being demanded
 # a row; both directories currently contain nothing else anyway.
@@ -70,8 +63,14 @@ OWN_ENTRY_LINES = 10
 # What may come before an entry on its line: a comment mark, or a docstring's opening quotes.
 ENTRY_PREFIX = r"^[#\s\"']*"
 REQUIRED_WHEN_RE = re.compile(ENTRY_PREFIX + r"Required when[ \t]+\S", re.MULTILINE)
-# The tests README's first-column names when its rows were frozen (dev-env#1309).
+# A script's entry may also open a PowerShell `<#` block or a prefixed docstring (`r"""`),
+# and needs text after it that isn't the docstring's own closing quotes.
+PURPOSE_RE = re.compile(
+    r"^[ \t]*(?:#+|<#|[rRuU]?(?:\"\"\"|'''))?[ \t]*Purpose:[ \t]+[^\s\"']", re.MULTILINE
+)
+# Each README's first-column names when its rows were frozen (dev-env#1309, #1311).
 FROZEN_TEST_ROWS = 118
+FROZEN_SCRIPT_ROWS = 115
 
 
 def indexable_files(directory):
@@ -99,26 +98,6 @@ def first_column_names(readme_text):
     return names
 
 
-def section_entry_counts(readme_text):
-    """Map each "## / ### Title (N)" heading line to (declared N, actual entry count),
-    where the actual count is the number of first-column filename entries between that
-    heading and the next heading of any level."""
-    lines = readme_text.splitlines()
-    result = {}
-    for i, line in enumerate(lines):
-        m = SECTION_COUNT_RE.match(line)
-        if not m:
-            continue
-        actual = 0
-        for row in lines[i + 1:]:
-            if HEADING_RE.match(row):
-                break
-            if row.startswith("| "):
-                actual += len(FILENAME_RE.findall(row.split("|")[1]))
-        result[line.strip()] = (int(m.group(1)), actual)
-    return result
-
-
 def runner_discovers(name):
     """Whether `run-hook-tests.py` runs this file; a support module can't index itself."""
     if name.startswith("_"):
@@ -126,39 +105,44 @@ def runner_discovers(name):
     return name.endswith(".sh") or (name.startswith("test_") and name.endswith(".py"))
 
 
+def _head(path):
+    """A file's first OWN_ENTRY_LINES lines, where its own entry must start."""
+    # errors="replace": a file in another encoding must fail this check, not crash the gate.
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    return "\n".join(text.splitlines()[:OWN_ENTRY_LINES])
+
+
 def has_own_entry(path):
     """True if a test file's opening lines say when to run it and how to run this file."""
     if not runner_discovers(path.name):
         return False
-    # errors="replace": a file in another encoding must fail this check, not crash the gate.
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
-    head = "\n".join(text.splitlines()[:OWN_ENTRY_LINES])
+    head = _head(path)
     run_re = re.compile(
         ENTRY_PREFIX + rf"Run: .*(?<![\w.-]){re.escape(path.name)}(?!\w)", re.MULTILINE
     )
     return bool(REQUIRED_WHEN_RE.search(head) and run_re.search(head))
 
 
-class DirSpec:
-    """One indexed directory, its README, its first-column exemptions, the header count
-    sentences to gate, the expected number of "(N)" section headings, and whether a file
-    may carry its own entry instead of a row, with the frozen number of rows that goes with
-    that. Each count check is (label, regex, expected_fn) where expected_fn maps the live
-    indexable-file set to the integer the header must state."""
+def has_purpose_line(path):
+    """True if a script's opening lines say what it does. A comment or docstring line,
+    so it changes nothing about how a hook, module or `.sh`/`.ps1` script runs."""
+    return bool(PURPOSE_RE.search(_head(path)))
 
-    def __init__(self, label, directory, readme, exemptions, count_checks,
-                 numbered_sections, frozen_rows=None):
+
+class DirSpec:
+    """One indexed directory, its README, its first-column exemptions, the frozen number
+    of README rows, and the check that a file without a row carries its own entry, with
+    the instruction that says how to write one."""
+
+    def __init__(self, label, directory, readme, exemptions, frozen_rows, own_entry,
+                 entry_hint):
         self.label = label
         self.directory = REPO_ROOT / directory
         self.readme = REPO_ROOT / readme
         self.exemptions = exemptions
-        self.count_checks = count_checks
-        # How many "### Title (N)" headings this README is expected to carry. Gating the
-        # *count* of numbered headings is what makes check 5 fail closed: a heading
-        # reworded past the "(N)" form drops the section count below this number.
-        self.numbered_sections = numbered_sections
         self.frozen_rows = frozen_rows
-        self.allows_own_entry = frozen_rows is not None
+        self.own_entry = own_entry
+        self.entry_hint = entry_hint
 
     def text(self):
         return self.readme.read_text(encoding="utf-8")
@@ -174,23 +158,28 @@ SPECS = [
         # cell) rather than as test files. Check 3 still requires each to appear somewhere in
         # the README.
         exemptions={"_hook_wiring.py", "_heartbeat_isolation.py", "_throwaway_repo.py"},
-        # No header counts here: every new test changed them, so any two test-adding PRs
-        # conflicted on that line (dev-env#1309).
-        count_checks=[],
-        numbered_sections=0,  # this README's section headings carry no "(N)"
         frozen_rows=FROZEN_TEST_ROWS,
+        own_entry=has_own_entry,
+        entry_hint=(
+            f"in each test's first {OWN_ENTRY_LINES} lines, start one line with "
+            f"`Required when` and what it covers, and another with `Run:` and a command "
+            f"naming that file on the same line (dev-env#1309). A support module the "
+            f"runner doesn't discover goes in this gate's exemptions, and in the README's "
+            f"second column, instead"
+        ),
     ),
     DirSpec(
         label="claude/scripts",
         directory="claude/scripts",
         readme="claude/scripts/README.md",
         exemptions=set(),
-        count_checks=[
-            ("top-level-files",
-             re.compile(r"\*\*(\d+) files\*\* at the top level"),
-             lambda files: len(files)),
-        ],
-        numbered_sections=5,  # five "### Title (N)" domain sections
+        frozen_rows=FROZEN_SCRIPT_ROWS,
+        own_entry=has_purpose_line,
+        entry_hint=(
+            f"in each script's first {OWN_ENTRY_LINES} lines, in its docstring or a "
+            f"comment, start one line with `Purpose:` and what the script does "
+            f"(dev-env#1311)"
+        ),
     ),
 ]
 
@@ -206,7 +195,6 @@ class TestReadmeIndexParity(unittest.TestCase):
             cls.snap[spec.label] = {
                 "files": indexable_files(spec.directory),
                 "text": text,
-                "sections": section_entry_counts(text),
                 "indexed": first_column_names(text),
             }
 
@@ -217,28 +205,16 @@ class TestReadmeIndexParity(unittest.TestCase):
                 missing = sorted(
                     f for f in snap["files"]
                     if f not in snap["indexed"] and f not in spec.exemptions
-                    and not (spec.allows_own_entry and has_own_entry(spec.directory / f))
-                )
-                remedy = (
-                    f"in each test's first {OWN_ENTRY_LINES} lines, start one line with "
-                    f"`Required when` and what it covers, and another with `Run:` and a "
-                    f"command naming that file on the same line (dev-env#1309). A support "
-                    f"module the runner doesn't discover goes in this gate's exemptions, "
-                    f"and in the README's second column, instead"
-                    if spec.allows_own_entry else
-                    f"add a row for each in {spec.readme.name} in this same PR (the README "
-                    f"is not glob-discovered; dev-env#901)"
+                    and not spec.own_entry(spec.directory / f)
                 )
                 self.assertEqual(
                     missing, [],
-                    f"{spec.label}: files present on disk but absent from every table's "
-                    f"first column -- {remedy}: {missing}",
+                    f"{spec.label}: files with neither a first-column row in "
+                    f"{spec.readme.name} nor their own entry -- {spec.entry_hint}: {missing}",
                 )
 
     def test_frozen_rows_do_not_grow(self):
         for spec in SPECS:
-            if spec.frozen_rows is None:
-                continue
             with self.subTest(dir=spec.label):
                 rows = len(self.snap[spec.label]["indexed"])
                 # A non-empty parse is part of the check: zero rows would pass the ceiling.
@@ -247,8 +223,7 @@ class TestReadmeIndexParity(unittest.TestCase):
                     rows, spec.frozen_rows,
                     f"{spec.label}: {spec.readme.name} has {rows} rows, past the frozen "
                     f"{spec.frozen_rows}. A new row conflicts with the next PR that adds "
-                    f"one: remove it, and put `Required when ...` and `Run: ...` lines in "
-                    f"the test's first {OWN_ENTRY_LINES} lines instead (dev-env#1309)",
+                    f"one: remove it, and {spec.entry_hint}",
                 )
 
     def test_every_first_column_name_exists_on_disk(self):
@@ -278,47 +253,6 @@ class TestReadmeIndexParity(unittest.TestCase):
                         f"{spec.label}: exempt file {exempt} appears nowhere in "
                         f"{spec.readme.name} -- the exemption must not hide its deletion",
                     )
-
-    def test_header_counts_match_directory(self):
-        for spec in SPECS:
-            snap = self.snap[spec.label]
-            for label, regex, expected_fn in spec.count_checks:
-                with self.subTest(dir=spec.label, count=label):
-                    matches = regex.findall(snap["text"])
-                    self.assertEqual(
-                        len(matches), 1,
-                        f"{spec.label}: expected exactly one {label} count sentence in "
-                        f"{spec.readme.name}, found {len(matches)} -- a header reworded "
-                        f"past its regex (0) or a stray duplicate copy (>1) both fail "
-                        f"closed here on purpose",
-                    )
-                    self.assertEqual(
-                        int(matches[0]), expected_fn(snap["files"]),
-                        f"{spec.label}: header states {matches[0]} for {label} but the "
-                        f"directory holds {expected_fn(snap['files'])} -- update the "
-                        f"header count",
-                    )
-
-    def test_section_counts_match_entries(self):
-        for spec in SPECS:
-            sections = self.snap[spec.label]["sections"]
-            with self.subTest(dir=spec.label, check="numbered-heading-count"):
-                self.assertEqual(
-                    len(sections), spec.numbered_sections,
-                    f"{spec.label}: found {len(sections)} '### Title (N)' headings but "
-                    f"expected {spec.numbered_sections} -- a heading reworded past the "
-                    f"'(N)' form silently drops out of gating (fail-closed guard). Update "
-                    f"numbered_sections here only if a section was deliberately "
-                    f"added/removed",
-                )
-            for heading, (declared, actual) in sections.items():
-                with self.subTest(dir=spec.label, heading=heading):
-                    self.assertEqual(
-                        declared, actual,
-                        f"{spec.label}: heading {heading!r} declares {declared} but the "
-                        f"section indexes {actual} files -- update the (N) in the heading",
-                    )
-
 
 class TestHasOwnEntry(unittest.TestCase):
     """Known-good and known-bad shapes for a test's own entry (dev-env#1309)."""
@@ -373,6 +307,53 @@ class TestHasOwnEntry(unittest.TestCase):
     def test_another_encoding_fails_without_crashing_the_gate(self):
         utf16 = "# Required when changing foo.py.\n# Run: py -3 test_foo.py\n".encode("utf-16")
         self.assertFalse(self._check("test_foo.py", utf16))
+
+
+class TestHasPurposeLine(unittest.TestCase):
+    """Known-good and known-bad shapes for a script's own entry (dev-env#1311)."""
+
+    def _check(self, name, content):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / name
+            path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+            return has_purpose_line(path)
+
+    def test_accepts_each_kind_of_script(self):
+        purpose = "Purpose: does foo."
+        cases = {
+            ("hook.py", "docstring"): f'#!/usr/bin/env python3\n"""Foo hook.\n\n{purpose}\n"""\n',
+            ("_mod.py", "first line of a docstring"): f'"""{purpose}\n"""\n',
+            ("tool.py", "comment"): f"# {purpose}\nimport sys\n",
+            ("tool.sh", "comment after a shebang"): f"#!/usr/bin/env bash\n# {purpose}\nset -e\n",
+            ("tool.ps1", "comment after #Requires"):
+                f"#Requires -RunAsAdministrator\n# {purpose}\nparam()\n",
+            ("tool.ps1", "inside a comment block"): f"<#\n.SYNOPSIS\n{purpose}\n#>\n",
+            ("tool.ps1", "on a comment block's opener"): f"<# {purpose} #>\nparam()\n",
+            ("tool.py", "raw docstring"): f'r"""{purpose}\n"""\n',
+            ("tool.py", "single-quoted docstring"): f"'''{purpose}\n'''\n",
+            ("tool.py", "tab-indented docstring line"): f'"""Foo.\n\n\t{purpose}\n"""\n',
+            ("tool.py", "CRLF"): f'"""Foo.\r\n\r\n{purpose}\r\n"""\r\n',
+            ("tool.py", "byte order mark"): f"﻿# {purpose}\n",
+            ("tool.py", "last allowed line"): "\n" * 9 + f"# {purpose}\n",
+        }
+        for (name, label), content in cases.items():
+            with self.subTest(label, name=name):
+                self.assertTrue(self._check(name, content))
+
+    def test_refuses_what_is_not_an_entry(self):
+        cases = {
+            "no Purpose line": '"""Does foo."""\n',
+            "nothing after Purpose:": "# Purpose:\n",
+            "only a docstring's closing quotes after Purpose:": '"""Purpose: """\n',
+            "no colon": "# Purpose does foo.\n",
+            "past the first ten lines": "\n" * 10 + "# Purpose: does foo.\n",
+            "mentioned mid-sentence": "# Its Purpose: does foo.\n",
+            "a test's entry": "# Required when changing foo.py.\n# Run: py -3 foo.py\n",
+            "another encoding": "# Purpose: does foo.\n".encode("utf-16"),
+        }
+        for label, content in cases.items():
+            with self.subTest(label):
+                self.assertFalse(self._check("tool.py", content))
 
 
 if __name__ == "__main__":

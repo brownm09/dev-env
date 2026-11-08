@@ -511,6 +511,32 @@ def test_iter_bash_calls_default_cwd_empty() -> str:
     return "iter_bash_calls yields cwd='' when the assistant record has no cwd"
 
 
+def test_iter_bash_call_details_is_error_and_started() -> str:
+    # dev-env#1331: the detailed form adds the result's is_error flag and the
+    # issuing record's timestamp; iter_bash_calls is its first three fields.
+    records = [
+        {"type": "assistant", "cwd": "/w", "timestamp": "2026-11-07T03:53:48.738Z",
+         "message": {"content": [
+             {"type": "tool_use", "name": "Bash", "id": "a", "input": {"command": "ok"}},
+             {"type": "tool_use", "name": "Bash", "id": "b", "input": {"command": "bad"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": "A"},
+            {"type": "tool_result", "tool_use_id": "b", "content": "B", "is_error": True}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "id": "c", "input": {"command": "nots"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "c", "content": "C", "is_error": "yes"}]}},
+    ]
+    details = _hookutil.iter_bash_call_details(records)
+    assert details == [
+        ("ok", "A", "/w", False, "2026-11-07T03:53:48.738Z"),
+        ("bad", "B", "/w", True, "2026-11-07T03:53:48.738Z"),
+        ("nots", "C", "", False, ""),  # only a literal True counts; no timestamp -> ""
+    ], details
+    assert _hookutil.iter_bash_calls(records) == [d[:3] for d in details]
+    return "iter_bash_call_details adds is_error (literal True only) and started; iter_bash_calls is its projection"
+
+
 def test_iter_bash_calls_unmatched_and_malformed() -> str:
     # Non-dict records, a non-dict message, a non-Bash tool_use, and an orphan
     # tool_result (no matching tool_use) are all ignored without raising.
@@ -1125,6 +1151,7 @@ def main() -> int:
         ("iter_bash_calls: pairs by id (+cwd)", test_iter_bash_calls_pairs_by_id_with_cwd),
         ("iter_bash_calls: parallel not mismatched", test_iter_bash_calls_parallel_not_mismatched),
         ("iter_bash_calls: default cwd ''", test_iter_bash_calls_default_cwd_empty),
+        ("iter_bash_call_details: is_error + started (dev-env#1331)", test_iter_bash_call_details_is_error_and_started),
         ("iter_bash_calls: unmatched/malformed -> []", test_iter_bash_calls_unmatched_and_malformed),
         ("_parse_records: filters non-objects", test_parse_records_filters_non_objects),
         ("load_records: reads object records", test_load_records_reads_object_records),

@@ -568,7 +568,12 @@ For a one-line navigational map of the older tests, see
     ```
 
 18. **posttooluse-inert-advisory test** — required when changing
-    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    `claude/scripts/posttooluse-inert-advisory.py`. Since dev-env#1331 (ADR-055's 2026-11-07 amendment)
+    it also pins the narrowed decision: a `gh pr merge` refused by an API rate limit is no merge; a create
+    inside a call marked `is_error` fires even when `bash_state` was written later, labelled as a failed
+    call; a silent successful create with `bash_state` written after the call started stays silent; a file
+    older than the call, no file, or no call timestamp fires as before; and an end-to-end run plants the
+    file under the isolated HOME to show `main()` reads it. Exercises the pure transcript-scanning helpers offline
     (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
     `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
     proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
@@ -918,7 +923,10 @@ For a one-line navigational map of the older tests, see
     ([dev-env#1087](https://github.com/brownm09/dev-env/issues/1087)). Throwaway repos with a non-`main`
     default branch cover `origin/HEAD` unset and set, discovery failure, a squatter on that branch, and a
     worktree on the default branch under a detached primary, which `--include-named` must not remove
-    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)).
+    ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)). An exception in one worktree
+    (injected in-process by `run_main_failing_on()`) leaves the repo's other worktrees pruned and
+    counted, names the failing one, exits 1 in both modes, and keeps that worktree's last-run record
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -942,7 +950,9 @@ For a one-line navigational map of the older tests, see
     cases -> `[]`), `_result_text` (string / list-joined / `toolUseResult` stdout+stderr fallback /
     empty -> `''`), `iter_bash_calls` (id-pairing returning `(command, output, cwd)`, out-of-order
     parallel results not crossing, default `cwd=''`, and non-dict/non-Bash/orphan records -> `[]`
-    without raising), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
+    without raising), `iter_bash_call_details` (dev-env#1331: the same pairing plus the result's
+    `is_error`, counted only when literally `True`, and the issuing record's timestamp;
+    `iter_bash_calls` is its first three fields), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
     lines), and `load_records` (reads a JSONL file to its object records). Imported by
     `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
     `token-tracker.py` ([ADR-064](adr/064-shared-hookutil-sentinel-transcript-locate.md),
@@ -1104,7 +1114,9 @@ For a one-line navigational map of the older tests, see
 
 30. **reclaim-worktree-disk test** — required when changing `claude/scripts/reclaim-worktree-disk.py` or `claude/scripts/_default_branch.py`.
     Also covers a throwaway repo with a non-`main` default branch, and a `--scan-dir` run reaching the
-    next repo after a fetch timeout or unexpected error.
+    next repo after a fetch timeout or unexpected error, and an exception in one worktree leaving the
+    repo's other worktrees reclaimed and counted, with exit 1 in both modes
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
     Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
     `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
@@ -2858,7 +2870,7 @@ For a one-line navigational map of the older tests, see
 
 63. **settings-hook wiring lint** — required when changing
     `claude/scripts/tests/test_settings_hook_wiring.py` (or `_hook_wiring.py`, item 61) or the `hooks`
-    block of `claude/settings.json`. For every `(event, matcher, hook)` entry: the command resolves to a
+    block of `claude/settings.shared.json`. For every `(event, matcher, hook)` entry: the command resolves to a
     `<name>.py` that exists in `claude/scripts/`, and it carries an explicit integer `timeout` (seconds)
     at or above its budget floor — `usage-snapshot.py` -> 90, a hook importing `_winsubp` (the
     subprocess-hook marker, authoring rule 4) -> 30, pure-Python -> 10 (a FLOOR, `>=`, so a longer
@@ -3029,7 +3041,7 @@ For a one-line navigational map of the older tests, see
 
 67. **hook-liveness-check test** — required when changing `claude/scripts/hook-liveness-check.py`.
     Exercises the pure helpers offline (tmp dirs for heartbeat files, hand-built settings.json
-    fixtures — never the live `claude/settings.json`, so this suite's pass/fail doesn't drift with
+    fixtures — never the live `claude/settings.shared.json`, so this suite's pass/fail doesn't drift with
     production wiring changes; [ADR-106](adr/106-hook-heartbeat-liveness-ledger.md);
     dev-env#745, PR8 of #717): `hook_names_from_command` (every script-basename-minus-`.py` after
     the launcher, matching the literal string each hook passes to `_hookutil.record_heartbeat` —
@@ -3058,7 +3070,7 @@ For a one-line navigational map of the older tests, see
     parsed hook count; text distinct from `format_warning`'s so the two failure classes are never
     conflated) and a cross-check test, `test_wired_hook_events_agrees_with_hook_wiring_module`, that
     runs `wired_hook_events()` and `tests/_hook_wiring.wired_script_events()` against the **real**
-    `claude/settings.json` and asserts agreement (modulo the `.py`-suffix convention) — a regression
+    `claude/settings.shared.json` and asserts agreement (modulo the `.py`-suffix convention) — a regression
     guard against the two deliberately-not-yet-consolidated parsers (see the ADR's Settings-parsing
     scope decision) silently drifting apart. `main()`'s stdin plumbing IS now covered: a behavioral
     layer drives the real hook end-to-end over stdin via subprocess, with HOME/USERPROFILE isolated
@@ -3085,11 +3097,11 @@ For a one-line navigational map of the older tests, see
     ```
 
 68. **hook-heartbeat-guard structural gate** — required when changing which hooks are wired in
-    `claude/settings.json`, or any wired hook's `main()`. Mirrors
+    `claude/settings.shared.json`, or any wired hook's `main()`. Mirrors
     `test_hook_safe_exit_guard.py` / `test_hook_output_contract.py`'s established AST-gate pattern
     ([ADR-106](adr/106-hook-heartbeat-liveness-ledger.md)'s 2026-07-13 addendum;
     dev-env#745, PR8 of #717 `/review`): asserts every currently-wired hook (discovered via
-    `tests/_hook_wiring.py`, so the checked set self-updates with `claude/settings.json` — never a
+    `tests/_hook_wiring.py`, so the checked set self-updates with `claude/settings.shared.json` — never a
     hardcoded list) calls `_hookutil.record_heartbeat("<own-name>")` as the literal first statement
     of its own `main()` (after any docstring). Unlike its two precedent gates, ships with an
     **empty allowlist from day one** — PR8 made every wired hook compliant in the same change that
@@ -3103,7 +3115,7 @@ For a one-line navigational map of the older tests, see
     instead of the literal, fixed immediately); the unqualified `from _hookutil import
     record_heartbeat` call shape (also out of scope by design); and an unrelated first call. The
     repo-wide gate then asserts zero non-compliant wired hooks against the real
-    `claude/settings.json` + `claude/scripts/*.py`.
+    `claude/settings.shared.json` + `claude/scripts/*.py`.
 
     ```bash
     py -3 claude/scripts/tests/test_hook_heartbeat_guard.py
@@ -3361,7 +3373,7 @@ For a one-line navigational map of the older tests, see
     py -3 claude/scripts/tests/test_testing_index_parity.py
     ```
 
-77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py` (ADR-115). Pins the Stop hook that nudges when a session states a process-experiment conclusion with no `/experiment-audit` run. Verdict-language detection: each of the four operative idioms fires ("the spike failed", "experiment was a success", "adopt the challenger", "challenger outperformed ..."), while a bare unit-test "the test failed", meta-discussion that keeps words between the experiment noun and the outcome word, and — the load-bearing rigor-docs guarantee — verdict wording confined to a `Write`/`Edit` `tool_use` input (a session authoring an ADR/report) all do NOT fire. Also pins the suppressors (the `[experiment-audit]` marker in assistant text, a `/experiment-audit` command wrapper, and the "skip experiment audit" user override — a `tool_result`/compact-summary mention of the phrase does not waive), the `evaluate()` composition, the cp1252-encodable reminder, and the end-to-end behavior (fire → exit 2 on stderr with empty stdout; audit-ran / skip / no-verdict / docs-editing / `stop_hook_active` → exit 0; the once-per-session sentinel suppresses a second fire; empty/non-dict stdin → exit 0 fail-open). Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings wiring) rides the shared PR3/PR8 gates (items 61/62/63/68), which auto-discover the hook once it is wired in `claude/settings.json`.
+77. **experiment-verdict-gate test** — required when changing `claude/scripts/stop-experiment-verdict-gate.py` (ADR-115). Pins the Stop hook that nudges when a session states a process-experiment conclusion with no `/experiment-audit` run. Verdict-language detection: each of the four operative idioms fires ("the spike failed", "experiment was a success", "adopt the challenger", "challenger outperformed ..."), while a bare unit-test "the test failed", meta-discussion that keeps words between the experiment noun and the outcome word, and — the load-bearing rigor-docs guarantee — verdict wording confined to a `Write`/`Edit` `tool_use` input (a session authoring an ADR/report) all do NOT fire. Also pins the suppressors (the `[experiment-audit]` marker in assistant text, a `/experiment-audit` command wrapper, and the "skip experiment audit" user override — a `tool_result`/compact-summary mention of the phrase does not waive), the `evaluate()` composition, the cp1252-encodable reminder, and the end-to-end behavior (fire → exit 2 on stderr with empty stdout; audit-ran / skip / no-verdict / docs-editing / `stop_hook_active` → exit 0; the once-per-session sentinel suppresses a second fire; empty/non-dict stdin → exit 0 fail-open). Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings wiring) rides the shared PR3/PR8 gates (items 61/62/63/68), which auto-discover the hook once it is wired in `claude/settings.shared.json`.
 
     ```bash
     py -3 claude/scripts/tests/test_stop_experiment_verdict_gate.py
@@ -3595,7 +3607,7 @@ For a one-line navigational map of the older tests, see
 
     Structural compliance (heartbeat, safe-exit fail-open, output-contract channel, settings
     wiring) rides the shared gates — items 61/62/63/68 — which auto-discover the hook from
-    `claude/settings.json`; no registry edit was needed to bring it under them.
+    `claude/settings.shared.json`; no registry edit was needed to bring it under them.
 
     `project_dirs` is no longer *behaviourally* tested here — dev-env#881 hoisted it into
     `_journal_shards.py` and its behaviour is pinned once in item 21. What remains is a one-line
@@ -3643,15 +3655,14 @@ For a one-line navigational map of the older tests, see
 
 84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` ([ADR-122](adr/122-directory-index-readme-parity-gate.md), dev-env#901). Pure offline file parse — no subprocess, network, or git. The directory<->README analogue of item 76 (`test_testing_index_parity.py`, which gates `CLAUDE.md` <-> `docs/TESTING.md`): here the two hand-maintained per-file indexes `claude/scripts/tests/README.md` (dev-env#822) and `claude/scripts/README.md` (dev-env#830) are checked against the directories they claim to index. Neither directory's tooling reads its README — `run-hook-tests.py` discovers tests by glob and Claude Code loads scripts by their `settings.json` wiring — so a file with no row still works and the index rots invisibly; by the time the gate was written both had drifted (missing rows, plus header counts that were stale and, in `claude/scripts/README.md`, self-contradicting: it stated both "79 files" and "76 files" for the same 82-file set).
 
-    Six checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and the frozen number of rows, which also means a file may carry its own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
+    Four checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, the frozen number of rows, and the check for a file's own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
 
-    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test carries its own entry instead: in its first 10 lines, one line starting `Required when` with text after it, and one starting `Run:` that names the file. Only a file the runner discovers qualifies, so a support module takes an exemption, and the unit tests in `TestHasOwnEntry` pin the accepted and refused shapes (dev-env#1309).
+    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column, or carries its own entry. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test's own entry is, in its first 10 lines, one line starting `Required when` with text after it, and one starting `Run:` that names the file. Only a file the runner discovers qualifies, so a support module takes an exemption, and the unit tests in `TestHasOwnEntry` pin the accepted and refused shapes (dev-env#1309). In `claude/scripts/` a new script's own entry is one line in its first 10 lines starting `Purpose:` with text after it, in a docstring or comment so it changes nothing about how a hook, module, `.sh` or `.ps1` file runs; The line may also open a `<#` block or a prefixed docstring (`r"""`), and the text after `Purpose:` can't be just a docstring's closing quotes. `TestHasPurposeLine` pins 13 accepted and 8 refused shapes, a `.ps1` after `#Requires`, inside a `<# #>` block and on its opener among them (dev-env#1311). Accepted gap, stated in the gate's docstring: the check reads text, not syntax, so a code line starting `Purpose:` in the first 10 lines would count.
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
     3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py`, `_heartbeat_isolation.py` and `_throwaway_repo.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
-    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/`: top-level total; `claude/scripts/tests/` has no header counts since dev-env#1309, because every new test changed them). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
-    5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
-    6. **Frozen rows** — `claude/scripts/tests/README.md` has no more first-column names than the 118 it had when its rows were frozen (`FROZEN_TEST_ROWS`, dev-env#1309), because a new row would conflict with the next PR that adds one. It's a ceiling, so removing a test leaves room for one row.
-    Fail-closed by construction: a count sentence reworded past its regex fails check 4 (zero matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)` fails check 5's heading-count assertion — none pass on a count the gate can no longer see, the correct direction for a gate whose whole job is catching silent drift. `claude/scripts/README.md`'s header is worded so its number parses without depending on an em-dash. Verified during authoring that rewording a numbered heading drops the numbered-heading count 5→4 (check 5). Before dev-env#1309, an injected unindexed test file also tripped the tests README's header counts, and a since-removed sixth check reported a `.ps1` in the tests directory as uncovered; check 1 does that now.
+    4. **Frozen rows** — neither README has more first-column names than it had when its rows were frozen: 118 in `claude/scripts/tests/README.md` (`FROZEN_TEST_ROWS`, dev-env#1309) and 115 in `claude/scripts/README.md` (`FROZEN_SCRIPT_ROWS`, dev-env#1311), because a new row would conflict with the next PR that adds one. It's a ceiling, so removing a file leaves room for one row, and zero rows fails too, so a parse that finds nothing can't pass.
+
+    Neither README carries a file count or a `### Title (N)` heading count any more, so the checks that gated them are gone: every new file changed those lines, which made any two file-adding PRs conflict (dev-env#1309 for the tests README, dev-env#1311 for the scripts README). Before dev-env#1309, a since-removed check reported a `.ps1` in the tests directory as uncovered; check 1 does that now. Item 84's known-bad references for the scripts README are built by `test_testing_index_merge.py`: a script with neither a row nor a `Purpose:` line, and a new row, both refused; two rows added at the same point, which conflict. Verified during authoring that raising `FROZEN_SCRIPT_ROWS` to 116, or ignoring the `Purpose:` line, turns that test red.
 
     ```bash
     py -3 claude/scripts/tests/test_readme_index_parity.py
@@ -4189,7 +4200,9 @@ For a one-line navigational map of the older tests, see
 97. **journal-project-repo-map test** — required when changing
     `claude/scripts/journal-project-repo-map.py` or the Step 8a Source 3 block in
     `claude/skills/journal-compose/SKILL.md`
-    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045).
+    ([ADR-032 Amendment 1](adr/032-journal-start-here-dashboard.md), dev-env#1045). The amendment
+    lands in both: the script resolves the mapping and names every skip, and the skill consumes
+    `query_order` and surfaces those skips to the user.
 
     The script resolves each `sessions/<project>/` directory to a GitHub `owner/repo` slug so Step 8a
     Source 3 can query it for `start-here`-labeled issues. It exists as a script, rather than the
@@ -5167,7 +5180,9 @@ For a one-line navigational map of the older tests, see
      py -3 claude/scripts/tests/test_dev_env_doctor.py
      ```
 
-111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`.
+111. **reconcile-late-stubs test** — required when changing `claude/scripts/reconcile-late-stubs.py`
+     or `claude/scripts/_journal_late.py`. A moved stub must take the target branch's date or
+     `/journal-compose` skips it (dev-env#1203).
      Runs the script's real `main()` against a throwaway bare origin and clone, so every assertion
      is about the tree actually pushed. Only `gh` is faked, by wrapping `subprocess.run`. The
      fixture sets its own `core.hooksPath`, so the machine's global pre-push hook stays out of it.
@@ -5282,8 +5297,19 @@ For a one-line navigational map of the older tests, see
      bash claude/scripts/tests/test-claude-wrappers.sh
      ```
 
-115. **claude-md-size test** — required when changing `claude/CLAUDE.md` or the `## Instruction Detail` headings in
-     `docs/REFERENCE.md` (dev-env#1216, ADR-159). The file loads in every session in every project, so the test fails
+115. **claude-md-size test** — required when changing `claude/CLAUDE.md`, the repo-root `CLAUDE.md`, or the
+     `## Instruction Detail` and `## Project Instruction Detail` headings in `docs/REFERENCE.md` (dev-env#1216,
+     dev-env#1297, ADR-159).
+
+     **Project file (dev-env#1297).** The repo-root `CLAUDE.md` loads in every dev-env session, so it gets the
+     same checks as a second row of `CAPPED_FILES`, the table every check loops over: a 38,500-byte ceiling,
+     about 5% over its 36,860 bytes after the trim; the pre-trim sizes 52,943 (when #1297 was filed) and
+     56,572 (when it landed) rejected; a read that isn't implausibly small; every local link resolving from
+     the repo root (more than 20 required); and a link of the exact form `(docs/REFERENCE.md#<anchor>)` to
+     every `Project detail:` heading. Each file's link form is pinned the same way. A separate check keeps
+     the two heading prefixes from overlapping, so neither file's check claims the other's sections.
+
+     **Global file.** The file loads in every session in every project, so the test fails
      above a byte ceiling set about 5% over its size after the trim, with line endings normalized so a CRLF checkout
      measures the same. It pins that the ceiling rejects the pre-trim sizes, 166,696 and 181,551 bytes, and that the
      read isn't implausibly small. Rules now lean on links for their detail, so it also resolves every local link,

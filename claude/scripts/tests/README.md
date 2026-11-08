@@ -88,7 +88,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 | `test_sibling_hooks_hardened_io.py` | 12 of the 13 dev-env#1031/#1033 sibling hooks | AST gate against the unguarded `X.get("tool_input"/"tool_response", {}).get(...)` chain (dev-env#1028's crash class) plus malformed-payload smoke tests driving each hook's `main()` end-to-end; `pre-tool-use-worktree-path-check.py`'s own coverage lives in `test_worktree_path_check.py` instead. |
 | `test_settings_hook_wiring.py` | `claude/settings.shared.json` | Lint: every `(event, matcher, hook)` entry resolves to a real script and carries a timeout at or above its budget floor. |
 | `test_testing_index_parity.py` | `CLAUDE.md` + `docs/TESTING.md` | Asserts the `## Testing` index and `docs/TESTING.md` carry identical, contiguous item numbers and titles (the ADR-114 two-file sync rule), no numbered line past 118, and no number used twice. |
-| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row or, for a new test, its own entry (and every row a real file), and that `claude/scripts/README.md`'s header/section counts match the live directory — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
+| `test_readme_index_parity.py` | this README + `claude/scripts/README.md` | Asserts every file in each indexed directory has a README first-column row or, for a new test or script, its own entry (and every row a real file), and that neither README gains a row — the drift `run-hook-tests.py`'s glob discovery never surfaces (dev-env#901). |
 | `check-remote-read-hygiene.sh` | all `claude/**` | Lints for a `git show <ref>:<path>` paired with `2>/dev/null` — the MSYS path-mangling false-absent class where git's swallowed `fatal:` reads as "file absent" (dev-env#602/#877, ADR-120). |
 | `check-script-path-hygiene.sh` | all `claude/scripts/*.sh`, `claude/hooks/*` | Lints for a `$HOME`-rooted scratch path piped to `node` (Git Bash vs. Node-on-Windows path-resolution mismatch, dev-env#334). |
 | `run-pylint-unreachable.sh` | all `claude/scripts/*.py` and `claude/scripts/tests/*.py` | Runs pylint's `unreachable` (W0101) check alone — dead-code-after-return/raise, independent of type annotations. |
@@ -163,7 +163,7 @@ exit-code safety, heartbeat compliance — rather than one script's behavior.
 
 | Test file | Covers | Purpose |
 |---|---|---|
-| `test_claude_md_size.py` | `claude/CLAUDE.md` | Caps the global instruction file's size and checks its local links resolve, including anchors into `docs/REFERENCE.md` (ADR-159). |
+| `test_claude_md_size.py` | `claude/CLAUDE.md`, `CLAUDE.md` | Caps the global and project instruction files' sizes and checks their local links resolve, including anchors into `docs/REFERENCE.md` (ADR-159). |
 | `test_dev_env_sync.py` | `dev-env-sync.py` | Fast-forwards the canonical checkout's `main` on every prompt; escalates a persistent pull failure. |
 | `test_hook_liveness_check.py` | `hook-liveness-check.py` | Warns when a wired hook's heartbeat ledger has gone stale (hasn't recorded in its expected cadence). |
 | `test_hook_timing_report.py` | `hook-timing-report.py` | Per-hook duration percentiles from the heartbeat's `.dur.jsonl` lines: window and malformed-line filtering, numbered slowest-first table, empty/missing ledger, and a round trip against `_hookutil.record_duration`'s own output. |
