@@ -5,8 +5,10 @@
 **Tags:** hooks, post-tool-use, stop-hook, transcript, observability, reliability, background-task, spawn-task, github-project
 
 > **Amended 2026-11-07:** zero PostToolUse attachments doesn't prove hooks didn't run, and launch path
-> doesn't decide the inert state. The advisory's message changed to match; its detection didn't. See
-> [ADR-053's amendment](053-posttooluse-hooks-inert-in-background-sessions.md#amendment-2026-11-07--start_session-sessions-arent-inert-and-zero-attachments-doesnt-mean-inert).
+> doesn't decide the inert state. The advisory's message changed to match (see
+> [ADR-053's amendment](053-posttooluse-hooks-inert-in-background-sessions.md#amendment-2026-11-07--start_session-sessions-arent-inert-and-zero-attachments-doesnt-mean-inert)),
+> and its detection now also checks the call's `is_error` flag and the session's `bash_state` file
+> ([amendment below](#amendment-2026-11-07-key-on-the-calls-own-outcome-and-the-bash_state-write)).
 
 ---
 
@@ -151,3 +153,52 @@ See [ADR-053](053-posttooluse-hooks-inert-in-background-sessions.md) (the limita
 [ADR-049](049-hook-payload-output-field.md) / [ADR-050](050-shared-hookio-sibling-hook-fixes.md)
 (the distinct output-field bug), and [ADR-007](007-hook-command-invocation.md) (the `pyw -3`
 launcher / stdout model).
+
+## Amendment (2026-11-07): key on the call's own outcome and the `bash_state` write
+
+[dev-env#1331](https://github.com/brownm09/dev-env/issues/1331). Zero PostToolUse attachments
+also matches sessions whose hooks ran and printed nothing, and 3 of the advisory's 5 real firings
+were that ([ADR-053's amendment](053-posttooluse-hooks-inert-in-background-sessions.md#the-advisory)).
+
+**Decision.** The zero-attachment condition stays. Within it, a detected board action is kept only
+when one of these holds:
+
+1. **Its call is marked `is_error`.** PostToolUse never runs for a failed call, so a create that
+   printed its URL inside a chain that exited non-zero really skipped its board add, whatever else
+   the session shows. The advisory labels such an action as a failed call.
+2. **Nothing shows PostToolUse dispatching after the call began.** The session's
+   `~/.claude/scratch/bash_state_<session-id>.json` is written only by the silent
+   `post-tool-use-cwd-track.py`, after every successful shell call. The action is kept when that
+   file is missing or its modified time is earlier than the timestamp of the record that issued the
+   call. A missing file or an unparseable timestamp keeps the old behaviour.
+
+A `gh pr merge` whose output says the API rate limit was exceeded no longer counts as a merge.
+
+Every change narrows the advisory: it fires in a subset of the sessions it fired in before.
+
+**Calibration** (replay of both detectors at each recorded Stop over the 366 top-level transcripts
+on this machine, 2026-11-07):
+
+- **Measured properties.** The tool result's `is_error` flag, and `bash_state` modified time minus
+  the issuing record's timestamp. The threshold is 0 seconds, set by the order of events rather
+  than tuned: the hook runs after the call it follows has started.
+- **Known-good.** 261 successful dev-env creates and merges in transcripts with PostToolUse
+  attachments. 256 have a file written after the call began, the nearest 9.0 seconds after. The
+  other 5 have no file and all date from before 2026-10-14, when the file wasn't reliable, so the
+  old behaviour applies to them.
+- **Known-bad.** No inert session has occurred since 2026-10-14, so the `bash_state` condition has
+  none, as ADR-053's amendment records. It can only stop the advisory firing, never make it fire.
+  The `is_error` condition has one: the failed-chain create among the 5 firings, which still fires.
+- **The 5 real firings.** Still fire: the failed-chain create, and the undetermined 2026-10-08
+  session, which has no file. No longer fire: the two sessions whose attachments appeared later,
+  and the rate-limited merge.
+
+**Alternatives rejected.**
+
+- **`bash_state` alone, ignoring `is_error`.** It would silence the one firing that pointed at a
+  real missing board add.
+- **The per-call duration ledger.** It names no session and reaches back only to 2026-11-06.
+- **Firing on an errored create even when the session has attachments.** It would catch more real
+  gaps, but it widens the advisory and changes the once-per-session resolution in `main()`, so it
+  needs its own calibration. The replay found 4 such actions (1 create, 3 merges):
+  [dev-env#1349](https://github.com/brownm09/dev-env/issues/1349).

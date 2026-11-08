@@ -566,7 +566,12 @@ For a one-line navigational map of the older tests, see
     ```
 
 18. **posttooluse-inert-advisory test** — required when changing
-    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    `claude/scripts/posttooluse-inert-advisory.py`. Since dev-env#1331 (ADR-055's 2026-11-07 amendment)
+    it also pins the narrowed decision: a `gh pr merge` refused by an API rate limit is no merge; a create
+    inside a call marked `is_error` fires even when `bash_state` was written later, labelled as a failed
+    call; a silent successful create with `bash_state` written after the call started stays silent; a file
+    older than the call, no file, or no call timestamp fires as before; and an end-to-end run plants the
+    file under the isolated HOME to show `main()` reads it. Exercises the pure transcript-scanning helpers offline
     (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
     `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
     proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
