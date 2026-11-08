@@ -2,6 +2,9 @@
 """Keeps Docker Desktop startable and stops it when sessions are done. See
 ADR-158 and dev-env#1278.
 
+Purpose: scheduled-task payload that checks the hypervisor, repairs a stuck
+Docker Desktop, and stops a session-started engine when sessions are done.
+
 Task Scheduler runs this at sign-in and every 5 minutes (--tick), and on demand
 to start Docker (--start). It has to run from there: only a process outside the
 Claude app's tree can delete Docker's stale socket files.

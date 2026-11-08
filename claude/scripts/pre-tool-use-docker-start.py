@@ -2,6 +2,9 @@
 """Claude Code PreToolUse hook -- starts Docker Desktop when a session runs a
 `docker` command, by way of a scheduled task. See ADR-158 and dev-env#1278.
 
+Purpose: PreToolUse (Bash, PowerShell) hook that starts Docker Desktop through a
+scheduled task when a session runs `docker` or a project-listed test command.
+
 Starting through Task Scheduler is the point. A backend started directly from a
 session crashes on its next start, because a process in the Claude app's tree
 can't delete Docker's old socket file (see `_docker_lifecycle`). So this hook

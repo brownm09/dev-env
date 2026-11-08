@@ -105,7 +105,9 @@ For a one-line navigational map of the older tests, see
    with its exception swallowed as the old code did, must be recorded. Without it the empty-list
    assertions could pass vacuously.
    Exercises the pure `classify_token()` helper offline (no network, no credentials file): pins the
-   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting an expired
+   `no_expiry` / `ok` / `expiring` / `expired` states and the expiry boundary, asserting only `expired`
+   carries an advisory (an `expiring` token is used, so it has none,
+   [#1328](https://github.com/brownm09/dev-env/issues/1328)) and that an expired
    token now yields a user-facing advisory rather than the silent skip it did before
    [#355](https://github.com/brownm09/dev-env/issues/355). Also exercises the pure
    `merge_confirmed(command, output)` predicate offline: pins that a worktree-merge payload (gh's
@@ -566,7 +568,12 @@ For a one-line navigational map of the older tests, see
     ```
 
 18. **posttooluse-inert-advisory test** — required when changing
-    `claude/scripts/posttooluse-inert-advisory.py`. Exercises the pure transcript-scanning helpers offline
+    `claude/scripts/posttooluse-inert-advisory.py`. Since dev-env#1331 (ADR-055's 2026-11-07 amendment)
+    it also pins the narrowed decision: a `gh pr merge` refused by an API rate limit is no merge; a create
+    inside a call marked `is_error` fires even when `bash_state` was written later, labelled as a failed
+    call; a silent successful create with `bash_state` written after the call started stays silent; a file
+    older than the call, no file, or no call timestamp fires as before; and an end-to-end run plants the
+    file under the isolated HOME to show `main()` reads it. Exercises the pure transcript-scanning helpers offline
     (synthetic records; no stdin, network, gh, or disk): pins that an `attachment` record with
     `hookEvent == "PostToolUse"` (both the exit-0 `hook_success` and exit-2 `hook_blocking_error` shapes)
     proves PostToolUse fired, that `iter_bash_calls` pairs each Bash command with its result by `tool_use_id`
@@ -940,7 +947,9 @@ For a one-line navigational map of the older tests, see
     cases -> `[]`), `_result_text` (string / list-joined / `toolUseResult` stdout+stderr fallback /
     empty -> `''`), `iter_bash_calls` (id-pairing returning `(command, output, cwd)`, out-of-order
     parallel results not crossing, default `cwd=''`, and non-dict/non-Bash/orphan records -> `[]`
-    without raising), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
+    without raising), `iter_bash_call_details` (dev-env#1331: the same pairing plus the result's
+    `is_error`, counted only when literally `True`, and the issuing record's timestamp;
+    `iter_bash_calls` is its first three fields), `_parse_records` (keeps only JSON objects, dropping blank/malformed/non-object
     lines), and `load_records` (reads a JSONL file to its object records). Imported by
     `posttooluse-inert-advisory.py`, `stop-tile-enumeration-gate.py`, `reconcile-open-prs.py`, and
     `token-tracker.py` ([ADR-064](adr/064-shared-hookutil-sentinel-transcript-locate.md),
@@ -3641,15 +3650,14 @@ For a one-line navigational map of the older tests, see
 
 84. **README index-parity gate** — required when changing `claude/scripts/tests/test_readme_index_parity.py`, or when adding/removing/renaming any file in `claude/scripts/tests/` or `claude/scripts/` ([ADR-122](adr/122-directory-index-readme-parity-gate.md), dev-env#901). Pure offline file parse — no subprocess, network, or git. The directory<->README analogue of item 76 (`test_testing_index_parity.py`, which gates `CLAUDE.md` <-> `docs/TESTING.md`): here the two hand-maintained per-file indexes `claude/scripts/tests/README.md` (dev-env#822) and `claude/scripts/README.md` (dev-env#830) are checked against the directories they claim to index. Neither directory's tooling reads its README — `run-hook-tests.py` discovers tests by glob and Claude Code loads scripts by their `settings.json` wiring — so a file with no row still works and the index rots invisibly; by the time the gate was written both had drifted (missing rows, plus header counts that were stale and, in `claude/scripts/README.md`, self-contradicting: it stated both "79 files" and "76 files" for the same 82-file set).
 
-    Six checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, header count sentences, expected number of `(N)` headings, and the frozen number of rows, which also means a file may carry its own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
+    Four checks per indexed directory, table-driven over a per-directory `DirSpec` (directory, README, first-column exemptions, the frozen number of rows, and the check for a file's own entry), each README parsed once in `setUpClass` (matching the item-76 sibling):
 
-    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test carries its own entry instead: in its first 10 lines, one line starting `Required when` with text after it, and one starting `Run:` that names the file. Only a file the runner discovers qualifies, so a support module takes an exemption, and the unit tests in `TestHasOwnEntry` pin the accepted and refused shapes (dev-env#1309).
+    1. **Row coverage** — every indexable file (a top-level `.py`/`.sh`/`.ps1`, excluding `README.md`, subdirectories, and the exemption set) appears in some table's **first** column, or carries its own entry. First column, not "mentioned anywhere": a prose cross-reference is not an index entry. A first cell may legitimately name two files (a shared module's paired tests, e.g. ``` `test_winsubp.py`, `test_pyw_stdio.py` ```) — both count. In `claude/scripts/tests/` a new test's own entry is, in its first 10 lines, one line starting `Required when` with text after it, and one starting `Run:` that names the file. Only a file the runner discovers qualifies, so a support module takes an exemption, and the unit tests in `TestHasOwnEntry` pin the accepted and refused shapes (dev-env#1309). In `claude/scripts/` a new script's own entry is one line in its first 10 lines starting `Purpose:` with text after it, in a docstring or comment so it changes nothing about how a hook, module, `.sh` or `.ps1` file runs; The line may also open a `<#` block or a prefixed docstring (`r"""`), and the text after `Purpose:` can't be just a docstring's closing quotes. `TestHasPurposeLine` pins 13 accepted and 8 refused shapes, a `.ps1` after `#Requires`, inside a `<# #>` block and on its opener among them (dev-env#1311). Accepted gap, stated in the gate's docstring: the check reads text, not syntax, so a code line starting `Purpose:` in the first 10 lines would count.
     2. **No orphan rows** — every first-column filename exists on disk, catching a rename or delete that updated the file but not its row.
     3. **Exemptions are real and indexed** — each exempt file both exists and appears *somewhere* in the README, so an exemption can never silently hide a file's deletion. The current exemptions are `_hook_wiring.py`, `_heartbeat_isolation.py` and `_throwaway_repo.py` in `claude/scripts/tests/`, which are deliberately indexed in the **second** column (with a `—` first cell) because they are test-support infrastructure, not tests.
-    4. **Header counts** — each header count sentence occurs **exactly once** and equals the live directory count (`claude/scripts/`: top-level total; `claude/scripts/tests/` has no header counts since dev-env#1309, because every new test changed them). Exactly-once, not first-match, so a stray second copy of a count phrase can't hide drift behind it.
-    5. **Section counts** — every `### Title (N)` heading's N equals that section's first-column entry count, **and** the number of `(N)` headings matches a per-directory expectation (`claude/scripts/README.md`: 5; `claude/scripts/tests/README.md`: 0) so a heading reworded past the `(N)` form can't silently drop out of gating.
-    6. **Frozen rows** — `claude/scripts/tests/README.md` has no more first-column names than the 118 it had when its rows were frozen (`FROZEN_TEST_ROWS`, dev-env#1309), because a new row would conflict with the next PR that adds one. It's a ceiling, so removing a test leaves room for one row.
-    Fail-closed by construction: a count sentence reworded past its regex fails check 4 (zero matches), a duplicated count fails it too (more than one), and a numbered heading that loses its `(N)` fails check 5's heading-count assertion — none pass on a count the gate can no longer see, the correct direction for a gate whose whole job is catching silent drift. `claude/scripts/README.md`'s header is worded so its number parses without depending on an em-dash. Verified during authoring that rewording a numbered heading drops the numbered-heading count 5→4 (check 5). Before dev-env#1309, an injected unindexed test file also tripped the tests README's header counts, and a since-removed sixth check reported a `.ps1` in the tests directory as uncovered; check 1 does that now.
+    4. **Frozen rows** — neither README has more first-column names than it had when its rows were frozen: 118 in `claude/scripts/tests/README.md` (`FROZEN_TEST_ROWS`, dev-env#1309) and 115 in `claude/scripts/README.md` (`FROZEN_SCRIPT_ROWS`, dev-env#1311), because a new row would conflict with the next PR that adds one. It's a ceiling, so removing a file leaves room for one row, and zero rows fails too, so a parse that finds nothing can't pass.
+
+    Neither README carries a file count or a `### Title (N)` heading count any more, so the checks that gated them are gone: every new file changed those lines, which made any two file-adding PRs conflict (dev-env#1309 for the tests README, dev-env#1311 for the scripts README). Before dev-env#1309, a since-removed check reported a `.ps1` in the tests directory as uncovered; check 1 does that now. Item 84's known-bad references for the scripts README are built by `test_testing_index_merge.py`: a script with neither a row nor a `Purpose:` line, and a new row, both refused; two rows added at the same point, which conflict. Verified during authoring that raising `FROZEN_SCRIPT_ROWS` to 116, or ignoring the `Purpose:` line, turns that test red.
 
     ```bash
     py -3 claude/scripts/tests/test_readme_index_parity.py

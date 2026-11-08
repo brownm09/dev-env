@@ -24,6 +24,13 @@
       "Bash(gh issue view *)",
       "mcp__ccd_pr__set_monitor"
     ],
+    "deny": [
+      "Artifact",
+      "PowerShell",
+      "Workflow",
+      "SuggestPluginInstall",
+      "SuggestSkills"
+    ],
     "defaultMode": "plan"
   },
   "model": "sonnet",

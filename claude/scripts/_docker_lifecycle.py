@@ -3,6 +3,9 @@
 sessions are done. Used by pre-tool-use-docker-start.py and docker-watchdog.py.
 See ADR-158 and dev-env#1278.
 
+Purpose: Docker Desktop start/stop state (marker and leases, engine checks,
+stale-socket repair, and the stop decision), shared by the Docker hook and watchdog.
+
 Why Docker is never started from a session: a process in the Claude desktop
 app's tree sees %LOCALAPPDATA% through the app's redirected view. In that view
 an AF_UNIX socket file can be created but not opened or deleted (error 1920,

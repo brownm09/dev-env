@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
     Turn the Docker Desktop watchdog on or off.
+    Purpose: registers or removes the ClaudeDockerWatchdog and ClaudeDockerStart scheduled tasks.
 
 .DESCRIPTION
     dev-env #1278, ADR-158. Registers two scheduled tasks that run docker-watchdog.py:

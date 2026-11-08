@@ -602,12 +602,28 @@ def iter_bash_calls(records: list) -> list:
     (via a thin 2-tuple adapter). ``isinstance`` guards (in ``_content_items`` and
     per-item) keep it safe on malformed or hand-built record lists.
     """
+    return [call[:3] for call in iter_bash_call_details(records)]
+
+
+def iter_bash_call_details(records: list) -> list:
+    """``iter_bash_calls`` with two more fields per call:
+    ``(command, output, cwd, is_error, started)``.
+
+    *is_error* is the tool_result's own flag (PostToolUse never runs for a call
+    marked with it), and *started* is the ``timestamp`` of the assistant record
+    that issued the call, or ``""``. posttooluse-inert-advisory.py uses both
+    (dev-env#1331). The one pairing implementation behind ``iter_bash_calls``.
+    """
     commands: dict = {}
     for _i, rec, item in iter_tool_uses(records):
         if item.get("name") == "Bash":
             tid = item.get("id")
             if tid:
-                commands[tid] = ((item.get("input") or {}).get("command", ""), rec.get("cwd", "") or "")
+                commands[tid] = (
+                    (item.get("input") or {}).get("command", ""),
+                    rec.get("cwd", "") or "",
+                    rec.get("timestamp", "") or "",
+                )
 
     calls: list = []
     for rec in records:
@@ -617,8 +633,9 @@ def iter_bash_calls(records: list) -> list:
             if isinstance(item, dict) and item.get("type") == "tool_result":
                 tid = item.get("tool_use_id")
                 if tid in commands:
-                    command, cwd = commands[tid]
-                    calls.append((command, _result_text(item, rec), cwd))
+                    command, cwd, started = commands[tid]
+                    calls.append((command, _result_text(item, rec), cwd,
+                                  item.get("is_error") is True, started))
     return calls
 
 
