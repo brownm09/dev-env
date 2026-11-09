@@ -187,3 +187,25 @@ such call, though the call itself wasn't observed.
 **Left as is.** The hook's 90-second budget in `hook-dispatch.py` was sized for the refresh. The fetch's
 retry and the merge confirmation now take far less, but a larger budget costs nothing unless the hook
 hangs, so it isn't changed here.
+
+## Amendment (2026-11-09) — `claude auth status` is not a reliable refresh route (dev-env#1327)
+
+[dev-env#1327](https://github.com/brownm09/dev-env/issues/1327) asked whether `claude auth status --json`,
+which makes no model call, refreshes an expired token reliably enough for the hook to run it. The rule
+was set before any run: every run in the hook's environment, at least 3, must rewrite the expired token.
+
+**Outcome: it doesn't, so the hook is unchanged.** Six runs from 2026-11-07 to 2026-11-09, in a desktop
+session's environment with CLI 2.1.317, each 5 seconds after expiry unless noted. Runs 1 to 4 rewrote
+`~/.claude/.credentials.json` 1 to 2 seconds after the command started. Run 5 (2026-11-09 06:33:50)
+exited 0 with `loggedIn` true and left the expired token in place. Run 6, 60 seconds after expiry,
+rewrote it. With the two #1299 runs above, the command refreshed in 6 of 8. The per-run readings are
+[on the issue](https://github.com/brownm09/dev-env/issues/1327#issuecomment-6739077328).
+
+**Why it's intermittent.** The `auth status` handler makes no refresh call itself. The CLI's
+`--debug-file` log records no refresh even in the runs that rewrote the file. So the refresh is
+background work that sometimes finishes before the command exits. Run 5 was the fastest run (0.8
+seconds against 1.5 to 2.5), which fits, but that's a hypothesis, not a measurement.
+
+**Alternative not adopted: run the command again when the first run misses.** Run 6 rewrote the file
+after run 5 missed, but that's one retry after one miss. The hook already fails safely by skipping with
+an advisory, so a retry isn't worth adding on that evidence.
