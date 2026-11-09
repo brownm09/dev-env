@@ -202,8 +202,9 @@ rewrote it. With the two #1299 runs above, the command refreshed in 6 of 8. The 
 [on the issue](https://github.com/brownm09/dev-env/issues/1327#issuecomment-6739077328).
 
 **Why it's intermittent.** The `auth status` handler makes no refresh call itself. The CLI's
-`--debug-file` log records no refresh even in the runs that rewrote the file. So the refresh is
-background work that sometimes finishes before the command exits. Run 5 was the fastest run (0.8
+`--debug-file` log records no refresh even in the runs that rewrote the file, which landed 1 to 2
+seconds after the command started. The likely explanation is background work that sometimes finishes
+before the command exits; nothing observed the refresh directly. Run 5 was the fastest run (0.8
 seconds against 1.5 to 2.5), which fits, but that's a hypothesis, not a measurement.
 
 **Alternative not adopted: run the command again when the first run misses.** Run 6 rewrote the file
