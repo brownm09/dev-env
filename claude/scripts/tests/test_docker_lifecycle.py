@@ -409,7 +409,7 @@ def test_tick_times_a_wedge_across_ticks_then_force_stops():
     _eq(watchdog.tick(runner=fake, now=now), lifecycle.WAIT, "first sighting")
     _eq(watchdog.tick(runner=fake, now=now + 300), lifecycle.WAIT, "five minutes on")
     assert not fake.ran("docker", "desktop", "stop"), "not yet"
-    _eq(watchdog.tick(runner=fake, now=now + lifecycle.WEDGE_SECONDS), lifecycle.FORCE_STOP, "ten minutes on")
+    _eq(watchdog.tick(runner=fake, now=now + lifecycle.WEDGE_SECONDS), lifecycle.FORCE_STOP, "wedge limit on")
     assert fake.ran("docker", "desktop", "stop", "--force"), fake.calls
 
 

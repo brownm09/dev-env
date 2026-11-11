@@ -148,8 +148,8 @@ def ensure_engine(session_id, runner=lifecycle.run, clock=time.monotonic, sleep=
             return True, ""
         sleep(POLL_SECONDS)
     return False, (
-        f"Docker didn't answer within {START_WAIT_SECONDS} seconds. "
-        "Details: py -3 C:/Users/brown/.claude/scripts/docker-watchdog.py --status"
+        f"Docker didn't answer within {START_WAIT_SECONDS} seconds. A first start after "
+        "an update can take several minutes, so it may still be starting. Details: py -3 C:/Users/brown/.claude/scripts/docker-watchdog.py --status"
     )
 
 

@@ -35,7 +35,7 @@ The dead `dockerInference` file also deleted normally from a process Task Schedu
 1. **Docker is only ever started from outside the app's tree.** `pre-tool-use-docker-start.py` runs the `ClaudeDockerStart` scheduled task and waits for the engine. It blocks `docker desktop start`/`restart` and launching `Docker Desktop.exe` from a session, naming the way out. These commands are enumerated, and each one recreates failure 1.
 2. **A watchdog runs from Task Scheduler at sign-in and every 5 minutes.** It has to live outside the tree, because only there can it delete the sockets.
    - **Monitor:** once per boot it reads `HypervisorPresent` and shows a Windows notification if it's False. Software can't change a firmware setting, so telling the user is the fix. The session hook also skips starting Docker in that state, since a start would only wedge.
-   - **Repair:** it deletes AF_UNIX socket files in Docker's directories whenever no backend runs, checking the reparse tag (`0x80000023`) so nothing else can be deleted. It force-stops a Docker stuck with no engine for 10 minutes.
+   - **Repair:** it deletes AF_UNIX socket files in Docker's directories whenever no backend runs, checking the reparse tag (`0x80000023`) so nothing else can be deleted. It force-stops a Docker stuck with no engine for 20 minutes.
    - **Idle stop:** see the next point.
 3. **Stop rules, set by the user.** A session-started engine stops 15 minutes after the last `docker` command, or after 2 hours if containers are still running, so a long test keeps its database. An engine the user started has no marker and is never stopped. A failed idle stop retries and never escalates; only the wedge path forces.
 4. **Never `wsl --shutdown`.** WSL stops its VM itself ([`vmIdleTimeout`](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)), and that command would also kill other distros.
@@ -55,7 +55,7 @@ Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 
 **Hypervisor check.** Known bad: this machine now, where it reads False and WSL fails. Known good: not yet observed, since it needs the BIOS fix. It therefore only reports and skips a start that would wedge; it blocks no command. An unreadable answer reads as present.
 
-**Constants.** The 15-minute and 2-hour limits are the user's choices, not derived from data. The 10-minute wedge limit is a judgment: well past the 150-second start timeout, and far below the 35 hours observed. A false wedge costs one restart of a start that had already taken 10 minutes.
+**Constants.** The 15-minute and 2-hour limits are the user's choices, not derived from data. The 20-minute wedge limit is a judgment from two measured starts and one wedge, not a calibrated threshold. On 2026-11-11 the first start after SVM was enabled ran 7.4 minutes with no engine, and the next took 35 seconds; the wedge observed earlier lasted 35 hours. The limit was 10 minutes until that first start showed only 2.6 minutes of margin. A false wedge is costly, because it stops a slow start that would then be just as slow next time, while a real wedge held 10 minutes longer costs only RAM.
 
 ## Alternatives Considered
 

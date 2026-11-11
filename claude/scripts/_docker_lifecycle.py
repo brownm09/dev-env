@@ -39,7 +39,9 @@ import _hookutil
 
 IDLE_SECONDS = 15 * 60  # The user's choice (2026-11-06), not derived from data.
 CONTAINER_HOLD_SECONDS = 2 * 60 * 60  # Also the user's choice.
-WEDGE_SECONDS = 10 * 60  # Well past a normal start, which `--timeout 150` bounds.
+# A start's normal time isn't bounded by `--timeout 150`: the first start after SVM was
+# turned on ran 7.4 minutes with no engine (2026-11-11), and a later one 35 seconds.
+WEDGE_SECONDS = 20 * 60
 START_TIMEOUT_SECONDS = 150
 LOCK_STALE_SECONDS = 10 * 60
 LOG_MAX_BYTES = 1_000_000
