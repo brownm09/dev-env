@@ -14,20 +14,31 @@ socket at startup, so a backend started from a session crashes on the next
 start. The same file deletes normally from a process Task Scheduler started.
 Measured 2026-11-06 (ADR-158); the redirection mechanism itself isn't proven.
 
+A check that fails reads as the state that destroys nothing (ADR-158): an engine
+check that times out is "unknown" and the watchdog acts on nothing, a tasklist
+that fails reads as running, and a container count that fails reads as one.
+
 State lives in `_hookutil.SCRATCH/docker-lifecycle/`:
   started-by-session   Marker: a session started this engine, so it may be
-                       stopped. Absent means the user started it: never stopped.
+                       stopped. Holds the backend's process IDs once known, so a
+                       marker left from an earlier engine isn't honoured. Absent
+                       means the user started it: never stopped.
   leases/<session>     One per session. Its mtime is that session's last
                        `docker` command.
+  engine-seen          Its mtime is the last time the hook saw the engine answer.
   unhealthy-since      First time the watchdog saw a stuck Docker.
   health.json          Hypervisor result for the current boot.
   watchdog.log         What the watchdog did.
-  lock                 Held across a start or a stop.
+  lock                 Held across a start, a stop, or a tick.
 
 Test-only override: DOCKER_LIFECYCLE_DIR_OVERRIDE replaces the state directory.
 """
 import contextlib
+import csv
+import ctypes
 import glob
+import json
+import msvcrt
 import os
 import re
 import subprocess
@@ -43,18 +54,26 @@ CONTAINER_HOLD_SECONDS = 2 * 60 * 60  # Also the user's choice.
 # turned on ran 7.4 minutes with no engine (2026-11-11), and a later one 35 seconds.
 WEDGE_SECONDS = 20 * 60
 START_TIMEOUT_SECONDS = 150
-LOCK_STALE_SECONDS = 10 * 60
+# A tray with no backend is the first seconds of a launch. One the watchdog has seen for
+# this long isn't launching any more.
+ORPHAN_TRAY_SECONDS = 60
+ENGINE_SEEN_SECONDS = 60
+SAME_BOOT_SECONDS = 120
 LOG_MAX_BYTES = 1_000_000
 
 START_TASK = "ClaudeDockerStart"
-WATCHDOG_TASK = "ClaudeDockerWatchdog"
 REGISTER_HINT = (
     "powershell -ExecutionPolicy Bypass -File "
     "C:/Users/brown/.claude/scripts/register-docker-watchdog.ps1"
 )
+# Pinned, so the engine check doesn't follow the user's current `docker context`.
+DOCKER = ["docker", "--context", "desktop-linux"]
+BACKEND_IMAGE = "com.docker.backend.exe"
+TRAY_IMAGE = "Docker Desktop.exe"
 
 IO_REPARSE_TAG_AF_UNIX = 0x80000023
 DIR_OVERRIDE_ENV = "DOCKER_LIFECYCLE_DIR_OVERRIDE"
+RUN_FAILED = -1  # Timed out or couldn't launch: the answer is unknown.
 
 Runner = Callable[..., "tuple[int, str]"]
 
@@ -68,12 +87,20 @@ def _path(*parts: str) -> str:
 
 
 def run(args: list, timeout: float = 30) -> "tuple[int, str]":
-    """Run a command; any failure to run it reads as a non-zero exit."""
+    """Run a command. A timeout or a failure to launch returns RUN_FAILED, so a
+    caller can tell "no answer" from a real non-zero exit."""
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
-        return 1, ""
+        return RUN_FAILED, ""
     return proc.returncode, proc.stdout or ""
+
+
+def _mtime(path: str) -> Optional[float]:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
 
 
 # --- Marker and leases ------------------------------------------------------
@@ -83,10 +110,28 @@ def has_marker() -> bool:
     return os.path.exists(_path("started-by-session"))
 
 
-def write_marker() -> None:
+def write_marker(pids=()) -> None:
+    """Write the marker. Binding process IDs to an existing marker keeps its time,
+    which counts as a `docker` command in `newest_lease_age`."""
+    path = _path("started-by-session")
+    previous = _mtime(path) if pids else None
     os.makedirs(state_dir(), exist_ok=True)
-    with open(_path("started-by-session"), "w", encoding="utf-8") as handle:
-        handle.write(str(time.time()))
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"pids": sorted(pids)}, handle)
+    if previous is not None:
+        os.utime(path, (previous, previous))
+
+
+def marker_pids() -> Optional[list]:
+    """None with no marker; [] when it isn't bound to a backend yet."""
+    try:
+        with open(_path("started-by-session"), encoding="utf-8") as handle:
+            pids = json.load(handle).get("pids")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [p for p in pids if isinstance(p, int)] if isinstance(pids, list) else []
 
 
 def touch_lease(session_id: str, now: Optional[float] = None) -> None:
@@ -100,64 +145,131 @@ def touch_lease(session_id: str, now: Optional[float] = None) -> None:
 
 
 def newest_lease_age(now: float) -> Optional[float]:
-    """Seconds since any session's last `docker` command; None with no leases."""
-    stamps = []
-    for path in glob.glob(_path("leases", "*")):
-        with contextlib.suppress(OSError):
-            stamps.append(os.path.getmtime(path))
+    """Seconds since any session's last `docker` command, or since a session's start
+    task wrote the marker; None with neither."""
+    paths = glob.glob(_path("leases", "*")) + [_path("started-by-session")]
+    stamps = [stamp for stamp in map(_mtime, paths) if stamp is not None]
     return now - max(stamps) if stamps else None
 
 
-def clear_ownership() -> None:
-    for path in glob.glob(_path("leases", "*")) + [_path("started-by-session")]:
-        with contextlib.suppress(OSError):
-            os.remove(path)
+def clear_marker() -> None:
+    with contextlib.suppress(OSError):
+        os.remove(_path("started-by-session"))
+
+
+def clear_leases(before: Optional[float] = None) -> None:
+    for path in glob.glob(_path("leases", "*")):
+        stamp = _mtime(path)
+        if stamp is not None and (before is None or stamp < before):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
+def clear_ownership(before: Optional[float] = None) -> None:
+    """Forget a session's engine. With `before`, a lease or marker written since
+    then belongs to a newer command or start and stays."""
+    clear_leases(before)
+    stamp = _mtime(_path("started-by-session"))
+    if stamp is not None and (before is None or stamp < before):
+        clear_marker()
+
+
+def mark_engine_seen() -> None:
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(_path("engine-seen"), "w", encoding="utf-8"):
+        pass
+
+
+def engine_seen_recently(now: float) -> bool:
+    stamp = _mtime(_path("engine-seen"))
+    return stamp is not None and 0 <= now - stamp < ENGINE_SEEN_SECONDS
 
 
 # --- Engine and process checks ----------------------------------------------
 
 
-def engine_up(runner: Runner = run) -> bool:
-    """True only when the engine answers. While Docker is starting, the same
-    call fails with an HTTP 500, so `docker desktop status` isn't used here."""
-    code, out = runner(["docker", "version", "--format", "{{.Server.Version}}"], timeout=15)
+def engine_up(runner: Runner = run) -> Optional[bool]:
+    """True when the engine answers, False when it refuses, None when the check
+    timed out. While Docker is starting, the same call fails with an HTTP 500, so
+    `docker desktop status` isn't used here."""
+    code, out = runner(DOCKER + ["version", "--format", "{{.Server.Version}}"], timeout=15)
+    if code == RUN_FAILED:
+        return None
     return code == 0 and bool(out.strip())
+
+
+def _pids(image: str, runner: Runner) -> Optional[set]:
+    """Process IDs running `image`; None when tasklist fails."""
+    code, out = runner(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"], timeout=15)
+    if code != 0 or not out.strip():
+        return None
+    pids = set()
+    for row in csv.reader(out.splitlines()):
+        if len(row) >= 2 and row[0].lower() == image.lower() and row[1].isdigit():
+            pids.add(int(row[1]))
+    return pids
 
 
 def _image_running(image: str, runner: Runner) -> bool:
     """A tasklist that fails or times out reads as running: "not running" leads to
     deleting sockets and clearing a session's ownership, which an unknown state must
     never do. Under memory pressure on 2026-11-11 every check timed out at once."""
-    code, out = runner(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"], timeout=15)
-    if code != 0 or not out.strip():
-        return True
-    return image.lower() in out.lower()
+    pids = _pids(image, runner)
+    return pids is None or bool(pids)
 
 
 def backend_running(runner: Runner = run) -> bool:
-    return _image_running("com.docker.backend.exe", runner)
+    return _image_running(BACKEND_IMAGE, runner)
+
+
+def backend_pids(runner: Runner = run) -> Optional[set]:
+    return _pids(BACKEND_IMAGE, runner)
 
 
 def tray_running(runner: Runner = run) -> bool:
-    return _image_running("Docker Desktop.exe", runner)
+    return _image_running(TRAY_IMAGE, runner)
 
 
 def container_count(runner: Runner = run) -> int:
     """A count that fails reads as one container, so an unknown holds the engine
     rather than stopping it under a running container."""
-    code, out = runner(["docker", "ps", "-q"], timeout=30)
+    code, out = runner(DOCKER + ["ps", "-q"], timeout=30)
     return len(out.split()) if code == 0 else 1
 
 
-def hypervisor_present(runner: Runner = run) -> bool:
-    """False means WSL 2 can't boot (Wsl/.../HCS_E_HYPERV_NOT_INSTALLED). An
-    unreadable answer reads as present, so a broken check never stops Docker."""
-    _, out = runner(
+def owns_engine(runner: Runner = run) -> Optional[bool]:
+    """Whether the marker belongs to the backend running now. None when the backend's
+    process IDs can't be read. A marker naming other processes is from an engine
+    that has since gone, so the running one is the user's: the marker is dropped."""
+    bound = marker_pids()
+    if bound is None:
+        return False
+    current = backend_pids(runner)
+    if not current:
+        return None
+    if not bound:
+        write_marker(current)  # First sighting of the engine this start launched.
+        return True
+    if set(bound) & current:
+        return True
+    log(f"marker named backend {sorted(bound)}, now {sorted(current)}: this engine is the user's")
+    clear_marker()
+    return False
+
+
+def hypervisor_present(runner: Runner = run) -> Optional[bool]:
+    """False means WSL 2 can't boot (Wsl/.../HCS_E_HYPERV_NOT_INSTALLED). None when
+    the check didn't answer; callers treat that as present, so a broken check never
+    blocks a start."""
+    code, out = runner(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          "(Get-CimInstance Win32_ComputerSystem).HypervisorPresent"],
         timeout=30,
     )
-    return out.strip().lower() != "false"
+    answer = out.strip().lower()
+    if code != 0 or answer not in ("true", "false"):
+        return None
+    return answer == "true"
 
 
 HYPERVISOR_FIX = (
@@ -166,6 +278,61 @@ HYPERVISOR_FIX = (
     "Configuration > SVM Mode > Enabled). Check the System event log for "
     "Microsoft-Windows-Hyper-V-Hypervisor event 42. Software can't change this setting."
 )
+
+
+def boot_time(now: float) -> float:
+    uptime = ctypes.windll.kernel32.GetTickCount64
+    uptime.restype = ctypes.c_ulonglong
+    return now - uptime() / 1000
+
+
+def same_boot(a: float, b: float) -> bool:
+    """Clock adjustments move the computed boot time a little between ticks."""
+    return abs(a - b) <= SAME_BOOT_SECONDS
+
+
+def read_health() -> dict:
+    with contextlib.suppress(OSError, ValueError):
+        with open(_path("health.json"), encoding="utf-8") as handle:
+            data = json.load(handle)
+            if isinstance(data, dict):
+                return data
+    return {}
+
+
+def cached_hypervisor(boot: float) -> Optional[bool]:
+    """The watchdog's answer for this boot, or None if it hasn't checked yet."""
+    data = read_health()
+    stored = data.get("boot")
+    if isinstance(stored, (int, float)) and same_boot(stored, boot) and isinstance(data.get("hypervisor"), bool):
+        return data["hypervisor"]
+    return None
+
+
+# --- Unhealthy clock --------------------------------------------------------
+
+
+def unhealthy_age(now: float) -> float:
+    """Seconds since the watchdog first saw Docker stuck; 0 if it isn't."""
+    with contextlib.suppress(OSError, ValueError):
+        with open(_path("unhealthy-since"), encoding="utf-8") as handle:
+            return now - float(handle.read())
+    return 0
+
+
+def unhealthy_for(now: float, unhealthy: bool) -> float:
+    """Start, read or reset the unhealthy clock."""
+    path = _path("unhealthy-since")
+    if not unhealthy:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        return 0
+    if os.path.exists(path):
+        return unhealthy_age(now)
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(str(now))
+    return 0
 
 
 # --- Stale socket repair ----------------------------------------------------
@@ -183,9 +350,10 @@ def socket_dirs() -> list:
     return dirs
 
 
-def clean_stale_sockets(dirs: Optional[list] = None, lstat=os.lstat, unlink=os.unlink) -> "tuple[list, list]":
-    """Delete AF_UNIX socket files, and nothing else. The caller must have
-    confirmed the backend isn't running. Returns (removed, failed)."""
+def clean_stale_sockets(older_than: float, dirs: Optional[list] = None, lstat=os.lstat) -> "tuple[list, list]":
+    """Delete AF_UNIX socket files older than `older_than`, and nothing else. The
+    caller confirmed at that time that no backend was running; a newer socket
+    belongs to a backend launched since. Returns (removed, failed)."""
     removed, failed = [], []
     for directory in socket_dirs() if dirs is None else dirs:
         try:
@@ -195,9 +363,12 @@ def clean_stale_sockets(dirs: Optional[list] = None, lstat=os.lstat, unlink=os.u
         for name in names:
             path = os.path.join(directory, name)
             try:
-                if getattr(lstat(path), "st_reparse_tag", 0) != IO_REPARSE_TAG_AF_UNIX:
+                info = lstat(path)
+                if getattr(info, "st_reparse_tag", 0) != IO_REPARSE_TAG_AF_UNIX:
                     continue
-                unlink(path)
+                if info.st_mtime >= older_than:
+                    continue
+                os.unlink(path)
                 removed.append(path)
             except OSError as exc:
                 failed.append(f"{path}: {exc}")
@@ -223,10 +394,12 @@ STOP = "stop"
 FORCE_STOP = "force-stop"
 WAIT = "wait-unhealthy"
 TIDY = "tidy"
+UNKNOWN = "unknown"
 
 
 def decide(state: Snapshot) -> str:
-    """What one watchdog tick should do. Pure, so every state is testable."""
+    """What one watchdog tick should do. Pure, so every state is testable. The
+    tick never calls this when the engine check didn't answer."""
     if state.engine:
         if not state.marker:
             return NOTHING  # The user started it.
@@ -246,32 +419,30 @@ def decide(state: Snapshot) -> str:
 
 
 @contextlib.contextmanager
-def lifecycle_lock(wait_seconds: float = 0, clock=time.time, sleep=time.sleep):
-    """Yield True when the lock was taken. An atomic create; a lock older than
-    LOCK_STALE_SECONDS belonged to a process that died."""
+def lifecycle_lock(wait_seconds: float = 0):
+    """Yield True when the lock was taken. A byte-range lock on an open handle:
+    Windows releases it when the process exits, however it exits, so a crash,
+    a reboot or Task Scheduler's time limit can't leave a stale lock behind."""
     os.makedirs(state_dir(), exist_ok=True)
-    path = _path("lock")
-    deadline = clock() + wait_seconds
+    handle = os.open(_path("lock"), os.O_CREAT | os.O_RDWR)
+    deadline = time.monotonic() + wait_seconds
     held = False
-    while True:
-        try:
-            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            held = True
-            break
-        except FileExistsError:
-            with contextlib.suppress(OSError):
-                if clock() - os.path.getmtime(path) > LOCK_STALE_SECONDS:
-                    os.remove(path)
-                    continue
-            if clock() >= deadline:
-                break
-            sleep(1)
     try:
+        while True:
+            try:
+                msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+                held = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
         yield held
     finally:
         if held:
             with contextlib.suppress(OSError):
-                os.remove(path)
+                msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
+        os.close(handle)
 
 
 def log(message: str) -> None:

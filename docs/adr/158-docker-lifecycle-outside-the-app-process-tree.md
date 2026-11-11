@@ -32,20 +32,21 @@ The dead `dockerInference` file also deleted normally from a process Task Schedu
 
 ## Decision
 
-1. **Docker is only ever started from outside the app's tree.** `pre-tool-use-docker-start.py` runs the `ClaudeDockerStart` scheduled task and waits for the engine. It blocks `docker desktop start`/`restart` and launching `Docker Desktop.exe` from a session, naming the way out. These commands are enumerated, and each one recreates failure 1.
+1. **Docker is only ever started from outside the app's tree.** `pre-tool-use-docker-start.py` runs the `ClaudeDockerStart` scheduled task and waits for the engine. It blocks `docker desktop start`/`restart` and launching `Docker Desktop.exe` from a session, naming the way out, including inside a `powershell -Command`, `bash -c` or `cmd /c` string and through a launcher (`Start-Process`, `start`, `saps`, `cmd`, `explorer`, `Invoke-Item`). Each of these recreates failure 1. The start task decides under the lock whether to start, and only it writes the marker, so the hook has no ownership to undo when something fails.
 2. **A watchdog runs from Task Scheduler at sign-in and every 5 minutes.** It has to live outside the tree, because only there can it delete the sockets.
    - **Monitor:** once per boot it reads `HypervisorPresent` and shows a Windows notification if it's False. Software can't change a firmware setting, so telling the user is the fix. The session hook also skips starting Docker in that state, since a start would only wedge.
    - **Repair:** it deletes AF_UNIX socket files in Docker's directories whenever no backend runs, checking the reparse tag (`0x80000023`) so nothing else can be deleted. It force-stops a Docker stuck with no engine for 20 minutes.
    - **Idle stop:** see the next point.
-3. **Stop rules, set by the user.** A session-started engine stops 15 minutes after the last `docker` command, or after 2 hours if containers are still running, so a long test keeps its database. An engine the user started has no marker and is never stopped. A failed idle stop retries and never escalates; only the wedge path forces.
-4. **Never `wsl --shutdown`.** WSL stops its VM itself ([`vmIdleTimeout`](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)), and that command would also kill other distros.
-5. **Projects list test commands that reach Docker without naming it.** lifting-logbook's `npm test` starts Postgres through Testcontainers. `docker_test_commands` and `docker_test_skip` in `.claude/hook-config.json` cover this. A missed command costs one retry: the test reports Docker as unreachable, and the session's next `docker` command starts it.
+3. **Stop rules, set by the user.** A session-started engine stops 15 minutes after the last `docker` command, or after 2 hours if containers are still running, so a long test keeps its database. An engine the user started has no marker and is never stopped. The marker records the backend's process IDs, so a marker left from an engine the user has since quit and relaunched isn't honoured. A failed idle stop retries and never escalates; only the wedge path forces. A stop re-reads the leases just before it runs and clears only ownership older than its decision, so a `docker` command or a start arriving during a stop keeps its claim.
+4. **One process lock for starts, stops and ticks.** It is a byte-range lock on an open handle (`msvcrt.locking`), which Windows releases when the process exits however it exits. A lock file judged by age was rejected: a crash, a reboot or Task Scheduler's time limit left it held for up to 10 minutes, and breaking it was check-then-remove, so two processes could both hold it.
+5. **Never `wsl --shutdown`.** WSL stops its VM itself ([`vmIdleTimeout`](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)), and that command would also kill other distros.
+6. **Projects list test commands that reach Docker without naming it.** lifting-logbook's `npm test` starts Postgres through Testcontainers. `docker_test_commands` and `docker_test_skip` in `.claude/hook-config.json` cover this. A missed command costs one retry: the test reports Docker as unreachable, and the session's next `docker` command starts it.
 
 ## Calibration
 
 Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 
-**Command detector.** It keys on the first word of a top-level command segment, not on the text appearing anywhere. Corpus: 30,940 recorded shell commands from 304 session transcripts, 214 of them mentioning "docker".
+**Command detector.** It keys on the first word of a top-level command segment, not on the text appearing anywhere, and looks inside a shell's `-Command`/`-c`/`/c` string the same way. Docker's own flags count only before the subcommand. Corpus: 30,940 recorded shell commands from 304 session transcripts, 214 of them mentioning "docker".
 
 | # | Class | Count | Result |
 |---|---|---|---|
@@ -53,11 +54,22 @@ Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 | 2 | Classified as a direct start | 10 | Real starts, after a `--help` false positive found here was fixed. |
 | 3 | No match | 138 | Greps, log reads, and `docker desktop status`. A separate pattern for real-looking calls found one miss, `(docker info ...)`, now covered. |
 
+Re-run after the PR #1284 review widened the block, on 55,081 commands from 3,980 transcripts, 508 mentioning "docker" (a one-off replay through both detectors, the earlier one at `910648d`):
+
+| # | Class | Count | Result |
+|---|---|---|---|
+| 4 | Classified as a direct start | 20 (14 distinct) | Every one read: each launches Docker Desktop, through `docker desktop start`/`restart`, `Start-Process`, a quoted or escaped path to the exe, or `powershell -Command "Start-Process ..."`. No false block. |
+| 5 | Newly blocked | 5 | Real launches the first detector missed: the exe run from Bash by path, and `Start-Process` inside `powershell -Command`. |
+| 6 | No longer read as needing the engine | 3 (2 distinct) | PowerShell string literals such as `"Docker processes:"`, which the first detector read as a `docker` command. Neither needs the engine. |
+| 7 | Classified as needing the engine | 120 | Unchanged apart from row 6. |
+
 **Hypervisor check.** Known bad: this machine now, where it reads False and WSL fails. Known good: the first boot after SVM was enabled (2026-11-11), where it read True and Docker started. It only reports and skips a start that would wedge; it blocks no command. An unreadable answer reads as present.
 
-**Constants.** The 15-minute and 2-hour limits are the user's choices, not derived from data. The 20-minute wedge limit is a judgment from two measured starts and one wedge, not a calibrated threshold. On 2026-11-11 the first start after SVM was enabled ran 7.4 minutes with no engine, and the next took 35 seconds; the wedge observed earlier lasted 35 hours. The limit was 10 minutes until that first start showed only 2.6 minutes of margin. A false wedge is costly, because it stops a slow start that would then be just as slow next time, while a real wedge held 10 minutes longer costs only RAM.
+**Constants.** The 15-minute and 2-hour limits are the user's choices, not derived from data. The 20-minute wedge limit is a judgment from two measured starts and one wedge, not a calibrated threshold. On 2026-11-11 the first start after SVM was enabled ran 7.4 minutes with no engine, and the next took 35 seconds; the wedge observed earlier lasted 35 hours. The limit was 10 minutes until that first start showed only 2.6 minutes of margin. A false wedge is costly, because it stops a slow start that would then be just as slow next time, while a real wedge held 10 minutes longer costs only RAM. The hook's 150-second budget is the hook's 180-second timeout less one engine check's 15 seconds and a margin for process start-up. The rest are judgments, not measurements: 60 seconds before a tray with no backend counts as orphaned (a launch has one for a few seconds, and a wrong call stops only a tray that has no engine), 30 seconds of waiting once Docker has been stuck longer than a start, 60 seconds of trusting a recent engine answer, and 2 minutes of drift allowed in the computed boot time.
 
-**A check that fails reads as the state that destroys nothing.** A `tasklist` that fails or times out reads as the process running, and a `docker ps` that fails reads as one container. On 2026-11-11, with about 1 GB of RAM free, one tick's checks all timed out and read as Docker stopped while it ran. The tick cleared the session's ownership, so that engine was never stopped, and deleted the running backend's sockets. The cost of the safe reading is a skipped start or a held engine, which the next tick or command corrects.
+**A check that fails reads as the state that destroys nothing.** An engine check that times out is unknown, and the tick acts on nothing: it doesn't stop, tidy, or advance the wedge clock. A `tasklist` that fails or times out reads as the process running, a `docker ps` that fails reads as one container, unreadable backend process IDs read as not the session's engine, and an unanswered hypervisor check isn't cached. On 2026-11-11, with about 1 GB of RAM free, one tick's checks all timed out and read as Docker stopped while it ran. The tick cleared the session's ownership, so that engine was never stopped, and deleted the running backend's sockets. The first fix covered only that path; the review of PR #1284 found that the same timeouts, lasting 20 minutes, read as a wedge and would force-stop a working engine. The engine check is pinned to the `desktop-linux` context, so a user's own `docker context` can't make a working engine read as down. The cost of the safe reading is a skipped start, a held engine or a skipped tick, which the next tick or command corrects.
+
+**Socket deletes.** The watchdog deletes only socket files older than the moment it confirmed no backend was running, so a backend launched during the check keeps its sockets.
 
 ## Alternatives Considered
 
@@ -69,7 +81,8 @@ Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 
 ## Consequences
 
-- A session's first `docker` command after a stop waits for the engine, up to 165 seconds.
+- A session's first `docker` command after a stop waits for the engine, up to 150 seconds including the checks, so the hook ends inside its 180-second timeout and its advice reaches the session. Once the watchdog has seen Docker stuck for longer than that, each command waits only 30 seconds.
+- A command within a minute of the hook seeing the engine answer skips the check. If the user quits Docker in that minute, that one command fails and the next one starts it.
 - Every shell call pays one more `pyw` launch. Check with `hook-timing-report.py`.
 - A second machine needs `register-docker-watchdog.ps1` run once; until then the hook reports that it can't start Docker.
 - A stack started by hand on a session-started engine is stopped after the 2-hour limit. Named volumes and images survive. The user accepted this.
