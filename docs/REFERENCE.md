@@ -2286,6 +2286,8 @@ Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Roun
 
 Stated by the user on 2026-11-05, after a session closed with a numbered list of decisions in prose. Asked again with clicks, the same decisions took seconds and the answers were unambiguous ([dev-env#1230](https://github.com/brownm09/dev-env/issues/1230)). Nothing enforces this mechanically.
 
+**One decision at a time.** On 2026-11-06 a lifting-logbook session ended with a table of five items and one question: were a proposal's 18 defaults good to go? The user couldn't review the decisions from that and asked for them through `AskUserQuestion`, each with context and alternatives so they could be reviewed one at a time, as standard practice for any decision a session expects them to make ([dev-env#1291](https://github.com/brownm09/dev-env/issues/1291)). One question per call, rather than the several the tool accepts, is because an answer can change what the next question should be. The rule is plain lines with no ADR: its reasoning is all in the rule, and the #1230 rule it extends shipped without one. Nothing enforces it mechanically.
+
 ### Detail: Journal composition
 
 - **PR grouping heuristic.** When two or more stubs share a PR number (one stub has it in
