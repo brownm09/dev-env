@@ -63,7 +63,8 @@ class FakeDocker:
     """Answers the commands the lifecycle code runs, and records them."""
 
     def __init__(self, engine=False, backend=False, tray=False, containers=0,
-                 hypervisor=True, stop_rc=0, task_rc=0, up_after_polls=None):
+                 hypervisor=True, stop_rc=0, task_rc=0, up_after_polls=None, failing=()):
+        self.failing = failing  # Command prefixes that time out, as `run` reports them.
         self.engine = engine
         self.backend = backend
         self.tray = tray
@@ -80,6 +81,8 @@ class FakeDocker:
     def __call__(self, args, timeout=30):
         self.calls.append(list(args))
         joined = " ".join(args)
+        if any(joined.startswith(prefix) for prefix in self.failing):
+            return 1, ""
         if joined.startswith("docker version"):
             if self.up_after_polls is not None:
                 self.up_after_polls -= 1
@@ -431,6 +434,38 @@ def test_tick_keeps_ownership_while_a_start_is_on_its_way():
     _session_started(lifecycle.START_TIMEOUT_SECONDS + 1, now)
     _eq(watchdog.tick(runner=FakeDocker(), now=now), lifecycle.TIDY, "action")
     assert not lifecycle.has_marker(), "that start never happened"
+
+
+def test_tick_destroys_nothing_when_its_checks_time_out():
+    # 2026-11-11 00:45: under memory pressure every check timed out, so a running,
+    # session-started Docker read as stopped. The tick cleared its marker, so it was
+    # never stopped, and deleted the live backend's sockets.
+    _reset_state()
+    now = time.time()
+    _session_started(13 * 60, now)
+    original = lifecycle.clean_stale_sockets
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("cleaned sockets on checks that timed out")
+
+    lifecycle.clean_stale_sockets = fail
+    try:
+        fake = FakeDocker(engine=True, backend=True, tray=True,
+                          failing=("docker version", "tasklist", "docker ps"))
+        action = watchdog.tick(runner=fake, now=now)
+    finally:
+        lifecycle.clean_stale_sockets = original
+    assert action != lifecycle.TIDY, "a check that timed out read as Docker stopped"
+    assert lifecycle.has_marker(), "the session's ownership was cleared"
+
+
+def test_tick_holds_when_docker_ps_times_out():
+    _reset_state()
+    now = time.time()
+    _session_started(lifecycle.IDLE_SECONDS + 60, now)
+    fake = FakeDocker(engine=True, backend=True, tray=True, containers=1, failing=("docker ps",))
+    _eq(watchdog.tick(runner=fake, now=now), lifecycle.HOLD, "a failed count isn't zero containers")
+    assert not fake.ran("docker", "desktop", "stop"), "stopped with containers unknown"
 
 
 def test_tick_skips_when_a_start_holds_the_lock():

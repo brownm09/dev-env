@@ -125,7 +125,12 @@ def engine_up(runner: Runner = run) -> bool:
 
 
 def _image_running(image: str, runner: Runner) -> bool:
-    _, out = runner(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"], timeout=15)
+    """A tasklist that fails or times out reads as running: "not running" leads to
+    deleting sockets and clearing a session's ownership, which an unknown state must
+    never do. Under memory pressure on 2026-11-11 every check timed out at once."""
+    code, out = runner(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"], timeout=15)
+    if code != 0 or not out.strip():
+        return True
     return image.lower() in out.lower()
 
 
@@ -138,8 +143,10 @@ def tray_running(runner: Runner = run) -> bool:
 
 
 def container_count(runner: Runner = run) -> int:
+    """A count that fails reads as one container, so an unknown holds the engine
+    rather than stopping it under a running container."""
     code, out = runner(["docker", "ps", "-q"], timeout=30)
-    return len(out.split()) if code == 0 else 0
+    return len(out.split()) if code == 0 else 1
 
 
 def hypervisor_present(runner: Runner = run) -> bool:

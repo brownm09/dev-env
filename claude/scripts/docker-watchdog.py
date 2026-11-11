@@ -139,6 +139,8 @@ def tick(runner=lifecycle.run, now=None) -> str:
             # session's engine look user-started, and it would never be stopped.
             age = lifecycle.newest_lease_age(now)
             if age is None or age > lifecycle.START_TIMEOUT_SECONDS:
+                if lifecycle.has_marker():
+                    lifecycle.log("tidy: engine, backend and tray all down; cleared session ownership")
                 lifecycle.clear_ownership()
             repair_sockets(runner)
         return action

@@ -53,9 +53,11 @@ Per [ADR-144](144-gate-calibration-pass-3-dimension.md).
 | 2 | Classified as a direct start | 10 | Real starts, after a `--help` false positive found here was fixed. |
 | 3 | No match | 138 | Greps, log reads, and `docker desktop status`. A separate pattern for real-looking calls found one miss, `(docker info ...)`, now covered. |
 
-**Hypervisor check.** Known bad: this machine now, where it reads False and WSL fails. Known good: not yet observed, since it needs the BIOS fix. It therefore only reports and skips a start that would wedge; it blocks no command. An unreadable answer reads as present.
+**Hypervisor check.** Known bad: this machine now, where it reads False and WSL fails. Known good: the first boot after SVM was enabled (2026-11-11), where it read True and Docker started. It only reports and skips a start that would wedge; it blocks no command. An unreadable answer reads as present.
 
 **Constants.** The 15-minute and 2-hour limits are the user's choices, not derived from data. The 20-minute wedge limit is a judgment from two measured starts and one wedge, not a calibrated threshold. On 2026-11-11 the first start after SVM was enabled ran 7.4 minutes with no engine, and the next took 35 seconds; the wedge observed earlier lasted 35 hours. The limit was 10 minutes until that first start showed only 2.6 minutes of margin. A false wedge is costly, because it stops a slow start that would then be just as slow next time, while a real wedge held 10 minutes longer costs only RAM.
+
+**A check that fails reads as the state that destroys nothing.** A `tasklist` that fails or times out reads as the process running, and a `docker ps` that fails reads as one container. On 2026-11-11, with about 1 GB of RAM free, one tick's checks all timed out and read as Docker stopped while it ran. The tick cleared the session's ownership, so that engine was never stopped, and deleted the running backend's sockets. The cost of the safe reading is a skipped start or a held engine, which the next tick or command corrects.
 
 ## Alternatives Considered
 
