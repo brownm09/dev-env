@@ -208,6 +208,13 @@ git -C "$EJ" worktree add --detach "$WT" "refs/remotes/origin/$SOURCE_BRANCH"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$WT/.compose-creating"
 ```
 
+Then, as its own Bash call, delete any compose checkpoint an earlier run for this date left (Step
+10 writes it; a crashed or abandoned run can leave one behind, and this run must never read it):
+
+```bash
+rm -f C:/Users/brown/.claude/scratch/journal-compose-checkpoint-YYYY-MM-DD.json
+```
+
 `.compose-creating` is untracked (like `.draft-compose.lock`) and must never be committed — it
 exists only so a racing second compose sees "creation in progress" instead of "no lock = stale"
 during the window before Step 1 writes the first per-project lock.
@@ -635,7 +642,9 @@ git -C "$WT" commit -m \
 git -C "$WT" push origin "HEAD:refs/heads/$SOURCE_BRANCH"
 git -C "$WT" rev-parse HEAD~1
 ```
-The last command prints the **pre-compose draft tip** — keep it for the PR body (Step 11).
+The last command prints the **pre-compose draft tip** — keep it for the PR body (Step 11). Then
+write the compose checkpoint exactly as Step 10's "Write the compose checkpoint" says, listing every
+composed journal, before Step 10.5.
 
 Open one PR covering all projects (Step 11). List each composed journal in the PR body, plus
 the combined `RECONCILED_SHARDS` list from every project's Step 9.5, plus any `LOCK_TAKEOVER`
@@ -1840,11 +1849,72 @@ below, exactly as if a conflict had been detected. (Skipping the probe used to l
 `$MERGE_BASE` — which the probe is the only place to compute — unset on this route;
 `journal-compose-replay.sh` now derives it from `$PREV` itself, so the jump is safe.)
 
+### Write the compose checkpoint (before Step 10.5, on every route)
+
+Everything Steps 10.5 and 11 need lives only in this conversation, and a long compose is often
+compacted around here: on 2026-07-17 a compaction lost the in-flight Step 10.5 recovery state
+([#1348](https://github.com/brownm09/dev-env/issues/1348)). So once the Step 10 commit exists,
+whether its push succeeded or was rejected, and in both single- and multi-project mode, put that
+state on disk before Step 10.5 starts. First read the two SHAs (one read-only call):
+
+```bash
+git -C "<the literal WT path>" rev-parse HEAD HEAD~1
+```
+
+The first line is the **compose commit** (Step 10.5's `PREV`), the second the pre-compose draft
+tip. Then write `C:/Users/brown/.claude/scratch/journal-compose-checkpoint-YYYY-MM-DD.json` with the
+**Write tool** (never `echo` or a heredoc). It lives in scratch, outside both the shared canonical
+and `$WT`, so it can never be staged and survives the worktree's removal. Literal values only:
+
+```json
+{
+  "date": "YYYY-MM-DD",
+  "source_branch": "<SOURCE_BRANCH: draft/YYYY-MM-DD or draft/YYYY-MM-DD-recovery>",
+  "wt": "C:/Users/brown/Git/engineering-journal/.claude/worktrees/compose-YYYY-MM-DD",
+  "compose_commit": "<first SHA above>",
+  "pre_compose_draft_tip": "<second SHA above>",
+  "push": "pushed | rejected-merged-draft-block",
+  "composed_files": ["sessions/<project>/YYYY-MM-DD-<slug>.md", "..."],
+  "reconciled_shards": ["<N>", "..."],
+  "step9_deleted": ["<every stub/manifest path Step 9 deleted>", "..."],
+  "lock_takeovers": ["<project>", "..."],
+  "meta_status_line": "<Step 6.7's Meta journal: line, with any META_TRIGGER_REJECTED lines>",
+  "pr_head": null,
+  "both_changed": null
+}
+```
+
+`composed_files` includes the meta journal when `META_JOURNAL` is set. Empty lists are `[]`, never
+omitted. Step 10.5 fills `pr_head` (and `both_changed` on the conflict path) with the Edit tool once
+it knows them. Step 11 deletes the file after cleanup, and Step 0.6 deletes any left by an earlier
+run for the same date, so a later compose never picks up a stale one.
+
 **Before proceeding to Step 11**, run Step 10.5 to check whether the draft branch can be
 cleanly merged into main. Do not skip this check — a conflicting draft branch requires a
 different PR head.
 
 ## Step 10.5 — Detect merge conflict; switch to compose branch if needed
+
+**Recovering after a compaction.** If this conversation no longer holds the concrete values this
+step and Step 11 use (the worktree path, `SOURCE_BRANCH`, `PREV`, the composed file names, the
+Step 9.5 and Step 6.7 carry-forwards), **Read** the checkpoint Step 10 wrote,
+`C:/Users/brown/.claude/scratch/journal-compose-checkpoint-YYYY-MM-DD.json`, and take them from
+there; do not re-derive them from memory, the canonical's branch or a glob. Trust it only when its
+`date` is this compose's date and its `wt` still exists. Then locate yourself in the worktree:
+
+- `git -C "<wt>" branch --show-current` prints nothing (detached): the recovery block below has not
+  started. If `pr_head` is set, the probe already ran: go to Step 11 with it. Otherwise run the probe.
+- It prints `compose/YYYY-MM-DD`: the recovery block is under way. Use the checkpoint's
+  `compose_commit` as `PREV`. **Never** re-run `PREV=$(git -C "$WT" rev-parse HEAD)` here: HEAD is
+  now `origin/main`'s tip, and replaying from it replays nothing. Check `git -C "<wt>" status
+  --short` and `git -C "<wt>" log -1 --format=%s`. No compose-branch commit yet: re-run step 2 (the
+  replay script only writes paths the draft changed, so a re-run converges), then follow the
+  exit-code rule. Commit made but `pr_head` still `null`: run step 3's push, then step 4. `pr_head`
+  set: run step 4 (its `|| true` makes a repeat harmless), then Step 11.
+
+No checkpoint, or one that fails the checks above: stop and report rather than guessing. The
+draft-branch commit is already pushed (or `compose_commit` is recoverable from
+`git -C "<wt>" reflog`), so nothing is lost by stopping.
 
 After pushing the draft branch, check whether it can be cleanly merged into `origin/main`.
 A draft branch that accumulated many commits (e.g., 50+ commits from iterative sessions)
@@ -1887,7 +1957,8 @@ echo "CONFLICT_LINES=$CONFLICT_LINES"
 ```
 
 **If `CONFLICT_LINES` is 0** — no conflicts detected; proceed to Step 11 using the
-draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`.
+draft branch as the PR head. Set `PR_HEAD=$SOURCE_BRANCH`, and record it as the checkpoint's
+`pr_head` with the Edit tool.
 
 **If `CONFLICT_LINES` > 0** — conflicts detected. Recover via a clean compose branch:
 
@@ -1949,7 +2020,9 @@ A non-empty `SHARD_RESTORE_SKIPPED` is not an error: those are open-PR shards `o
 deleted since the merge base — a concurrent session verified those PRs merged, so restoring
 them would resurrect stale records (ADR-119's shard-resurrection failure).
 
-Set `PR_HEAD=compose/YYYY-MM-DD`.
+Set `PR_HEAD=compose/YYYY-MM-DD`, and record it as the checkpoint's `pr_head`, with the replay's
+`BOTH_CHANGED` as `both_changed`, using the Edit tool. Do this once step 3's push succeeds, not
+before: a set `pr_head` tells a post-compaction recovery the compose branch is published.
 
 **Caution (pre-existing, not introduced by this change):** step 4 above deletes the remote
 `$SOURCE_BRANCH` unconditionally. If a stub-writing session's worktree still holds that branch and
@@ -2098,5 +2171,16 @@ for F in <the exact stub/manifest relative paths this run's Step 9 deleted, acro
     echo "WARNING: $F landed back on origin/main despite Step 9 (dev-env#1005 leak shape) — remove it in a follow-up commit"
 done
 ```
+
+The PR body's carry-forwards, `PR_HEAD` and the leak check's lists come from the compose checkpoint
+when a compaction has dropped them (see Step 10.5). Once the leak check has run, delete the
+checkpoint as its own Bash call, so no later compose can read it:
+
+```bash
+rm -f C:/Users/brown/.claude/scratch/journal-compose-checkpoint-YYYY-MM-DD.json
+```
+
+On the merge-failure exception above (PR left open, worktree kept), keep the checkpoint too: it
+describes that open PR, and the next compose's Step 0.6 clears it.
 
 Tell the user: "Merged: <PR-URL>. Journal published." (plus the shard-leak warning above, if any).
