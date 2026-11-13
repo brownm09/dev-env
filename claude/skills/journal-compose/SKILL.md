@@ -1900,10 +1900,16 @@ step and Step 11 use (the worktree path, `SOURCE_BRANCH`, `PREV`, the composed f
 Step 9.5 and Step 6.7 carry-forwards), **Read** the checkpoint Step 10 wrote,
 `C:/Users/brown/.claude/scratch/journal-compose-checkpoint-YYYY-MM-DD.json`, and take them from
 there; do not re-derive them from memory, the canonical's branch or a glob. Trust it only when its
-`date` is this compose's date and its `wt` still exists. Then locate yourself in the worktree:
+`date` is this compose's date and, until Step 11's cleanup removes the worktree, its `wt` still
+exists. A missing `wt` with `pr_head` set means Step 11 was under way: find the PR with
+`gh pr list --repo brownm09/engineering-journal --head <pr_head> --state all`, and carry on from
+whichever of its merge, ref delete, cleanup and leak check has not happened. Otherwise locate
+yourself in the worktree:
 
 - `git -C "<wt>" branch --show-current` prints nothing (detached): the recovery block below has not
-  started. If `pr_head` is set, the probe already ran: go to Step 11 with it. Otherwise run the probe.
+  started. If `pr_head` is set, the probe already ran: go to Step 11 with it. If `push` is
+  `rejected-merged-draft-block`, skip the probe and run the recovery block, as Step 10 says.
+  Otherwise run the probe.
 - It prints `compose/YYYY-MM-DD`: the recovery block is under way. Use the checkpoint's
   `compose_commit` as `PREV`. **Never** re-run `PREV=$(git -C "$WT" rev-parse HEAD)` here: HEAD is
   now `origin/main`'s tip, and replaying from it replays nothing. Check `git -C "<wt>" status
