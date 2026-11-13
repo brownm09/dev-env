@@ -2284,6 +2284,14 @@ When uncertain after the three steps, surface the uncertainty explicitly: "the g
 
 **Reopen an application yourself before asking the user to test something in it.** When the session closed the application, or had the user close it, launch it and confirm the process and its window exist, then ask. Don't ask the user to reopen it, and don't make the launch wait on an action of theirs. The exception is a step that needs the user's own hands first, such as a sign-in, or elevation once `sudo` has failed (see *Platform & Environment*): say so and state exactly what is needed. Stated by the user on 2026-11-05, after a session asked for a RetroArch test while RetroArch was still closed ([dev-env#1211](https://github.com/brownm09/dev-env/issues/1211)). Nothing enforces this mechanically.
 
+**Link the exact page where the user acts, not a landing page.** The user asked for this on 2026-11-12 ([dev-env#1364](https://github.com/brownm09/dev-env/issues/1364)). It tightens the full-URL rule from [dev-env#407](https://github.com/brownm09/dev-env/issues/407): a link to the repo, the Actions tab or a console's home page still leaves the user hunting for the page where they act. Examples:
+
+- **A GitHub deployment waiting on approval.** The review button is on the workflow run page, so link `https://github.com/<owner>/<repo>/actions/runs/<run-id>` (`gh run list --json databaseId,url,status` gives it), or the job URL under it when the job is known. Don't link the repository or the run list.
+- **Logs in Grafana or a similar console.** Link the Explore or query view, with the data source and time range in the URL where the console allows it, and always show the query (LogQL, PromQL or similar) in a code block as well. A long encoded query can break when the link is copied, and the user may want to edit the query anyway.
+- **When the exact URL can't be worked out,** say so, give the closest link, and say what to click from there. Never give a bare site name.
+
+Nothing enforces this mechanically.
+
 ### Detail: Abbreviations
 
 Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Round 2 technical prep), "R1"/"R4" (interview rounds), "SD" (system design), and "ACC:51"-style row citations, and used them across prep docs, chat, commits, and a PR body. The user had never seen them defined and had not agreed to them ([dev-env#1120](https://github.com/brownm09/dev-env/issues/1120)). Nothing enforces this mechanically; a Stop hook or doc lint is warranted only if it recurs now that the rule is written down.
