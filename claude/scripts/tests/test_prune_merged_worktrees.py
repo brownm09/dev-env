@@ -947,6 +947,27 @@ def test_error_in_one_worktree_leaves_the_others_handled() -> str:
     return "either worktree failing: the other is removed and counted, the failing one is named, exit 1"
 
 
+def test_unencodable_path_on_strict_cp1252_stdout_counts_once() -> str:
+    """dev-env#1358 known-bad: printing a path stdout can't encode raised after the worktree was
+    counted as pruned, so it was counted again as an error, and the handler's print re-raised."""
+    for mode in ("--scan-dir", "--repo-path"):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp))
+            unencodable = repo.add_worktree("中", "claude/zh")
+            repo.age_all_git_state()
+            args = ("--scan-dir", str(repo.root), "--full") if mode == "--scan-dir" else ("--repo-path", str(repo.primary))
+            out, err, code = repo.run_main_failing_on(prune, "", *args, strict_cp1252=True)
+            if code != 0 or unencodable.exists() or repo.worktree.exists():
+                raise AssertionError(f"{mode}: exit {code}, both worktrees should be removed\n{out}\n{err}")
+            if mode == "--scan-dir":
+                # The RESULT line carries errors= only when there was one.
+                if "Total — pruned 2," not in out or _result_field(out, "pruned") != "2" or " errors=" in out:
+                    raise AssertionError(f"{mode}: the total should count each removal once, no error\n{out}")
+            elif "Done — pruned 2," not in out:
+                raise AssertionError(f"{mode}: the repo's count should be 2\n{out}")
+    return "a U+4E2D worktree path on a strict cp1252 stdout: removed, counted once, exit 0"
+
+
 def test_branch_delete_error_after_removal_still_counts_as_pruned() -> str:
     """The worktree is already gone when `git branch -d` raises: a warning, not an error."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1334,6 +1355,7 @@ def main() -> int:
         ("scan: failed and timed-out fetches listed separately", test_scan_reports_failed_and_timed_out_separately),
         ("scan: unexpected error -> next repo reached, named, exit 1", test_scan_continues_after_unexpected_error),
         ("error in one worktree: the others still pruned and counted, exit 1", test_error_in_one_worktree_leaves_the_others_handled),
+        ("unencodable path on a strict cp1252 stdout: pruned and counted once", test_unencodable_path_on_strict_cp1252_stdout_counts_once),
         ("branch delete error after removal: still pruned, exit 0", test_branch_delete_error_after_removal_still_counts_as_pruned),
         ("draft squat: fetch timeout -> not provably pushed",test_draft_squat_fetch_timeout_counts_as_not_pushed),
         ("real repo: non-main default, origin/HEAD unset -> fetched and pruned", test_real_non_main_with_origin_head_unset_is_fetched_and_pruned),

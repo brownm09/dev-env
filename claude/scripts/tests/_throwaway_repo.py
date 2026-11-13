@@ -145,11 +145,14 @@ class ThrowawayRepo:
             self.age_git_state(seconds, admin)
 
     def run_main_failing_on(self, module, fail_on: str, *args: str,
-                            only_for: "tuple[str, ...]" = ()) -> "tuple[str, str, int]":
+                            only_for: "tuple[str, ...]" = (),
+                            strict_cp1252: bool = False) -> "tuple[str, str, int]":
         """Run module.main() in this process with every git call naming branch fail_on raising
         OSError: as a whole argument, or as the end of a `<base>..<branch>` range. With
-        only_for, just the git subcommand starting with those words fails. Returns (stdout,
-        stderr, exit code).
+        only_for, just the git subcommand starting with those words fails. Pass fail_on="" for
+        no failure. With strict_cp1252, stdout and stderr are cp1252 streams that raise on a
+        character they can't encode, like a Windows console or pipe without PYTHONIOENCODING
+        (dev-env#1358). Returns (stdout, stderr, exit code).
 
         A --dry-run of the same command, with nothing failing, must first show it targets this
         repo: args are parsed by the code under test. A module's default last-run state file is
@@ -159,7 +162,7 @@ class ThrowawayRepo:
 
         def run(cmd, *a, **k):
             names_branch = any(part == fail_on or str(part).endswith(f"..{fail_on}") for part in cmd)
-            if names_branch and list(cmd[1:1 + len(only_for)]) == list(only_for):
+            if fail_on and names_branch and list(cmd[1:1 + len(only_for)]) == list(only_for):
                 raise OSError(f"injected failure for {fail_on}")
             return real_run(cmd, *a, **k)
 
@@ -167,8 +170,19 @@ class ThrowawayRepo:
         if not hasattr(module, "DEFAULT_STATE_FILE"):
             state_file = None
 
+        def stream(strict: bool):
+            if strict:
+                return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+            return io.StringIO()
+
+        def text(s) -> str:
+            if isinstance(s, io.StringIO):
+                return s.getvalue()
+            s.flush()
+            return s.buffer.getvalue().decode("cp1252")
+
         def main(*argv: str, inject: bool) -> "tuple[str, str, int]":
-            out, err, code = io.StringIO(), io.StringIO(), 0
+            out, err, code = stream(inject and strict_cp1252), stream(inject and strict_cp1252), 0
             with unittest.mock.patch.object(module, "DEFAULT_STATE_FILE", state_file) if state_file \
                     else contextlib.nullcontext(), \
                     unittest.mock.patch.dict(os.environ, self._script_env, clear=True), \
@@ -179,7 +193,7 @@ class ThrowawayRepo:
                     module.main()
                 except SystemExit as exc:
                     code = exc.code or 0
-            return out.getvalue(), err.getvalue(), code
+            return text(out), text(err), code
 
         dry_out, _, _ = main(*args, "--dry-run", inject=False)
         # A --scan-dir run past its baseline prints no per-repo header, only the directory.
