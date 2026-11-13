@@ -484,6 +484,7 @@ Whenever directing the user to view, test, run, or consume any resource, include
 
 - **Local files, scripts, and logs** — provide the absolute path or the exact invocation string. Never say "run the script" without the full path, or "see the log" without the file path.
 - **Remote resources (PRs, issues, deployed URLs)** — provide the full URL. Never say "check the PR" without the link, or "see the issue" without the URL.
+- **Link the exact page where the user acts, not a landing page:** the job awaiting their deploy approval, not the run list; for a log console such as Grafana, a URL to the query view plus the query itself in a code block. [Detail](../docs/REFERENCE.md#detail-user-references)
 
 No "see the file" without the path. No "check the PR" without the URL.
 
