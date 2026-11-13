@@ -75,6 +75,19 @@ def episodes(calls):
     return runs
 
 
+def reactions(run):
+    """For each single-query search with a result in an episode, (is it empty, did a later call search again).
+
+    "Later" is by position in the episode and the same for empty and non-empty results: any call after
+    this one counts, including a multi-query or chained call, and none before it does.
+    """
+    out = []
+    for k, (c, r) in enumerate(run):
+        if len(SEARCH.findall(c)) == 1 and not CREATE.search(c) and r is not None:
+            out.append((is_empty(r), k < len(run) - 1))
+    return out
+
+
 def main(root):
     stats = collections.Counter()
     short = collections.Counter()
@@ -105,15 +118,11 @@ def main(root):
                     short[re.sub(r"\d+", "N", r.strip())[:50]] += 1
             stats["filing_single_query_calls"] += len(flags)
             stats["filing_single_query_empty"] += sum(flags)
-            # Reaction: an empty single-query search, and whether another search followed it in the episode.
-            for k, flag in enumerate(flags):
-                if flag:
-                    stats["filing_empty_followed_by_search"] += k < len(flags) - 1 or len(run) > len(singles)
-                    stats["filing_empty_not_followed"] += not (k < len(flags) - 1 or len(run) > len(singles))
-            for k, flag in enumerate(flags):
-                if not flag:
-                    stats["filing_nonempty_followed_by_search"] += k < len(flags) - 1
-                    stats["filing_nonempty_not_followed"] += not k < len(flags) - 1
+            # Reaction: whether another search call came later in the episode, by position.
+            for empty, followed in reactions(run):
+                kind = "empty" if empty else "nonempty"
+                stats[f"filing_{kind}_followed_by_search"] += followed
+                stats[f"filing_{kind}_not_followed"] += not followed
     for key in sorted(stats):
         print(f"{key}: {stats[key]}")
     print("searches per filing episode:", sorted(collections.Counter(sizes).items()))
