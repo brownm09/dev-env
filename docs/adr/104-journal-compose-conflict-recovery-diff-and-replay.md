@@ -1,8 +1,8 @@
 # ADR-104 — Diff-and-Replay Conflict Recovery in journal-compose Step 10.5
 
 **Date:** 2026-07-12
-**Status:** Accepted (amended 2026-07-23, 2026-10-13 — see Amendments 1–2)
-**Tags:** journal, composition, skill, git, merge-tree, conflict-recovery, diff-and-replay, three-way-merge, both-sides-changed, data-loss, silent-failure, shared-script, testing, crlf, msys, correction, adr-056, adr-080, adr-082, adr-119, adr-120
+**Status:** Accepted (amended 2026-07-23, 2026-10-13, 2026-11-12 — see Amendments 1–3)
+**Tags:** journal, composition, skill, git, merge-tree, conflict-recovery, compaction, checkpoint, diff-and-replay, three-way-merge, both-sides-changed, data-loss, silent-failure, shared-script, testing, crlf, msys, correction, adr-056, adr-080, adr-082, adr-119, adr-120
 
 ---
 
@@ -366,3 +366,33 @@ nothing left to catch.
   found exactly two calls, so an extraction that matches nothing cannot pass vacuously.
 - The dev-env#787 open-PR shard restore is now redundant on the real call path, because
   `sessions/` already covers it. It stays in the script, which still accepts narrower pathspecs.
+
+## Amendment 3 (2026-11-12) — checkpoint Step 10.5's state to disk (dev-env#1348)
+
+### What went wrong
+
+The recovery block's inputs lived only in the composing session's conversation: the worktree
+path, `SOURCE_BRANCH`, `PREV`, the composed file names and Step 11's carry-forwards. Long
+multi-project composes are often compacted around Phase 2 (biweekly retro 2026-08-08,
+dev-env#963), and on 2026-07-17 a compaction lost the in-flight Step 10.5 recovery state. The
+recovery's own instruction made this worse: `PREV=$(git -C "$WT" rev-parse HEAD)` is right only
+before the compose-branch checkout. Re-run after that checkout, it yields `origin/main`'s tip,
+and the replay then replays nothing.
+
+### Decision
+
+Step 10 writes `C:/Users/brown/.claude/scratch/journal-compose-checkpoint-<date>.json` with the
+Write tool before Step 10.5 starts, on every route, including the merged-draft-branch rejection
+and multi-project Phase 2. It holds the source branch, the worktree, the compose commit (`PREV`),
+the pre-compose draft tip, the push outcome, the composed files and Step 11's carry-forwards.
+Step 10.5 records `pr_head` (and `both_changed`) once known, on the conflict path only after the
+compose branch is pushed. A recovery reads the checkpoint, takes `PREV` from it, and works out
+where it is from the worktree's branch, status and last commit. Step 11 deletes the checkpoint
+after its leak check, and Step 0.6 deletes a stale one for the date.
+
+**Location.** Scratch is outside both the shared canonical and `$WT`. So the checkpoint can never
+be staged into a journal commit, and it survives Step 11's worktree removal.
+
+**Alternative rejected:** a helper script to write, read and clear the checkpoint. The values are
+ones the composing agent already holds as literals, and the Write and Edit tools take them with no
+shell quoting, so a script would add code without making the record any more reliable.
