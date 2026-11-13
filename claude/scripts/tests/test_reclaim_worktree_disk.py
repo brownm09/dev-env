@@ -353,6 +353,24 @@ def test_error_in_one_worktree_leaves_the_others_handled() -> str:
     return "either worktree failing: the other is reclaimed and counted, the failing one is named, exit 1"
 
 
+def test_unencodable_path_on_strict_cp1252_stdout_counts_once() -> str:
+    """dev-env#1358 known-bad: printing a path stdout can't encode raised mid-worktree, and the
+    error handler's own print re-raised, losing the repo's total."""
+    for mode in ("--scan-dir", "--repo-path"):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = ThrowawayRepo(Path(tmp))
+            unencodable = repo.add_worktree("中", "claude/zh")
+            args = ("--scan-dir", str(repo.root)) if mode == "--scan-dir" else ("--repo-path", str(repo.primary))
+            with unittest.mock.patch.object(rwd, "dir_size_bytes", return_value=1024 ** 3):
+                out, err, code = repo.run_main_failing_on(rwd, "", *args, strict_cp1252=True)
+            if code != 0 or (unencodable / "node_modules").exists() or repo.node_modules.exists():
+                raise AssertionError(f"{mode}: exit {code}, both node_modules should go\n{out}\n{err}")
+            total = "Total — reclaimed 2.00 GB" if mode == "--scan-dir" else "Done — reclaimed 2.00 GB"
+            if total not in out or "ERROR" in out:
+                raise AssertionError(f"{mode}: expected {total!r} and no error\n{out}")
+    return "a U+4E2D worktree path on a strict cp1252 stdout: reclaimed, counted once, exit 0"
+
+
 def _load_hook(name: str):
     spec = importlib.util.spec_from_file_location(name.replace("-", "_"), SCRIPTS_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -416,6 +434,7 @@ def main() -> int:
         ("real repo: non-main default branch fetched and reclaimed", test_real_non_main_default_branch_is_fetched_and_reclaimed),
         ("scan: fetch timeout or unexpected error -> next repo reached", test_scan_continues_after_fetch_timeout_and_unexpected_error),
         ("error in one worktree: the others still reclaimed and counted, exit 1", test_error_in_one_worktree_leaves_the_others_handled),
+        ("unencodable path on a strict cp1252 stdout: reclaimed and counted once", test_unencodable_path_on_strict_cp1252_stdout_counts_once),
         ("CLI: --help and -h change nothing", test_cli_help_changes_nothing),
         ("CLI: unknown flag or stray argument changes nothing", test_cli_rejects_unknown_arguments),
         ("CLI control: --dry-run keeps, plain run reclaims", test_cli_control_dry_run_keeps_and_plain_run_reclaims),

@@ -367,6 +367,11 @@ def reclaim_one(repo: str, dry_run: bool, protect_cwd: str, liveness_window_seco
 
 
 def main() -> None:
+    # A path or branch name the stream can't encode must print escaped, not raise after the
+    # worktree was already counted (dev-env#1358).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     args = _parse_args(sys.argv[1:])
     dry_run = args.dry_run
     scan_dir = str(Path(args.scan_dir).resolve()) if args.scan_dir else None

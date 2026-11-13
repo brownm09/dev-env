@@ -926,7 +926,9 @@ For a one-line navigational map of the older tests, see
     ([dev-env#1088](https://github.com/brownm09/dev-env/issues/1088)). An exception in one worktree
     (injected in-process by `run_main_failing_on()`) leaves the repo's other worktrees pruned and
     counted, names the failing one, exits 1 in both modes, and keeps that worktree's last-run record
-    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)). A worktree path holding U+4E2D,
+    run with stdout and stderr as strict cp1252 streams, is removed and counted once with exit 0 in
+    both modes ([dev-env#1358](https://github.com/brownm09/dev-env/issues/1358)).
 
     ```bash
     py -3 claude/scripts/tests/test_prune_merged_worktrees.py
@@ -1116,7 +1118,9 @@ For a one-line navigational map of the older tests, see
     Also covers a throwaway repo with a non-`main` default branch, and a `--scan-dir` run reaching the
     next repo after a fetch timeout or unexpected error, and an exception in one worktree leaving the
     repo's other worktrees reclaimed and counted, with exit 1 in both modes
-    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)).
+    ([dev-env#1344](https://github.com/brownm09/dev-env/issues/1344)), and a worktree path holding
+    U+4E2D on strict cp1252 stdout and stderr reclaimed and counted once with exit 0
+    ([dev-env#1358](https://github.com/brownm09/dev-env/issues/1358)).
     Exercises the pure decision/discovery helpers offline (real tmp-dir fixtures, no mocking): pins the
     `is_idle_eligible` merged/commits-ahead decision table, the `.claude/worktrees/` membership gate
     (`is_claude_managed_worktree`), `find_reclaim_dirs` (discovers top-level and nested-workspace
