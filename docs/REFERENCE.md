@@ -2292,6 +2292,22 @@ When uncertain after the three steps, surface the uncertainty explicitly: "the g
 
 Nothing enforces this mechanically.
 
+**Every manual setup step gets its own link, and an image where the screen isn't obvious.** The user stated this on 2026-11-15 ([dev-env#1369](https://github.com/brownm09/dev-env/issues/1369)). A lifting-logbook session had explained Switchyard's one-time setup (a machine GitHub account, a repo invitation, a classic token, WSL packages, a config edit) with no links, and the user had to ask for each page. The link goes to the page where the step is done, such as a settings page, a signup page or a pre-filled form. Where no such page exists, it goes to the primary documentation. An image or screenshot goes with a step whose screen has several similar options; if the session can't make one safely, it says why and names exactly what to click. Worked example, from [Switchyard's README → A GitHub identity for workers](https://github.com/brownm09/switchyard#setup):
+
+1. Create the machine account: `https://github.com/signup`. Then turn on two-factor authentication: `https://github.com/settings/security`.
+2. Invite it to each repo with write access: `https://github.com/<owner>/<repo>/settings/access`. Then, signed in as that account, accept the invitation: `https://github.com/<owner>/<repo>/invitations`.
+3. As that account, create a classic token with the `repo` scope, using a pre-filled form: `https://github.com/settings/tokens/new?scopes=repo&description=switchyard`. The scope list is long, so this is the step that warrants an image, or at least the exact checkbox name (`repo`, the top-level box).
+4. Install WSL if needed (`https://learn.microsoft.com/en-us/windows/wsl/install`), then run `sudo apt-get install bubblewrap socat ripgrep gh` inside it.
+5. Put the token in an environment variable and name it as the repo's `githubTokenEnv` in `switchyard.config.json`. Give the config file's absolute path, per the local-files bullet.
+
+**Link every web resource mentioned, and show its full URL.** On 2026-11-15, a career-playbook session preparing a school ethics talk went wrong in two ways. It reported a Google Doc and a Google Slides deck as links whose text was a title ("Ethics visit: slides (SSFS, Nov 16)"), so the URL was hidden. It also named outside resources, a JavaScript library, a testing app, a school and a set of values, without linking any of them. The user was following the session over Remote Control, where link text may not be clickable and a hidden URL can't be copied. Asked whether the rule meant "link everything external" or "show the full URL", they answered both ([dev-env#1370](https://github.com/brownm09/dev-env/issues/1370)).
+
+- **Show the URL.** Write the raw URL, as in `https://docs.google.com/presentation/d/<id>/edit`, or a Markdown link whose text is the same URL. A link labelled with a title is not enough on its own. Text naming the item can sit next to the URL.
+- **What counts as a web resource:** anything a reader could open in a browser. That includes Drive and Docs files, GitHub PRs, issues and runs, library and product pages, an organization's site, and documentation. If no authoritative page exists, say so rather than leaving the name bare.
+- **Not covered:** local paths (the local-files bullet covers those) and generic nouns that name no specific page.
+
+Nothing enforces this mechanically.
+
 ### Detail: Abbreviations
 
 Incident: a 2026-09-30 career-playbook interview-prep session coined "R2P" (Round 2 technical prep), "R1"/"R4" (interview rounds), "SD" (system design), and "ACC:51"-style row citations, and used them across prep docs, chat, commits, and a PR body. The user had never seen them defined and had not agreed to them ([dev-env#1120](https://github.com/brownm09/dev-env/issues/1120)). Nothing enforces this mechanically; a Stop hook or doc lint is warranted only if it recurs now that the rule is written down.

@@ -483,10 +483,10 @@ When writing or updating any architectural documentation (ADRs, design docs, REA
 Whenever directing the user to view, test, run, or consume any resource, include the exact reference inline — never make the user ask for it:
 
 - **Local files, scripts, and logs** — provide the absolute path or the exact invocation string. Never say "run the script" without the full path, or "see the log" without the file path.
-- **Remote resources (PRs, issues, deployed URLs)** — provide the full URL. Never say "check the PR" without the link, or "see the issue" without the URL.
-- **Link the exact page where the user acts, not a landing page:** the job awaiting their deploy approval, not the run list; for a log console such as Grafana, a URL to the query view plus the query itself in a code block. [Detail](../docs/REFERENCE.md#detail-user-references)
+- **Every web resource you mention gets its full URL, visible**: PRs, issues, Drive files, libraries, products, organizations, docs. Write the raw URL, or make the link text the URL; never hide it behind a title, which may not work over Remote Control. [Detail](../docs/REFERENCE.md#detail-user-references)
+- **Link the exact page where the user acts, not a landing page,** on every manual setup step, with an image where the screen isn't obvious: the job awaiting their deploy approval, not the run list; for a log console such as Grafana, a URL to the query view plus the query itself in a code block. [Detail](../docs/REFERENCE.md#detail-user-references)
 
-No "see the file" without the path. No "check the PR" without the URL.
+No "see the file" without the path. No "check the PR" or "see the issue" without the URL.
 
 **Reopen an application yourself before asking the user to test something in it.** When the session closed it, or had the user close it, launch it and confirm the process and window exist, then ask. The exception is a step needing the user's own hands first, such as a sign-in, or elevation once `sudo` has failed: say exactly what's needed. [Detail](../docs/REFERENCE.md#detail-user-references)
 
