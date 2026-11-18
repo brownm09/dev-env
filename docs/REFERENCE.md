@@ -1069,7 +1069,8 @@ issue: [dev-env#1107](https://github.com/brownm09/dev-env/issues/1107).
   ([ADR-041](adr/041-no-terminal-spawn-in-windows-scripts.md)).
 - **Install** Git for Windows 2.38 or later (the full test suite needs `git merge-tree --write-tree`,
   and the doctor WARNs below that; upgrade with `winget upgrade --id Git.Git` from a PowerShell
-  window with every Git Bash closed, since the installer aborts while any `bash.exe` runs,
+  window with every Git Bash closed, Claude sessions' Bash commands included, since the installer
+  aborts while any `bash.exe` runs,
   [dev-env#1375](https://github.com/brownm09/dev-env/issues/1375)), Python with the `py`/`pyw` launcher, the GitHub CLI, nvm for Windows
   (then `nvm install 20.11.1`), and the Claude desktop app, signed in to the same account.
 

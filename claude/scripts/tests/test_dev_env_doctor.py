@@ -438,7 +438,11 @@ def test_git_version_result():
     assert doc.git_version_result("git version 3.0.0").status == PASS
     assert doc.git_version_result(None).status == INFO
     assert doc.git_version_result("").status == INFO
-    return "2.37 WARNs with the minimum and upgrade command; 2.38, 2.100 and 3.0 pass; no output is INFO"
+    # The test that needs the newer git carries its own copy; the two must not drift apart.
+    import test_testing_index_merge
+    assert doc.MIN_GIT == test_testing_index_merge.MIN_GIT, (doc.MIN_GIT, test_testing_index_merge.MIN_GIT)
+    return ("2.37 WARNs with the minimum and upgrade command; 2.38, 2.100 and 3.0 pass; no output is INFO; "
+            "MIN_GIT matches test_testing_index_merge.py")
 
 
 def test_identity_result():

@@ -73,7 +73,8 @@ def _require_min_git():
         raise AssertionError(
             f"git {found[0]}.{found[1]} is too old: this test needs git "
             f"{MIN_GIT[0]}.{MIN_GIT[1]} or later for `git merge-tree --write-tree`. "
-            "Upgrade with: winget upgrade --id Git.Git"
+            "Upgrade from PowerShell, with every Git Bash closed (Claude sessions' Bash commands "
+            "included; the installer aborts while any bash.exe runs): winget upgrade --id Git.Git"
         )
 
 

@@ -438,7 +438,9 @@ def git_version_result(version_out: str | None) -> Result:
         return Result(
             WARN, "git version",
             f"git {found[0]}.{found[1]} is older than the {need} minimum: test_testing_index_merge.py "
-            f"needs `git merge-tree --write-tree` -- run: winget upgrade --id Git.Git",
+            f"needs `git merge-tree --write-tree` -- from PowerShell, with every Git Bash closed (Claude "
+            f"sessions' Bash commands included; the installer aborts while any bash.exe runs), run: "
+            f"winget upgrade --id Git.Git",
         )
     return Result(PASS, "git version", f"git {found[0]}.{found[1]} (minimum {need})")
 
