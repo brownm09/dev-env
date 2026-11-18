@@ -5146,7 +5146,7 @@ For a one-line navigational map of the older tests, see
      [dev-env#1114](https://github.com/brownm09/dev-env/issues/1114). (Numbered 110 because items
      100–109 went to tests that merged to `main` while this one's PR was open.)
 
-     32 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
+     33 cases, passing on Python 3.12 and 3.10. `LINKED_ITEMS` and `HOME_LINKS` equal
      `setup.sh`'s four parsed link arrays, after asserting each parse extracted something — an
      empty parse compared against nothing would pass. A hook command's files are read with
      `_settings_sync.py_tokens`, the extraction the sync's own `hooks_guard` uses
@@ -5169,7 +5169,9 @@ For a one-line navigational map of the older tests, see
      `DeprecationWarning` before), syntax error or NUL byte FAIL, no files FAIL. gh sign-in is
      decided by `gh auth token`: a failed `gh auth status` is a WARN, never "not signed in", and
      `--offline` or a timeout an INFO. `parse_ls_remote` accepts only a 40-hex line for the exact
-     ref. Also covered: tool presence, the gh credential helper, git identity, a global
+     ref. Also covered: tool presence, the git 2.38 minimum (2.37 WARNs with the upgrade
+     command, and the minor version compares as a number, so 2.100 passes;
+     [dev-env#1375](https://github.com/brownm09/dev-env/issues/1375)), the gh credential helper, git identity, a global
      `core.hooksPath` that's unset or missing (FAIL) or different (WARN), per-clone overrides
      (a WARN that names the command removing the override, dev-env#1261),
      the journal / `origin/draft/<today>` matrix (an unreadable branch included, and advice that

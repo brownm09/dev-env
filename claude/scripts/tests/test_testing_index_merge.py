@@ -21,6 +21,7 @@ gates must refuse each other way of indexing a test, so the documented way stays
 only one that passes.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,9 @@ PARITY_GATES = ("test_testing_index_parity.py", "test_readme_index_parity.py")
 FIRST_REFUSED_ITEM = 119
 # The machine's git config can change how a merge behaves, or stop a commit outright.
 GIT_ENV = {**_env(), "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+# `git merge-tree --write-tree` arrived in git 2.38. dev-env-doctor.py's MIN_GIT carries the
+# same minimum, so a second machine hears about it before this test fails (dev-env#1375).
+MIN_GIT = (2, 38)
 
 
 def _git(cwd, *args, check=True):
@@ -57,6 +61,22 @@ def _git(cwd, *args, check=True):
     return result
 
 
+def _require_min_git():
+    """Fail, not skip, on a git too old for `merge-tree --write-tree`, naming the fix:
+    otherwise the merge-tree cases fail with git's own `fatal: unknown rev --write-tree`."""
+    out = _git(tempfile.gettempdir(), "--version").stdout
+    m = re.search(r"git version (\d+)\.(\d+)", out)
+    if not m:
+        raise AssertionError(f"could not read the git version from: {out!r}")
+    found = (int(m.group(1)), int(m.group(2)))
+    if found < MIN_GIT:
+        raise AssertionError(
+            f"git {found[0]}.{found[1]} is too old: this test needs git "
+            f"{MIN_GIT[0]}.{MIN_GIT[1]} or later for `git merge-tree --write-tree`. "
+            "Upgrade with: winget upgrade --id Git.Git"
+        )
+
+
 def _new_test_body(name):
     return (
         f'"""Fixture test {name}.\n\n'
@@ -69,6 +89,7 @@ def _new_test_body(name):
 class TestTestingIndexMerge(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _require_min_git()
         cls._tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls._tmp.cleanup)
         cls.repo = Path(cls._tmp.name) / "repo"
