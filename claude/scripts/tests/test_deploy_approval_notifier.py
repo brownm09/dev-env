@@ -11,8 +11,10 @@ PowerShell. `DEPLOY_NOTIFIER_DIR_OVERRIDE` and `DEPLOY_NOTIFIER_CONFIG` keep
 state and config in a temp directory. It pins one toast per waiting production
 run, skipping runs the user can't approve or that wait on another environment,
 forgetting runs that stopped waiting, every refusal path of the Approve handler
-(no POST), the approval payload, XML escaping, and the registration script's
-settings.
+(no POST), the approval payload, XML escaping and control-character stripping,
+saving each nonce as soon as its toast shows, the one-time "can't reach GitHub"
+alert, logging of a crash or an unreadable state file, and the registration
+script's settings.
 
 Scope gap: whether Windows shows the toast and routes its buttons can only be
 seen on a real desktop. When changing the toast or the URL scheme, run
@@ -251,11 +253,108 @@ def test_approve_reports_a_failed_post():
 
 def test_test_toast_nonce_is_refused():
     _reset()
-    gh = FakeGh()
-    toasts = Toasts()
+    # Run 42 is remembered with a real nonce, so the refusal has to come from the nonce check.
+    gh, toasts = _notify_one(run_id=42)
     _eq(notifier.test_toast(runner=gh, toaster=toasts), 0)
-    _eq(notifier.approve(_approve_uri(toasts.shown[0]), runner=gh, toaster=toasts), 1)
+    _eq(notifier.approve(_approve_uri(toasts.shown[-1]), runner=gh, toaster=toasts), 1)
     _eq(gh.posts, [], "the test toast never approves")
+    assert "doesn't match" in toasts.shown[-1]
+
+
+def test_approve_github_failure_says_so_and_re_toasts():
+    _reset()
+    gh, toasts = _notify_one()
+    uri = _approve_uri(toasts.shown[0])
+    gh.fail_paths = ("/pending_deployments",)
+    _eq(notifier.approve(uri, runner=gh, toaster=toasts), 1)
+    _eq(gh.posts, [], "no POST")
+    assert "Couldn't reach GitHub" in toasts.shown[-1], toasts.shown[-1]
+    _eq(notifier.load_state()["runs"], {}, "the run is forgotten so it can be toasted again")
+    gh.fail_paths = ()
+    before = len(toasts.shown)
+    notifier.tick(runner=gh, toaster=toasts)
+    _eq(len(toasts.shown), before + 1, "next tick toasts the still-waiting run again")
+
+
+def test_each_toast_is_saved_before_the_tick_goes_on():
+    _reset()
+    gh = FakeGh(waiting={REPO: [_run(7), _run(8)]}, pending={7: _pending(), 8: _pending()})
+
+    class DiesOnSecond(Toasts):
+        def __call__(self, xml_text, runner=None):
+            if self.shown:
+                raise RuntimeError("tick killed")
+            return super().__call__(xml_text, runner)
+
+    toasts = DiesOnSecond()
+    try:
+        notifier.tick(runner=gh, toaster=toasts)
+    except RuntimeError:
+        pass
+    _eq(list(notifier.load_state()["runs"]), [f"{REPO}#7"], "the first toast's nonce survived")
+    _eq(notifier.approve(_approve_uri(toasts.shown[0]), runner=gh, toaster=Toasts()), 0)
+
+
+def test_unreachable_github_toasts_once_then_resets():
+    _reset()
+    gh = FakeGh(fail_paths=("status=waiting",))
+    toasts = Toasts()
+    for _ in range(notifier.FAILED_POLL_ALERT - 1):
+        notifier.tick(runner=gh, toaster=toasts)
+    _eq(toasts.shown, [], "quiet below the threshold")
+    notifier.tick(runner=gh, toaster=toasts)
+    _eq(len(toasts.shown), 1, "one alert at the threshold")
+    assert "can't reach GitHub" in toasts.shown[0]
+    notifier.tick(runner=gh, toaster=toasts)
+    _eq(len(toasts.shown), 1, "no repeat while still failing")
+    gh.fail_paths = ()
+    notifier.tick(runner=gh, toaster=toasts)
+    state = notifier.load_state()
+    _eq((state["failed_polls"], state["alerted"]), (0, False), "reset on success")
+    assert state.get("last_ok"), "last good poll recorded"
+
+
+def test_control_characters_are_stripped_from_toasts():
+    _reset()
+    gh = FakeGh(waiting={REPO: [_run(7, message="bad\x01\x1bchars")]}, pending={7: _pending()})
+    toasts = Toasts()
+    notifier.tick(runner=gh, toaster=toasts)
+    doc = xml.dom.minidom.parseString(toasts.shown[0])
+    _eq(doc.getElementsByTagName("text")[1].firstChild.data, "badchars (abcdef1)")
+
+
+def test_runs_of_unwatched_repos_are_forgotten():
+    _reset(repos=[REPO, "other/repo"])
+    gh = FakeGh(waiting={"other/repo": [_run(9)]}, pending={9: _pending()})
+    notifier.tick(runner=gh, toaster=Toasts())
+    assert "other/repo#9" in notifier.load_state()["runs"]
+    _reset(repos=[REPO])
+    notifier.save_state({"runs": {"other/repo#9": {"repo": "other/repo", "run_id": 9}}})
+    notifier.tick(runner=FakeGh(), toaster=Toasts())
+    _eq(notifier.load_state()["runs"], {})
+
+
+def test_unreadable_state_is_logged():
+    _reset()
+    (_TMP / "state").mkdir(parents=True, exist_ok=True)
+    (_TMP / "state" / "state.json").write_text("{torn", encoding="utf-8")
+    _eq(notifier.load_state(), {"runs": {}})
+    assert "state.json unreadable" in (_TMP / "state" / "notifier.log").read_text(encoding="utf-8")
+
+
+def test_a_crash_is_logged_and_an_approve_click_is_told():
+    _reset()
+
+    def boom(argv):
+        raise ValueError("unexpected")
+
+    toasts = Toasts()
+    _eq(notifier.guarded_main(["--approve", "deploy-approve:a/b/1/n"], entry=boom, toaster=toasts), 1)
+    assert "crash: Traceback" in (_TMP / "state" / "notifier.log").read_text(encoding="utf-8")
+    assert "internal error" in toasts.shown[-1]
+    before = len(toasts.shown)
+    _eq(notifier.guarded_main(["--tick"], entry=boom, toaster=toasts), 1)
+    _eq(len(toasts.shown), before, "a crashed tick doesn't toast")
 
 
 # --- Config and registration ------------------------------------------------
@@ -279,9 +378,13 @@ def test_register_script_parses_and_keeps_its_settings():
                           capture_output=True, text=True, check=False, timeout=120)
     _eq((proc.returncode, proc.stdout.strip()), (0, "0"), f"parse errors: {proc.stderr}")
     text = path.read_text(encoding="utf-8")
+    # Code lines, not prose: the comment block mentions --tick and --approve too.
     for needle in ("-RunLevel Limited", "-LogonType Interactive", "-Hidden", "-MultipleInstances IgnoreNew",
-                   "-AtLogOn", "-RepetitionInterval (New-TimeSpan -Minutes 2)", "pyw.exe", "--tick",
-                   "--approve \"%1\"", "URL Protocol", "Export-ScheduledTask", "reg.exe export"):
+                   "-AtLogOn", "-RepetitionInterval (New-TimeSpan -Minutes 2)",
+                   "Get-Command pyw.exe", "$taskArgs = '-3 \"{0}\" --tick' -f $ScriptPath",
+                   "-Execute $pyw -Argument $taskArgs", "--approve \"%1\"' -f $pyw, $ScriptPath",
+                   "-Name 'URL Protocol'", "Export-ScheduledTask", "& reg.exe export",
+                   "$task.Actions[0].Arguments -ne $taskArgs", "if (-not (Test-OurKey))"):
         assert needle in text, f"missing {needle}"
     for banned in ("-Verb RunAs", "-NoExit", "Start-Process"):
         assert banned not in text, f"ADR-041: {banned}"

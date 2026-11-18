@@ -25,8 +25,8 @@
 
 .PARAMETER Unregister
     Undo: back up the task definition and the URL-scheme key to Documents\LOGS\ (write-if-absent,
-    ADR-079), remove both, and re-import any deploy-approve key that existed before the first
-    registration.
+    ADR-079), remove both, and re-import any deploy-approve key another tool had registered before
+    this one replaced it. A deploy-approve key whose handler isn't this notifier is left alone.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File register-deploy-approval-notifier.ps1
@@ -51,9 +51,20 @@ $TaskBackup = Join-Path $LogsDir "${TaskName}Backup.xml"
 
 function Test-NonEmpty([string]$Path) { (Test-Path $Path) -and (Get-Item $Path).Length -gt 0 }
 
-function Export-Key([string]$File) {
-    # Back up before mutating (ADR-079); write-if-absent so the first capture survives.
-    if (Test-NonEmpty $File) { return }
+function Get-Handler {
+    # The handler command, or $null. Get-ItemProperty's '(default)' throws under StrictMode when the
+    # key exists but has no default value, so read it through the key object instead.
+    $key = Get-Item -Path "$PsRegPath\shell\open\command" -ErrorAction SilentlyContinue
+    if ($null -eq $key) { return $null }
+    return $key.GetValue('')
+}
+
+function Test-OurKey { $h = Get-Handler; [bool]($h -and $h -like '*deploy-approval-notifier*') }
+
+function Export-Key([string]$File, [switch]$Overwrite) {
+    # Back up before mutating (ADR-079). Write-if-absent so the first capture survives, unless the
+    # caller is capturing a newer key that the existing file doesn't hold.
+    if ((Test-NonEmpty $File) -and -not $Overwrite) { return }
     if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null }
     & reg.exe export $RegPath $File /y | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-NonEmpty $File)) {
@@ -81,17 +92,28 @@ if ($Unregister) {
         Write-Host "No scheduled task '$TaskName' to remove."
     }
 
-    if (Test-Path $PsRegPath) {
-        Export-Key $KeyBackup
-        Remove-Item -Path $PsRegPath -Recurse -Force
-        if (Test-Path $PsRegPath) { throw "Removed $RegPath but it is still present at read-back." }
-        Write-Host "Removed $RegPath (backed up to $KeyBackup)."
-    } else {
+    if (-not (Test-Path $PsRegPath)) {
         Write-Host "No $RegPath key to remove."
+        return
     }
+    if (-not (Test-OurKey)) {
+        # Another tool owns this key now; it isn't ours to delete or replace.
+        Write-Host "Left $RegPath alone: its handler isn't deploy-approval-notifier ('$(Get-Handler)')."
+        return
+    }
+    Export-Key $KeyBackup
+    Remove-Item -Path $PsRegPath -Recurse -Force
+    if (Test-Path $PsRegPath) { throw "Removed $RegPath but it is still present at read-back." }
+    Write-Host "Removed $RegPath (backed up to $KeyBackup)."
     if (Test-NonEmpty $PriorBackup) {
-        & reg.exe import $PriorBackup 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to restore the pre-existing $RegPath from $PriorBackup." }
+        # reg import reports success on stderr, which 'Stop' would turn into a terminating error.
+        $ErrorActionPreference = 'Continue'
+        & reg.exe import $PriorBackup *> $null
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($code -ne 0 -or -not (Test-Path $PsRegPath)) {
+            throw "Failed to restore the pre-existing $RegPath from $PriorBackup (reg import exit $code)."
+        }
         Write-Host "Restored the deploy-approve key that existed before registration, from $PriorBackup."
     }
     return
@@ -103,17 +125,15 @@ $pyw = $launcher.Source
 if (-not (Test-Path $ScriptPath)) { throw "Notifier not found at $ScriptPath. Pull dev-env main first." }
 if (-not (Get-Command gh.exe -ErrorAction SilentlyContinue)) { throw "gh.exe is not on PATH; the notifier polls GitHub through it." }
 
-# URL scheme. A key some other tool registered under this name is captured once so -Unregister can put it back.
-if (Test-Path $PsRegPath) {
-    $existing = (Get-ItemProperty -Path "$PsRegPath\shell\open\command" -ErrorAction SilentlyContinue).'(default)'
-    if (-not ($existing -and $existing -like '*deploy-approval-notifier*')) { Export-Key $PriorBackup }
-}
+# URL scheme. A key some other tool registered under this name is captured so -Unregister can put it
+# back. It overwrites an older capture: the key present now is the one to restore.
+if ((Test-Path $PsRegPath) -and -not (Test-OurKey)) { Export-Key $PriorBackup -Overwrite }
 $command = '"{0}" -3 "{1}" --approve "%1"' -f $pyw, $ScriptPath
 New-Item -Path "$PsRegPath\shell\open\command" -Force | Out-Null
 Set-ItemProperty -Path $PsRegPath -Name '(default)' -Value 'URL:Deploy approval (deploy-approval-notifier)'
 Set-ItemProperty -Path $PsRegPath -Name 'URL Protocol' -Value ''
 Set-ItemProperty -Path "$PsRegPath\shell\open\command" -Name '(default)' -Value $command
-$readBack = (Get-ItemProperty -Path "$PsRegPath\shell\open\command").'(default)'
+$readBack = Get-Handler
 if ($readBack -ne $command) { throw "Wrote the deploy-approve handler but read back '$readBack'." }
 
 # Scheduled task.
@@ -130,12 +150,15 @@ $daily = New-ScheduledTaskTrigger -Daily -At '00:00'
 $daily.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval (New-TimeSpan -Minutes 2) `
     -RepetitionDuration (New-TimeSpan -Hours 24)).Repetition
 
+$taskArgs = '-3 "{0}" --tick' -f $ScriptPath
 Register-ScheduledTask -TaskName $TaskName `
-    -Action (New-ScheduledTaskAction -Execute $pyw -Argument ('-3 "{0}" --tick' -f $ScriptPath)) `
+    -Action (New-ScheduledTaskAction -Execute $pyw -Argument $taskArgs) `
     -Trigger @($atLogon, $daily) -Principal $principal -Settings $settings -Force `
     -Description "Toasts GitHub Actions runs waiting on a production approval. dev-env #1380 / ADR-163." | Out-Null
-if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
-    throw "Register-ScheduledTask completed but '$TaskName' is missing at read-back."
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $task) { throw "Register-ScheduledTask completed but '$TaskName' is missing at read-back." }
+if ($task.Actions[0].Execute -ne $pyw -or $task.Actions[0].Arguments -ne $taskArgs) {
+    throw "Registered '$TaskName' but read back '$($task.Actions[0].Execute) $($task.Actions[0].Arguments)'."
 }
 Start-ScheduledTask -TaskName $TaskName
 
