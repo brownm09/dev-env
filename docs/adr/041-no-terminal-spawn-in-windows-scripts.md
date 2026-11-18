@@ -115,3 +115,12 @@ The script rule above stands: a script fails fast with `#Requires -RunAsAdminist
 **Correction to Context item 1.** "The UAC dialog has no desktop to render against" is not true of every agent-driven context: rows 1–6 elevated from an agent's shell in a logged-in desktop session. A scheduled run was not tested, so the rule says only that a routine shouldn't count on `sudo`.
 
 **No mechanical check.** A Stop hook matching text like "open an elevated terminal" was considered and not added. The only known-bad reference is the one incident, there is no known-good corpus, and the shape the rule allows (asking after `sudo` failed) reads the same as the shape it forbids. Under Pass 3 Gate calibration that would be a diagnostic at most. As with the original rule, re-evaluate if it recurs now that the instruction is written down.
+
+## Amendment 2 (2026-11-18) — when `sudo` is disabled ([dev-env#1377](https://github.com/brownm09/dev-env/issues/1377))
+
+Amendment 1 assumed `sudo` stays in Inline mode. On 2026-11-17 and 2026-11-18 it was disabled (`sudo config`: "Sudo is disabled on this machine"), so every session following the rule hit that error first, and nothing reported it. The user re-enabled Inline mode on 2026-11-18, and two things now cover the next drift:
+
+1. **Detection.** `dev-env-doctor.py` runs `sudo config`, which only reads the setting, and WARNs on disabled or any mode other than Inline (Testing item 110). The rule tells a session that sees the disabled message to ask the user to re-enable it.
+2. **Fallback.** Until it's re-enabled, the session writes the elevated work as a one-shot script that logs to a file, launches it with `Start-Process powershell -Verb RunAs -Wait` (one UAC prompt), and reads the log. That is how Git for Windows was upgraded in [dev-env#1376](https://github.com/brownm09/dev-env/pull/1376). It doesn't conflict with this ADR's decision, which bans a *script* relaunching itself: here the session launches a script that itself still fails fast without elevation. It returns no exit code except through the log, which is why Inline `sudo` stays the first choice.
+
+**Rejected:** dropping `sudo` from the rule and making the `Start-Process` route the default. It loses the inline output and exit code that Amendment 1 established, for a setting the user can turn back on.

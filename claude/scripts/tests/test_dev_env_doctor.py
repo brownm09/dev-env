@@ -445,6 +445,27 @@ def test_git_version_result():
             "MIN_GIT matches test_testing_index_merge.py")
 
 
+def test_sudo_mode_result():
+    # The disabled text as sudo prints it, OSC 8 hyperlink escapes and all (seen 2026-11-18).
+    disabled = doc.sudo_mode_result(
+        "Sudo is disabled on this machine. To enable it, go to the \x1b]8;;ms-settings:developers\x1b\\"
+        "Developer Settings page\x1b]8;;\x1b\\ in the Settings app\n"
+    )
+    assert disabled.status == WARN, disabled
+    assert "ms-settings:developers" in disabled.detail and "Inline" in disabled.detail, disabled.detail
+    inline = doc.sudo_mode_result("Sudo is currently in Inline mode on this machine\r\n")
+    assert inline.status == PASS, inline
+    other = doc.sudo_mode_result("Sudo is currently in Force New Window mode on this machine")
+    assert other.status == WARN and other.detail.startswith("Force New Window mode"), other
+    assert doc.sudo_mode_result("Sudo is currently in Disable Input mode on this machine").status == WARN
+    assert doc.sudo_mode_result(None).status == INFO
+    # Unrecognized text (e.g. a localized message) is INFO that says so, never a claim of no mode.
+    localized = doc.sudo_mode_result("Sudo est désactivé sur cet ordinateur.")
+    assert localized.status == INFO and "not recognized" in localized.detail, localized
+    assert doc.sudo_mode_result("").status == INFO
+    return "disabled WARN with the Settings path; Inline PASS; Force New Window / Disable Input WARN; absent or unrecognized INFO"
+
+
 def test_identity_result():
     assert doc.identity_result("Me", "me@example.com").status == PASS
     assert doc.identity_result("", "me@example.com").status == WARN
@@ -590,6 +611,7 @@ def main() -> int:
         ("gh sign-in and scopes", test_gh_auth_result),
         ("gh credential helper", test_credential_helper_result),
         ("git minimum version", test_git_version_result),
+        ("Windows sudo mode", test_sudo_mode_result),
         ("git identity", test_identity_result),
         ("global core.hooksPath", test_global_hooks_result),
         ("per-clone effective hooks dir", test_repo_hooks_results),

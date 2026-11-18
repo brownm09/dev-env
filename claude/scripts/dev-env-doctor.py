@@ -32,6 +32,8 @@ What it checks, and why each one matters on a second machine (dev-env#1114, part
   git-credential helper (ADR-047) and git identity.
 - git is at least 2.38, which test_testing_index_merge.py needs for `git merge-tree
   --write-tree`; an older git fails the local full suite while CI passes (dev-env#1375).
+- Windows sudo is in Inline mode, which the global sudo rule assumes; disabled or another
+  mode is a WARN, so the drift shows before a session's `sudo <command>` fails (dev-env#1377).
 - Every script in claude/scripts/ compiles on this machine's Python. A compile warning (an
   invalid escape: SyntaxWarning from 3.12, DeprecationWarning before) is a WARN, because a
   future Python makes it an error.
@@ -445,6 +447,35 @@ def git_version_result(version_out: str | None) -> Result:
     return Result(PASS, "git version", f"git {found[0]}.{found[1]} (minimum {need})")
 
 
+def sudo_mode_result(config_out: str | None) -> Result:
+    """Windows sudo should be in Inline mode: the global rule has sessions run elevated commands
+    with `sudo <command>`, and only Inline returns their output and exit code (dev-env#1377).
+    `config_out` is what `sudo config` printed, stdout and stderr together; None when sudo is
+    absent or did not answer. The phrases are Sudo.resw's CurrentMode_* and disabled strings."""
+    settings = "Settings > System > For developers > Enable sudo, Configure sudo: Inline (ms-settings:developers)"
+    if config_out is None:
+        return Result(INFO, "sudo mode", "not checked (sudo is not installed, or did not answer)")
+    if "Sudo is disabled on this machine" in config_out:
+        return Result(
+            WARN, "sudo mode",
+            f"sudo is disabled, so `sudo <command>` fails -- turn it on in {settings}; until then, "
+            "use the fallback in the global CLAUDE.md sudo rule",
+        )
+    m = re.search(r"Sudo is currently in (.+?) mode", config_out)
+    if not m:
+        return Result(
+            INFO, "sudo mode",
+            "not checked (`sudo config` output not recognized -- the check matches sudo's English "
+            "messages; run `sudo config` to see the mode)",
+        )
+    if m.group(1) == "Inline":
+        return Result(PASS, "sudo mode", "Inline")
+    return Result(
+        WARN, "sudo mode",
+        f"{m.group(1)} mode does not return a command's output to the session -- set {settings}",
+    )
+
+
 def identity_result(name: str, email: str) -> Result:
     if name and email:
         return Result(PASS, "git identity", f"{name} <{email}>")
@@ -724,6 +755,14 @@ def _check_git_config() -> list[Result]:
     ]
 
 
+def _check_sudo() -> list[Result]:
+    # Windows only: elsewhere `sudo config` would try to run a command named config as root.
+    if os.name != "nt" or shutil.which("sudo") is None:
+        return [sudo_mode_result(None)]
+    result = _run(["sudo", "config"])  # reads the setting; it never elevates or prompts
+    return [sudo_mode_result(None if result.returncode is None else result.stdout + result.stderr)]
+
+
 def _check_hooks_paths() -> list[Result]:
     global_value = _git_out("config", "--global", "--type=path", "core.hooksPath")
     out = [global_hooks_result(global_value, CLAUDE_HOME / "hooks")]
@@ -783,6 +822,7 @@ def collect(offline: bool, settings_path: Path) -> list[Result]:
     results += guarded("tools", tool_results)
     results += guarded("gh auth", lambda: _check_gh(offline))
     results += guarded("git config", _check_git_config)
+    results += guarded("sudo mode", _check_sudo)
     results += guarded("hooks paths", _check_hooks_paths)
     results += guarded("journal", lambda: _check_journal(offline))
     config = repo_root / ".claude" / "hook-config.json"
