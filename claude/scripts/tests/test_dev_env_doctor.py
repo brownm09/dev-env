@@ -428,6 +428,23 @@ def test_credential_helper_result():
     return "gh helper PASS; manager or none WARN"
 
 
+def test_git_version_result():
+    old = doc.git_version_result("git version 2.37.1.windows.1")
+    assert old.status == WARN, old
+    assert "2.38" in old.detail and "winget upgrade --id Git.Git" in old.detail, old.detail
+    assert doc.git_version_result("git version 2.38.0").status == PASS
+    # A two-digit minor compares as a number, not a string ("2.100" > "2.38").
+    assert doc.git_version_result("git version 2.100.0.windows.1").status == PASS
+    assert doc.git_version_result("git version 3.0.0").status == PASS
+    assert doc.git_version_result(None).status == INFO
+    assert doc.git_version_result("").status == INFO
+    # The test that needs the newer git carries its own copy; the two must not drift apart.
+    import test_testing_index_merge
+    assert doc.MIN_GIT == test_testing_index_merge.MIN_GIT, (doc.MIN_GIT, test_testing_index_merge.MIN_GIT)
+    return ("2.37 WARNs with the minimum and upgrade command; 2.38, 2.100 and 3.0 pass; no output is INFO; "
+            "MIN_GIT matches test_testing_index_merge.py")
+
+
 def test_identity_result():
     assert doc.identity_result("Me", "me@example.com").status == PASS
     assert doc.identity_result("", "me@example.com").status == WARN
@@ -572,6 +589,7 @@ def main() -> int:
         ("tool presence", test_tool_results),
         ("gh sign-in and scopes", test_gh_auth_result),
         ("gh credential helper", test_credential_helper_result),
+        ("git minimum version", test_git_version_result),
         ("git identity", test_identity_result),
         ("global core.hooksPath", test_global_hooks_result),
         ("per-clone effective hooks dir", test_repo_hooks_results),

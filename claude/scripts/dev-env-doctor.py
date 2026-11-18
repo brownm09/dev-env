@@ -30,6 +30,8 @@ What it checks, and why each one matters on a second machine (dev-env#1114, part
 - The tools the workflow shells out to: the hook launcher (pyw), py, git, gh, node -- plus
   gh sign-in (decided locally by `gh auth token`) and its `project` scope, the gh
   git-credential helper (ADR-047) and git identity.
+- git is at least 2.38, which test_testing_index_merge.py needs for `git merge-tree
+  --write-tree`; an older git fails the local full suite while CI passes (dev-env#1375).
 - Every script in claude/scripts/ compiles on this machine's Python. A compile warning (an
   invalid escape: SyntaxWarning from 3.12, DeprecationWarning before) is a WARN, because a
   future Python makes it an error.
@@ -90,6 +92,11 @@ HOME_LINKS = ("bin",)
 PASS, WARN, FAIL, INFO = "PASS", "WARN", "FAIL", "INFO"
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+# `git merge-tree --write-tree` arrived in git 2.38, and test_testing_index_merge.py uses it
+# (dev-env#1375). The test carries the same constant, so a change here goes there too.
+MIN_GIT = (2, 38)
+_GIT_VERSION_RE = re.compile(r"git version (\d+)\.(\d+)")
 
 
 class Result(NamedTuple):
@@ -420,6 +427,24 @@ def credential_helper_result(values: list[str]) -> Result:
     )
 
 
+def git_version_result(version_out: str | None) -> Result:
+    """git must be at least MIN_GIT, or the local full suite fails where CI passes."""
+    m = _GIT_VERSION_RE.search(version_out or "")
+    if not m:
+        return Result(INFO, "git version", "not checked (`git --version` printed no version)")
+    found = (int(m.group(1)), int(m.group(2)))
+    need = ".".join(map(str, MIN_GIT))
+    if found < MIN_GIT:
+        return Result(
+            WARN, "git version",
+            f"git {found[0]}.{found[1]} is older than the {need} minimum: test_testing_index_merge.py "
+            f"needs `git merge-tree --write-tree` -- from PowerShell, with every Git Bash closed (Claude "
+            f"sessions' Bash commands included; the installer aborts while any bash.exe runs), run: "
+            f"winget upgrade --id Git.Git",
+        )
+    return Result(PASS, "git version", f"git {found[0]}.{found[1]} (minimum {need})")
+
+
 def identity_result(name: str, email: str) -> Result:
     if name and email:
         return Result(PASS, "git identity", f"{name} <{email}>")
@@ -691,6 +716,7 @@ def _check_gh(offline: bool) -> list[Result]:
 def _check_git_config() -> list[Result]:
     helpers = _git_out("config", "--global", "--get-all", "credential.https://github.com.helper")
     return [
+        git_version_result(_git_out("--version")),
         credential_helper_result(helpers.splitlines() if helpers else []),
         identity_result(
             _git_out("config", "--global", "user.name") or "", _git_out("config", "--global", "user.email") or "",
