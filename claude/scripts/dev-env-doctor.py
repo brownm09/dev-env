@@ -463,7 +463,11 @@ def sudo_mode_result(config_out: str | None) -> Result:
         )
     m = re.search(r"Sudo is currently in (.+?) mode", config_out)
     if not m:
-        return Result(INFO, "sudo mode", "not checked (`sudo config` printed no mode)")
+        return Result(
+            INFO, "sudo mode",
+            "not checked (`sudo config` output not recognized -- the check matches sudo's English "
+            "messages; run `sudo config` to see the mode)",
+        )
     if m.group(1) == "Inline":
         return Result(PASS, "sudo mode", "Inline")
     return Result(

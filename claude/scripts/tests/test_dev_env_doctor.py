@@ -459,6 +459,9 @@ def test_sudo_mode_result():
     assert other.status == WARN and other.detail.startswith("Force New Window mode"), other
     assert doc.sudo_mode_result("Sudo is currently in Disable Input mode on this machine").status == WARN
     assert doc.sudo_mode_result(None).status == INFO
+    # Unrecognized text (e.g. a localized message) is INFO that says so, never a claim of no mode.
+    localized = doc.sudo_mode_result("Sudo est désactivé sur cet ordinateur.")
+    assert localized.status == INFO and "not recognized" in localized.detail, localized
     assert doc.sudo_mode_result("").status == INFO
     return "disabled WARN with the Settings path; Inline PASS; Force New Window / Disable Input WARN; absent or unrecognized INFO"
 
