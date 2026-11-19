@@ -58,6 +58,31 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 
 ---
 
+## Known Entities
+
+**An unfamiliar name (a hostname, repo or account) is probably one of the user's own.** Check this table, then `gh repo list brownm09` and the journal, before asking or guessing; `hostname` names the machine you're on. A name that recurs undefined gets a row here, through a dev-env PR, never only in memory. [Detail](../docs/REFERENCE.md#detail-known-entities)
+
+| # | Name | Kind | What it is |
+|---|---|---|---|
+| 1 | LETHEON | machine | Windows 11 laptop. The scheduled routines are moving off it. |
+| 2 | ANGSTROM-B | machine | Windows 11 desktop. It now runs the scheduled routines. |
+| 3 | DEVIDRA-B | machine | Android phone, the user's only phone. |
+| 4 | Switchyard | repo | `brownm09/switchyard`: coordinates teams of coding agents across repos, gated by checks that call no model, with merges a human approves. It parses `/review`'s acceptance-evidence table. |
+| 5 | dev-env | repo | This global configuration: `CLAUDE.md`, hooks, skills, routines. |
+| 6 | engineering-journal | repo | Session stubs and the daily composed journal. |
+| 7 | lifting-logbook | repo | `merickvaughn/lifting-logbook`, the one repo not under `brownm09`. TypeScript training log with recommendations from performance, sleep and nutrition. |
+| 8 | gas-lifting-logbook | repo | The Google Apps Script logbook that preceded lifting-logbook. |
+| 9 | career-playbook | repo | Job-search materials: cover letters, interview prep, application tracking. |
+| 10 | cover-letter-runtime | repo | Agent engine that generates cover letters from career-playbook's content. |
+| 11 | job-search-agent | repo | Cover-letter and application workflow tool with local or API model backends. |
+| 12 | agent-fleet | repo | Template for an orchestrator and worker fleet on the Claude API. |
+| 13 | win11-init-tools | repo | Scripts that set up and maintain a fresh Windows 11 install. |
+| 14 | tech-leadership-reference | repo | Engineering-leadership playbooks. |
+| 15 | research-notes | repo | Local only, no remote: output of the `nightly-research` routine. |
+| 16 | brownm09-switchyard | GitHub account | Switchyard's worker account. Its PRs and comments come from Switchyard runs, not a stranger. |
+
+---
+
 ## Tool Discovery
 
 **Before concluding any tool is "unavailable in this session," check the full tool list in the system prompt first**, both directly-defined tools and deferred names in system-reminders. `ToolSearch` finds only deferred tools, so a zero-result search says nothing about a tool that is already callable. [Detail](../docs/REFERENCE.md#detail-tool-discovery)

@@ -22,7 +22,7 @@ CAPPED_FILES = (
     {
         "name": "claude/CLAUDE.md",
         "path": CLAUDE_MD,
-        "ceiling": 96_500,  # trimmed to 91,862 bytes by #1216
+        "ceiling": 99_500,  # trimmed to 91,862 bytes by #1216; + Known Entities section (#1382)
         "known_bad": (166_696, 181_551),
         "min_links": 50,
         "detail_section": "instruction-detail",
