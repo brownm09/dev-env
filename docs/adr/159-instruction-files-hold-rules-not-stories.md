@@ -61,3 +61,17 @@ Gate calibration: the measured property is the same normalized byte count. Known
 At the fitted 0.395 tokens per byte, the 19,712 bytes removed are about 7,800 tokens off every call of every dev-env session. As in the original decision, that is arithmetic on the request, not a measured change in spend.
 
 Rejected: shortening each command by naming a common prefix once (`claude/scripts/tests/`) would save about 4k more bytes, but a command an agent can't paste as written invites mistakes, so commands stay whole.
+
+## Amendment 2: a reference table that every session needs (2026-11-19)
+
+[dev-env#1382](https://github.com/brownm09/dev-env/issues/1382): sessions kept meeting the user's machine and repo names (LETHEON, ANGSTROM-B, Switchyard) in ADRs, routine prompts and the journal, with nothing that said what they were.
+
+1. **Facts as well as rules.** `claude/CLAUDE.md` may hold a short reference table when every session needs its facts the moment a name turns up. That's the case for the `## Known Entities` table: one line per entity, with the longer story in `docs/REFERENCE.md` → *Detail: Known entities*, as for a rule.
+2. **The ceiling rises to 99,500 bytes.** The file was at 96,497 against the 96,500 ceiling, and the section brings it to about 98,700. The new ceiling leaves about 1% of headroom, so the cap still forces the next addition to trim something.
+
+Rejected:
+- **A separate glossary file pulled in by an import.** It loads every session at the same cost, but it escapes the cap. `claude/` isn't linked as a directory either, so it would need a new `setup.sh` link on every machine.
+- **Agent memory.** It's per machine and visible to no one else, which is why the names were unknown in the first place ([ADR-038](038-durable-preferences-documented-in-repo.md)).
+- **A link alone, with the table only in `docs/REFERENCE.md`.** A session doesn't know to follow the link at the moment an unfamiliar name turns up.
+
+Gate calibration is unchanged: same measured property, same known-bad sizes, and a ceiling that has only gone up.

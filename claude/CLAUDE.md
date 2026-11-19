@@ -60,7 +60,7 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 
 ## Known Entities
 
-**An unfamiliar capitalized name is probably one of the user's machines or repos.** Check this table, then `gh repo list brownm09` and the journal, before asking or guessing; `hostname` names the machine you're on. A name that recurs undefined gets a row here, through a dev-env PR, never only in memory. [Detail](../docs/REFERENCE.md#detail-known-entities)
+**An unfamiliar name (a hostname, repo or account) is probably one of the user's own.** Check this table, then `gh repo list brownm09` and the journal, before asking or guessing; `hostname` names the machine you're on. A name that recurs undefined gets a row here, through a dev-env PR, never only in memory. [Detail](../docs/REFERENCE.md#detail-known-entities)
 
 | # | Name | Kind | What it is |
 |---|---|---|---|
@@ -70,7 +70,7 @@ See [ADR-038](../docs/adr/038-durable-preferences-documented-in-repo.md), [ADR-0
 | 4 | Switchyard | repo | `brownm09/switchyard`: coordinates teams of coding agents across repos, gated by checks that call no model, with merges a human approves. It parses `/review`'s acceptance-evidence table. |
 | 5 | dev-env | repo | This global configuration: `CLAUDE.md`, hooks, skills, routines. |
 | 6 | engineering-journal | repo | Session stubs and the daily composed journal. |
-| 7 | lifting-logbook | repo | TypeScript training log with recommendations from performance, sleep and nutrition. |
+| 7 | lifting-logbook | repo | `merickvaughn/lifting-logbook`, the one repo not under `brownm09`. TypeScript training log with recommendations from performance, sleep and nutrition. |
 | 8 | gas-lifting-logbook | repo | The Google Apps Script logbook that preceded lifting-logbook. |
 | 9 | career-playbook | repo | Job-search materials: cover letters, interview prep, application tracking. |
 | 10 | cover-letter-runtime | repo | Agent engine that generates cover letters from career-playbook's content. |
