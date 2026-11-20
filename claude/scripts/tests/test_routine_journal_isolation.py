@@ -443,8 +443,11 @@ class EndToEnd(unittest.TestCase):
             config = os.path.join(repo, ".git", "config")
             text = _read(config)
             self.assertIn(_posix(self.template), text, "the fixture's config names no absolute path")
+            text = text.replace(_posix(self.template), _posix(self.base))
+            # Any spelling of the template's path holds its unique folder name.
+            self.assertNotIn(os.path.basename(self.template), text, "the copy still names the template")
             with open(config, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(text.replace(_posix(self.template), _posix(self.base)))
+                fh.write(text)
 
     def _fill(self, block):
         text = block.replace(SHARED, _posix(self.shared)).replace(SCRATCH, _posix(self.scratch))
