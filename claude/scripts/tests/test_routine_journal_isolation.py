@@ -302,6 +302,91 @@ def _posix(path):
     return path.replace("\\", "/")
 
 
+# Each spawns a process or flushes to disk on a commit, fetch or push, and none of them moves a
+# branch, the index or the working tree, which is all the shared-checkout snapshot compares.
+SPEED_SETTINGS = (("maintenance.auto", "false"), ("receive.autogc", "false"), ("core.fsync", "none"))
+
+
+def _fixture_paths(base):
+    return {
+        "origin": os.path.join(base, "origin.git"),
+        "seed": os.path.join(base, "seed"),
+        "shared": os.path.join(base, "ej"),
+        "scratch": os.path.join(base, "scratch"),
+        "bin": os.path.join(base, "bin"),
+        "gh_log": os.path.join(base, "gh.log"),
+    }
+
+
+def _isolate(repo, base):
+    """Keep this machine's global hooks and signing out of the fixture; a worktree inherits these."""
+    no_hooks = os.path.join(base, "no-hooks")
+    os.makedirs(no_hooks, exist_ok=True)
+    for key, value in (("core.hooksPath", _posix(no_hooks)), ("commit.gpgsign", "false"),
+                       ("user.name", "test"), ("user.email", "test@example.invalid"), *SPEED_SETTINGS):
+        _git(repo, "config", key, value)
+
+
+def _build_fixture(base):
+    """A bare origin, a shared checkout mid-session on a draft branch, and a stale origin/main ref.
+
+    Returns origin/main's tip."""
+    p = _fixture_paths(base)
+    os.makedirs(p["scratch"])
+    # --template= leaves out the sample hooks, which every test's copy would otherwise copy.
+    subprocess.run(["git", "init", "-q", "--bare", "--template=", "-b", "main", p["origin"]], check=True,
+                   capture_output=True)
+    for key, value in SPEED_SETTINGS:
+        _git(p["origin"], "config", key, value)
+
+    seed, shared = p["seed"], p["shared"]
+    os.makedirs(seed)
+    _git(seed, "init", "-q", "--template=", "-b", "main")
+    _isolate(seed, base)
+    _git(seed, "remote", "add", "origin", _posix(p["origin"]))
+    _write(seed, ".gitignore", ".claude/worktrees/\n")
+    _write(seed, "sessions/meta/README.md", "# meta\n")
+    _write(seed, f"sessions/meta/retro/{PRIOR}-retro.md", "# old\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "seed")
+    _git(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    subprocess.run(["git", "clone", "-q", "--template=", _posix(p["origin"]), shared], check=True,
+                   capture_output=True)
+    _isolate(shared, base)
+    _git(shared, "checkout", "-q", "-b", f"draft/{DATE}")
+    _write(shared, f"sessions/dev-env/{DATE}_090000.stub.md", "committed stub\n")
+    _write(shared, f"sessions/dev-env/{DATE}_100000.stub.md", "staged by another session\n")
+    _git(shared, "add", f"sessions/dev-env/{DATE}_090000.stub.md")
+    _git(shared, "commit", "-q", "-m", "stub")
+    _git(shared, "add", f"sessions/dev-env/{DATE}_100000.stub.md")
+    _write(shared, f"sessions/dev-env/{DATE}_090000.stub.md", "committed stub, then edited\n")
+    _write(shared, f"sessions/dev-env/{DATE}_110000.stub.md", "untracked, being written\n")
+
+    # main moves on after the shared checkout last fetched: the routine has to pick this up.
+    _write(seed, f"sessions/dev-env/{DATE}-journal.md", "composed after the last fetch\n")
+    _write(seed, f"sessions/meta/retro/{NEWER}-retro.md", "# newer\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "a composed journal")
+    _git(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    # A fake gh that, like the real one, refuses a second PR for the same branch.
+    os.makedirs(p["bin"])
+    fake_gh = os.path.join(p["bin"], "gh")
+    with open(fake_gh, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >> "$GH_LOG"\n'
+            'if [ "$1 $2" = "pr create" ]; then\n'
+            '  if [ -e "$GH_LOG.created" ]; then echo "a pull request already exists" >&2; exit 1; fi\n'
+            '  : > "$GH_LOG.created"; echo "https://example.invalid/pull/1"\n'
+            'elif [ "$1 $2" = "pr view" ]; then\n'
+            '  [ -e "$GH_LOG.created" ] || exit 1; echo "https://example.invalid/pull/1"\n'
+            'fi\n'
+        )
+    os.chmod(fake_gh, 0o755)
+    return _git(seed, "rev-parse", "HEAD").strip()
+
+
 class Routine:
     """One report routine's blocks, as they would be pasted into separate Bash calls."""
 
@@ -341,71 +426,28 @@ class EndToEnd(unittest.TestCase):
         cls.retro = Routine("biweekly-retro", "retro", "sessions/meta/retro", f"{DATE}-retro.md")
         cls.audit = Routine("weekly-memory-audit", "memory-audit", "sessions/meta/memory-audit",
                             f"{DATE}-audit.md")
+        # Built once and copied per test: each git launch can fail outright on a machine near its
+        # memory commit limit (dev-env#1384), and this fixture alone is about 23 of them.
+        cls.template = os.path.realpath(tempfile.mkdtemp(prefix="routine-iso-template-"))
+        cls.addClassCleanup(_force_rmtree, cls.template)
+        cls.main_tip = _build_fixture(cls.template)
 
     def setUp(self):
         self.base = os.path.realpath(tempfile.mkdtemp(prefix="routine-iso-"))
         self.addCleanup(_force_rmtree, self.base)
-        self.origin = os.path.join(self.base, "origin.git")
-        self.seed = os.path.join(self.base, "seed")
-        self.shared = os.path.join(self.base, "ej")
-        self.scratch = os.path.join(self.base, "scratch")
-        self.bin = os.path.join(self.base, "bin")
-        self.gh_log = os.path.join(self.base, "gh.log")
-        os.makedirs(self.scratch)
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True, capture_output=True)
-
-        os.makedirs(self.seed)
-        _git(self.seed, "init", "-q", "-b", "main")
-        self._isolate(self.seed)
-        _git(self.seed, "remote", "add", "origin", _posix(self.origin))
-        _write(self.seed, ".gitignore", ".claude/worktrees/\n")
-        _write(self.seed, "sessions/meta/README.md", "# meta\n")
-        _write(self.seed, f"sessions/meta/retro/{PRIOR}-retro.md", "# old\n")
-        _git(self.seed, "add", "-A")
-        _git(self.seed, "commit", "-q", "-m", "seed")
-        _git(self.seed, "push", "-q", "origin", "HEAD:refs/heads/main")
-
-        subprocess.run(["git", "clone", "-q", _posix(self.origin), self.shared], check=True, capture_output=True)
-        self._isolate(self.shared)
-        _git(self.shared, "checkout", "-q", "-b", f"draft/{DATE}")
-        _write(self.shared, f"sessions/dev-env/{DATE}_090000.stub.md", "committed stub\n")
-        _write(self.shared, f"sessions/dev-env/{DATE}_100000.stub.md", "staged by another session\n")
-        _git(self.shared, "add", f"sessions/dev-env/{DATE}_090000.stub.md")
-        _git(self.shared, "commit", "-q", "-m", "stub")
-        _git(self.shared, "add", f"sessions/dev-env/{DATE}_100000.stub.md")
-        _write(self.shared, f"sessions/dev-env/{DATE}_090000.stub.md", "committed stub, then edited\n")
-        _write(self.shared, f"sessions/dev-env/{DATE}_110000.stub.md", "untracked, being written\n")
-
-        # main moves on after the shared checkout last fetched: the routine has to pick this up.
-        _write(self.seed, f"sessions/dev-env/{DATE}-journal.md", "composed after the last fetch\n")
-        _write(self.seed, f"sessions/meta/retro/{NEWER}-retro.md", "# newer\n")
-        _git(self.seed, "add", "-A")
-        _git(self.seed, "commit", "-q", "-m", "a composed journal")
-        _git(self.seed, "push", "-q", "origin", "HEAD:refs/heads/main")
-        self.main_tip = _git(self.seed, "rev-parse", "HEAD").strip()
-
-        # A fake gh that, like the real one, refuses a second PR for the same branch.
-        os.makedirs(self.bin)
-        fake_gh = os.path.join(self.bin, "gh")
-        with open(fake_gh, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(
-                '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >> "$GH_LOG"\n'
-                'if [ "$1 $2" = "pr create" ]; then\n'
-                '  if [ -e "$GH_LOG.created" ]; then echo "a pull request already exists" >&2; exit 1; fi\n'
-                '  : > "$GH_LOG.created"; echo "https://example.invalid/pull/1"\n'
-                'elif [ "$1 $2" = "pr view" ]; then\n'
-                '  [ -e "$GH_LOG.created" ] || exit 1; echo "https://example.invalid/pull/1"\n'
-                'fi\n'
-            )
-        os.chmod(fake_gh, 0o755)
-
-    def _isolate(self, repo):
-        """Keep this machine's global hooks and signing out of the fixture; a worktree inherits these."""
-        no_hooks = os.path.join(self.base, "no-hooks")
-        os.makedirs(no_hooks, exist_ok=True)
-        for key, value in (("core.hooksPath", _posix(no_hooks)), ("commit.gpgsign", "false"),
-                           ("user.name", "test"), ("user.email", "test@example.invalid")):
-            _git(repo, "config", key, value)
+        for name, path in _fixture_paths(self.base).items():
+            setattr(self, name, path)
+        shutil.copytree(self.template, self.base, dirs_exist_ok=True)
+        # The two clones name the origin and the hooks folder by absolute path.
+        for repo in (self.seed, self.shared):
+            config = os.path.join(repo, ".git", "config")
+            text = _read(config)
+            self.assertIn(_posix(self.template), text, "the fixture's config names no absolute path")
+            text = text.replace(_posix(self.template), _posix(self.base))
+            # Any spelling of the template's path holds its unique folder name.
+            self.assertNotIn(os.path.basename(self.template), text, "the copy still names the template")
+            with open(config, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
 
     def _fill(self, block):
         text = block.replace(SHARED, _posix(self.shared)).replace(SCRATCH, _posix(self.scratch))
