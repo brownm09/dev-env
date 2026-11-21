@@ -138,8 +138,8 @@ $readBack = Get-Handler
 if ($readBack -ne $command) { throw "Wrote the deploy-approve handler but read back '$readBack'." }
 
 # Scheduled task. Priority 4, not the default 7: Task Scheduler gives 7 low I/O and low memory
-# priority, and under memory pressure that made the first gh and PowerShell start of a tick take
-# 11-18 s against 20 s and 30 s timeouts (dev-env #1387). 4 is what a process started from a
+# priority, and under memory pressure that made a tick's gh and PowerShell starts take up to 52 s
+# against 20 s and 30 s timeouts (dev-env #1387). 4 is what a process started from a
 # terminal gets.
 $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
