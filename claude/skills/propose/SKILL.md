@@ -237,8 +237,10 @@ GitHub's side from an `epic:<slug>` label, so the session needs no access to the
   `CI/CD Foundation` → `ci-cd-foundation`. Pass exactly one `epic:` label.
 - If no epic was chosen, create the issue without an `epic:` label and tell the user it will be
   on the board with no Epic set.
-- If `gh issue create` fails because the label doesn't exist in the repo, no issue was created:
-  tell the user which label is missing, and don't create it yourself.
+- If `gh issue create` fails because the label doesn't exist in the repo, first check whether
+  the issue was created anyway (`gh issue list -R <config.github_repo> --search "<title>"
+  --state all`), so a rerun can't leave a duplicate. Then tell the user which label is missing,
+  and don't create it yourself.
 - Skip the project/epic assignment block below: make no `gh project item-add` or `item-edit`
   call.
 
