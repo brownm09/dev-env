@@ -37,7 +37,7 @@ Expands a one-line idea into a full proposal document, creates a linked GitHub i
 
 **Config:** reads `.claude/propose.json` in the project root. If the file is missing, the skill scaffolds it interactively. Keys: `proposals_dir`, `roadmap_file`, `prd_file`, `github_repo`, `milestones`, `epics`, `github_project`. An optional `github_project.epic_label` makes Step 8 set the Epic through an `epic:<slug>` label on the new issue, for a repo whose own workflow does the board step, instead of calling `gh project` directly ([dev-env#1386](https://github.com/brownm09/dev-env/issues/1386)).
 
-**Produces:** proposal document at `proposals_dir/`, a GitHub issue in `github_repo`, and a ROADMAP entry. If a `github_project` block is configured, the issue is added to the project and its fields are set.
+**Produces:** proposal document at `proposals_dir/`, a GitHub issue in `github_repo`, and a ROADMAP entry. If a `github_project` block is configured, the issue is added to the project and its fields are set; with `github_project.epic_label`, the repository's own workflow does that from the issue's `epic:<slug>` label.
 
 ---
 
