@@ -31,6 +31,7 @@ Read it. All subsequent steps use these keys from the config object (referred to
 | `milestones` | string[] | Step 4 |
 | `epics` | {name, id}[] | Step 4 |
 | `github_project` | object \| null | Step 8 |
+| `github_project.epic_label` | string, optional | Step 8: when present and non-empty, the Epic is set from an `epic:<slug>` label on the issue rather than by direct `gh project` calls. Its value is a note for readers; only its presence matters. |
 
 Proceed to Step 1.
 
@@ -226,19 +227,36 @@ gh issue create \
   --body "..."
 ```
 
+**If `config.github_project.epic_label` is present and non-empty**, the repo sets the Epic on
+GitHub's side from an `epic:<slug>` label, so the session needs no access to the project board:
+
+- If an epic was chosen in Step 4, add `--label "epic:<slug>"` to the `gh issue create` command
+  above. Derive `<slug>` from the epic's name: lower-case it, replace each `&` with ` and `,
+  replace each run of characters other than `a-z` and `0-9` with one `-`, then strip leading and
+  trailing `-`. For example, `Package & App Scaffolding` → `package-and-app-scaffolding` and
+  `CI/CD Foundation` → `ci-cd-foundation`. Pass exactly one `epic:` label.
+- If no epic was chosen, create the issue without an `epic:` label and tell the user it will be
+  on the board with no Epic set.
+- If `gh issue create` fails because the label doesn't exist in the repo, no issue was created:
+  tell the user which label is missing, and don't create it yourself.
+- Skip the project/epic assignment block below: make no `gh project item-add` or `item-edit`
+  call.
+
 **Only if** a milestone was chosen in Step 4:
 ```bash
 gh issue edit <N> --milestone "<milestone-title>" -R <config.github_repo>
 ```
 
-**Only if** `config.github_project` is non-null **and** `config.github_project.node_id` is non-empty:
+**Only if** `config.github_project` is non-null, `config.github_project.epic_label` is absent or
+empty, **and** `config.github_project.node_id` is non-empty:
 
 Run the project/epic assignment workflow from the project CLAUDE.md (it contains the exact
 field IDs and option IDs for this repo's project):
 1. Add issue to project and capture item ID
 2. Set the Epic field using the option ID for the chosen epic
 
-If `config.github_project` is non-null but `node_id` or `epic_field_id` is empty, skip
+If `config.github_project` is non-null, `epic_label` is absent or empty, and `node_id` or
+`epic_field_id` is empty, skip
 project assignment and tell the user: "GitHub Project field IDs are not yet configured in
 `.claude/propose.json` — fill in `node_id` and `epic_field_id`, then assign the project
 manually."
