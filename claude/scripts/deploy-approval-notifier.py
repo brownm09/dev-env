@@ -372,7 +372,10 @@ def status() -> int:
 
 def test_toast(runner=run, toaster=show_toast) -> int:
     repo = watched_repos()[0]
-    listing, _ = gh_json(runner, f"repos/{repo}/actions/runs?per_page=1")
+    listing, error = gh_json(runner, f"repos/{repo}/actions/runs?per_page=1")
+    if error is not None:
+        print(f"Couldn't list runs for {repo}: {error}")
+        return 1
     latest = (listing or {}).get("workflow_runs") or [] if isinstance(listing, dict) else []
     if not latest:
         print(f"No runs found for {repo}.")
