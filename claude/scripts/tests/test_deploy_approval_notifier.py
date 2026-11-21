@@ -23,7 +23,9 @@ Review opens the run and Approve ends in a "Deploy not approved" toast.
 
 Exit 0 = all pass.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -261,6 +263,17 @@ def test_test_toast_nonce_is_refused():
     assert "doesn't match" in toasts.shown[-1]
 
 
+def test_test_toast_reports_a_gh_failure():
+    _reset()
+    gh, toasts = FakeGh(fail_paths=("per_page=1",)), Toasts()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        _eq(notifier.test_toast(runner=gh, toaster=toasts), 1)
+    assert "HTTP 502" in out.getvalue(), out.getvalue()
+    assert "No runs found" not in out.getvalue(), out.getvalue()
+    _eq(toasts.shown, [], "no toast")
+
+
 def test_approve_github_failure_says_so_and_re_toasts():
     _reset()
     gh, toasts = _notify_one()
@@ -380,7 +393,8 @@ def test_register_script_parses_and_keeps_its_settings():
     text = path.read_text(encoding="utf-8")
     # Code lines, not prose: the comment block mentions --tick and --approve too.
     for needle in ("-RunLevel Limited", "-LogonType Interactive", "-Hidden", "-MultipleInstances IgnoreNew",
-                   "-AtLogOn", "-RepetitionInterval (New-TimeSpan -Minutes 2)",
+                   "-AtLogOn", "-RepetitionInterval (New-TimeSpan -Minutes 2)", "-Priority 4 `",
+                   "$task.Settings.Priority -ne 4",
                    "Get-Command pyw.exe", "$taskArgs = '-3 \"{0}\" --tick' -f $ScriptPath",
                    "-Execute $pyw -Argument $taskArgs", "--approve \"%1\"' -f $pyw, $ScriptPath",
                    "-Name 'URL Protocol'", "Export-ScheduledTask", "& reg.exe export",

@@ -14,7 +14,8 @@
                                     Approve button opens it.
 
     Non-elevated and windowless (ADR-041): Limited run level, Interactive logon, pyw.exe with no
-    console, marked Hidden. Registering again is safe and picks up a new -ScriptPath.
+    console, marked Hidden, at normal priority (4). Registering again is safe and picks up a new
+    -ScriptPath or a changed setting.
 
     Run this from a normal terminal or a scheduled task, not from a Claude desktop session: that
     app's HKCU writes stay private to it, so the URL scheme would never reach Windows.
@@ -136,13 +137,17 @@ Set-ItemProperty -Path "$PsRegPath\shell\open\command" -Name '(default)' -Value 
 $readBack = Get-Handler
 if ($readBack -ne $command) { throw "Wrote the deploy-approve handler but read back '$readBack'." }
 
-# Scheduled task.
+# Scheduled task. Priority 4, not the default 7: Task Scheduler gives 7 low I/O and low memory
+# priority, and under memory pressure that made a tick's gh and PowerShell starts take up to 52 s
+# against 20 s and 30 s timeouts (dev-env #1387). 4 is what a process started from a
+# terminal gets.
 $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+    -Priority 4 `
     -Hidden
 
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $user
@@ -160,6 +165,7 @@ if (-not $task) { throw "Register-ScheduledTask completed but '$TaskName' is mis
 if ($task.Actions[0].Execute -ne $pyw -or $task.Actions[0].Arguments -ne $taskArgs) {
     throw "Registered '$TaskName' but read back '$($task.Actions[0].Execute) $($task.Actions[0].Arguments)'."
 }
+if ($task.Settings.Priority -ne 4) { throw "Registered '$TaskName' but read back priority $($task.Settings.Priority), not 4." }
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "Registered '$TaskName' (at sign-in and every 2 minutes; non-elevated, hidden) and the deploy-approve: URL scheme."
