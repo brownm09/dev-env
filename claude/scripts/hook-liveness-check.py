@@ -36,6 +36,12 @@ full check (settings.json parse + one heartbeat-file read per non-exempt wired
 hook) is real synchronous I/O on the UserPromptSubmit critical path that
 should not repeat on every single prompt in a session.
 
+Machine installs (dev-env#1397): the same "something that should be running isn't" check, for
+the scheduled tasks in claude/machine-installs.json. Once per calendar day per machine (a stamp
+in ~/.claude/scratch), `_machine_installs.daily_nudge()` checks them with schtasks (about 1 s)
+and adds an advisory naming each missing or wrong install and its register command. A failure
+of that check adds nothing: dev-env-doctor.py reports it.
+
 Stdin JSON shape (UserPromptSubmit):
   {
     "hook_event_name": "UserPromptSubmit",
@@ -59,6 +65,7 @@ from pathlib import Path
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
+import _machine_installs  # imports _winsubp: its daily check runs schtasks
 from _settings_sync import iter_hook_entries, py_tokens
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
@@ -245,12 +252,14 @@ def main() -> None:
     _mark_done(session_id)
     now = time.time()
     stale = stale_hooks(hook_events, _hookutil.HEARTBEAT_DIR, now, DEFAULT_CADENCE_DAYS)
-    if not stale:
+    messages = [format_warning(stale, now, DEFAULT_CADENCE_DAYS)] if stale else []
+    installs = _machine_installs.daily_nudge()
+    if installs:
+        messages.append(installs)
+    if not messages:
         sys.exit(0)
 
-    _hookout.emit_advisory(
-        "UserPromptSubmit", format_warning(stale, now, DEFAULT_CADENCE_DAYS), audience="model"
-    )
+    _hookout.emit_advisory("UserPromptSubmit", "\n\n".join(messages), audience="model")
 
 
 if __name__ == "__main__":

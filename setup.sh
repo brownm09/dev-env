@@ -117,16 +117,26 @@ setup_windows() {
 
   set_hooks_path
 
-  # The doctor owns the prerequisite list (py, pyw, gh and its auth, node, git identity, the
-  # credential helper), so setup doesn't keep a second copy that drifts from it.
   echo ""
-  echo "Verifying the install with dev-env-doctor (read-only)..."
   if ! command -v py >/dev/null 2>&1; then
     echo "Could not run the doctor: 'py' is not on PATH. Install Python with the py launcher"
     echo "(python.org, 'Install launcher for all users'), then run:"
     echo "  py -3 ~/.claude/scripts/dev-env-doctor.py"
     exit 1
   fi
+
+  # The scheduled tasks in claude/machine-installs.json (dev-env#1397). Only the missing or
+  # wrong ones are registered, so a second run changes nothing; one that writes HKCU is
+  # printed for you to run outside the Claude desktop app instead. A failure here doesn't stop
+  # setup: the doctor below reports what is still missing.
+  echo "Registering machine-local scheduled tasks..."
+  py -3 "$REPO_DIR/claude/scripts/_machine_installs.py" --install || \
+    echo "  Some installs need attention; the doctor below lists them."
+
+  # The doctor owns the prerequisite list (py, pyw, gh and its auth, node, git identity, the
+  # credential helper), so setup doesn't keep a second copy that drifts from it.
+  echo ""
+  echo "Verifying the install with dev-env-doctor (read-only)..."
   if ! py -3 "$REPO_DIR/claude/scripts/dev-env-doctor.py"; then
     echo ""
     echo "Setup made its changes, but the install isn't healthy yet. Fix the FAIL lines above,"

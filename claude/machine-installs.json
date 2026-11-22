@@ -1,0 +1,43 @@
+{
+  "comment": "Machine-local installs every dev-env machine needs (dev-env#1397). One entry per claude/scripts/register-*.ps1. _machine_installs.py reads this file for dev-env-doctor.py, setup.sh and the daily drift nudge; test_machine_installs.py fails when a register script has no entry. A machine opts out of one with \"skip_installs\": [\"<name>\"] in ~/.claude/machine.json.",
+  "installs": [
+    {
+      "name": "auto-resume",
+      "register": "register-auto-resume.ps1",
+      "tasks": [
+        {"name": "ClaudeAutoResumeLauncher", "script": "auto-resume-launcher.py"}
+      ],
+      "config": "auto-resume.json",
+      "outside_app": false,
+      "why": "reopens sessions a reboot or app crash cut off (ADR-152)"
+    },
+    {
+      "name": "docker-watchdog",
+      "register": "register-docker-watchdog.ps1",
+      "tasks": [
+        {"name": "ClaudeDockerWatchdog", "script": "docker-watchdog.py"},
+        {"name": "ClaudeDockerStart", "script": "docker-watchdog.py"}
+      ],
+      "outside_app": false,
+      "why": "starts Docker Desktop outside the app's process tree and stops it when sessions are done (ADR-158)"
+    },
+    {
+      "name": "window-flash-monitor",
+      "register": "register-window-flash-monitor.ps1",
+      "tasks": [
+        {"name": "ClaudeWindowFlashMonitor", "script": "window-flash-monitor.py"}
+      ],
+      "outside_app": false,
+      "why": "records console-window flashes (ADR-155)"
+    },
+    {
+      "name": "deploy-approval-notifier",
+      "register": "register-deploy-approval-notifier.ps1",
+      "tasks": [
+        {"name": "ClaudeDeployApprovalNotifier", "script": "deploy-approval-notifier.py"}
+      ],
+      "outside_app": true,
+      "why": "shows a toast for each production deploy waiting on your approval (ADR-163)"
+    }
+  ]
+}
