@@ -38,6 +38,16 @@
       ],
       "outside_app": true,
       "why": "shows a toast for each production deploy waiting on your approval (ADR-163)"
+    },
+    {
+      "name": "restart-guard",
+      "register": "register-restart-guard.ps1",
+      "tasks": [
+        {"name": "ClaudeRestartGuard", "script": "restart-guard.py"}
+      ],
+      "config": "restart-guard.json",
+      "outside_app": false,
+      "why": "asks before a restart and defers Windows Update's restart while Claude sessions are working (ADR-165)"
     }
   ]
 }
