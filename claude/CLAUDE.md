@@ -512,7 +512,7 @@ Whenever directing the user to view, test, run, or consume any resource, or nami
 - **Every web resource you mention gets its full URL, visible**: PRs, issues, Drive files, libraries, products, organizations, docs. Write the raw URL, or make the link text the URL; never hide it behind a title, which may not work over Remote Control. [Detail](../docs/REFERENCE.md#detail-user-references)
 - **Give the steps for any work needing the user's hands, even a named follow-up or blocker:** in order, commands in code blocks, each step linking the exact page where they act (not a landing page), with an image where the screen isn't obvious: the job awaiting their deploy approval, not the run list. [Detail](../docs/REFERENCE.md#detail-user-references)
 
-No "see the file" without the path. No "check the PR" or "see the issue" without the URL, in the message and in any question dialog or recap box.
+No "see the file" without the path. No "check the PR" or "see the issue" without the URL, in the message and in any question dialog or recap box. When your own action hands the user a step (an invitation sent, an approval requested), the line reporting it gives the filled-in link, never a `<placeholder>` URL, and the account to act as: the user doesn't see tool output.
 
 **Reopen an application yourself before asking the user to test something in it.** When the session closed it, or had the user close it, launch it and confirm the process and window exist, then ask. The exception is a step needing the user's own hands first, such as a sign-in, or elevation once `sudo` has failed: say exactly what's needed. [Detail](../docs/REFERENCE.md#detail-user-references)
 
