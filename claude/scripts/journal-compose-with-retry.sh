@@ -21,15 +21,32 @@ EJ="C:/Users/brown/Git/engineering-journal"
 # internal operational artifacts (log naming/timestamps), per claude/CLAUDE.md.
 DATE=$(date -d yesterday +%Y-%m-%d)
 
-# "today" below is deliberately the execution day (this maintenance session's own journal
-# entry), not $DATE (the compose target, yesterday) — a distinct, correct concept.
-PROMPT="Run /journal-compose ${DATE}. Merge the result. Create a stub for today."
-
 log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
 }
 
 log "=== journal-compose-with-retry starting (max $MAX_RETRIES attempts) ==="
+
+# Every past day in the lookback whose draft still holds stubs, oldest first: yesterday plus any
+# day a missed run left uncomposed (dev-env#1413, ADR-084 amendment 2026-11-23). $DATE above
+# stays yesterday because only yesterday can still have a live session writing to it, which is
+# all the liveness guard below checks.
+git -C "$EJ" fetch origin --prune --quiet >>"$LOG_FILE" 2>&1 \
+    || log "WARNING: fetch failed; the date list below comes from the last fetch's refs."
+if ! DATES=$(py -3 C:/Users/brown/.claude/scripts/uncomposed-journal-dates.py 2>>"$LOG_FILE"); then
+    log "Could not list uncomposed dates (see the error above). Manual intervention required."
+    exit 1
+fi
+DATES=$(echo $DATES)
+if [ -z "$DATES" ]; then
+    log "No uncomposed days with stubs. Nothing to do."
+    exit 0
+fi
+log "Dates to compose: $DATES"
+
+# "today" below is deliberately the execution day (this maintenance session's own journal
+# entry), not a compose target — a distinct, correct concept.
+PROMPT="Run /journal-compose for each of these dates, one at a time and oldest first, merging each PR before starting the next: ${DATES}. Never pass --force. Create a stub for today."
 
 for attempt in $(seq 1 $MAX_RETRIES); do
     log "Attempt $attempt of $MAX_RETRIES"
