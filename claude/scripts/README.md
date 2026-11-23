@@ -207,7 +207,7 @@ costs the frozen count nothing because the gate counts only those three extensio
 
 | Script | Event / Invocation | Purpose |
 |---|---|---|
-| `switchyard-lane.js` | `node switchyard-lane.js [owner/repo]` | Answers one question: is that repo's Switchyard work-in-progress lane free, so a dispatch would be admitted? Read-only. Evaluates `wipHold()`'s own `OPEN_OR_ORPHAN` predicate over every run's attempts, prints the holders by name when held, and labels `awaitingMerge.perRepo` on its face as the different cap it is. Exits 2 without answering if `switchyard`'s `src/store.ts` no longer contains the predicate it encodes. The readings that look authoritative and aren't are in [`docs/REFERENCE.md`](../../docs/REFERENCE.md#switchyard-lanes-which-readings-dont-answer-is-the-lane-free) ([dev-env#1406](https://github.com/brownm09/dev-env/issues/1406)). |
+| `switchyard-lane.js` | `node switchyard-lane.js [owner/repo]` | Answers one question: is that repo's Switchyard work-in-progress lane free, so a dispatch would be admitted? Read-only. Evaluates `wipHold()`'s own `OPEN_OR_ORPHAN` predicate over every run's attempts, prints the holders by name when held, and labels `awaitingMerge.perRepo` on its face as the different cap it is. Exits 2 without answering if `switchyard`'s `src/store.ts` no longer contains the predicate it encodes, if `src/admission.ts` no longer has the cap groups it reads, or if the argument isn't an `owner/repo`. Guarded by `tests/test_switchyard_lane.py`. The readings that look authoritative and aren't are in [`docs/REFERENCE.md`](../../docs/REFERENCE.md#switchyard-lanes-which-readings-dont-answer-is-the-lane-free) ([dev-env#1406](https://github.com/brownm09/dev-env/issues/1406)). |
 
 ---
 
