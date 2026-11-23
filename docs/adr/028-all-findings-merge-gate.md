@@ -111,3 +111,24 @@ This addendum is recorded in `claude/CLAUDE.md` as a Git Workflow bullet and tra
 [dev-env#319](https://github.com/brownm09/dev-env/issues/319). It complies with the Durable
 Preferences rule ([ADR-038](038-durable-preferences-documented-in-repo.md)): the preference is
 now documented in version control, not only in agent memory.
+
+---
+
+## Amendment (2026-11-23) — no `/compact` pause before `/review`
+
+The post-PR sequence this ADR's rule sits in (from [dev-env#92](https://github.com/brownm09/dev-env/issues/92))
+read "report the PR URL, prompt `/compact`, and after compaction run `/review`". Sessions took
+"prompt `/compact`" as an instruction to stop and ask the user whether to compact, so every PR's
+review waited on a reply. The user asked for that to stop: "Don't stop working to ask me if I want
+to compact before reviewing."
+
+The rule now reads: report the PR URL and run `/review` at once, with no `/compact` pause.
+Context size is handled by automatic compaction at about 400k tokens (`autoCompactWindow`,
+[ADR-156](156-compact-early-and-default-subagents-to-sonnet.md)), and the user can still run
+`/compact` by hand, after which `post-compact.py` reminds the session about each open PR's review.
+
+**Rejected:** keep suggesting `/compact` in the report but carry on to `/review` without waiting.
+The suggestion is noise when the session keeps working anyway, and it invites the same stall.
+
+The sequence `gh pr create → stub → /compact → /review` quoted in ADR-031 and ADR-083 is superseded
+by this amendment. Tracked in [dev-env#1405](https://github.com/brownm09/dev-env/issues/1405).
