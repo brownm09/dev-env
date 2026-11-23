@@ -26,10 +26,13 @@
     override only to test an unmerged worktree.
 
 .PARAMETER Unregister
-    Undo: put the captured active hours back (restart-guard.py --restore), back up the task
-    definition to Documents\LOGS\ClaudeRestartGuardBackup.xml (write-if-absent, ADR-079), remove the
-    task and stop the guard, and set "enabled": false in ~/.claude/restart-guard.json. Re-run without
-    switches to turn it back on; the config keeps your settings.
+    Undo: back up the task definition to %USERPROFILE%\Documents\LOGS\ClaudeRestartGuardBackup.xml
+    (write-if-absent, ADR-079), stop the guard and wait for it to exit, end any deferral
+    (restart-guard.py --restore), remove the task, and set "enabled": false in
+    ~/.claude/restart-guard.json. If the guard won't stop, or an active-hours backup exists and the
+    restore can't run or fails, it throws and leaves the task registered. Re-run without switches to
+    turn it back on; the config keeps your settings. Needs py.exe only when there is a backup to
+    restore, and never pyw.exe.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File register-restart-guard.ps1
@@ -47,7 +50,10 @@ $ErrorActionPreference = 'Stop'
 $TaskName = 'ClaudeRestartGuard'
 $ConfigPath = Join-Path $env:USERPROFILE '.claude\restart-guard.json'
 $LogsDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'LOGS'
-$BackupPath = Join-Path $LogsDir 'ClaudeRestartGuardBackup.xml'
+# Backups sit at a fixed path, so moving Documents can't hide them (the same path restart-guard.py uses).
+$AnchorDir = Join-Path $env:USERPROFILE 'Documents\LOGS'
+$BackupPath = Join-Path $AnchorDir 'ClaudeRestartGuardBackup.xml'
+$ActiveHoursBackup = Join-Path $AnchorDir 'ClaudeRestartGuardActiveHoursBackup.json'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Set-ConfigEnabled([bool]$Enabled) {
@@ -60,21 +66,22 @@ function Set-ConfigEnabled([bool]$Enabled) {
     Write-Host "Set enabled=$Enabled in $ConfigPath."
 }
 
-$launcher = Get-Command pyw.exe -ErrorAction SilentlyContinue
-if (-not $launcher) { throw "pyw.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
-$pyw = $launcher.Source
+function Stop-Guard {
+    # Stop-ScheduledTask returns before the process has exited, so wait for the task to leave Running.
+    Stop-ScheduledTask -TaskName $TaskName
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-ScheduledTask -TaskName $TaskName).State -eq 'Running' -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    return (Get-ScheduledTask -TaskName $TaskName).State -ne 'Running'
+}
 
 if ($Unregister) {
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($py -and (Test-Path $ScriptPath)) {
-        & $py.Source -3 $ScriptPath --restore
-        if ($LASTEXITCODE -ne 0) { throw "restart-guard.py --restore failed (exit $LASTEXITCODE); leaving the task in place." }
-    }
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($task) {
         # Back up before mutating (ADR-079); write-if-absent so the first capture survives.
         if (-not ((Test-Path $BackupPath) -and (Get-Item $BackupPath).Length -gt 0)) {
-            if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null }
+            if (-not (Test-Path $AnchorDir)) { New-Item -ItemType Directory -Path $AnchorDir -Force | Out-Null }
             try {
                 Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop |
                     Out-File -FilePath $BackupPath -Encoding unicode -ErrorAction Stop  # the export declares UTF-16
@@ -82,7 +89,20 @@ if ($Unregister) {
                 throw "Failed to back up '$TaskName' to $BackupPath -- refusing to remove it without a restorable backup (ADR-079). $_"
             }
         }
-        Stop-ScheduledTask -TaskName $TaskName
+        # Stop the guard before restoring: a running guard would move active hours again.
+        if (-not (Stop-Guard)) { throw "'$TaskName' is still running 15 s after Stop-ScheduledTask; leaving it in place. Run -Unregister again." }
+    }
+    # End any deferral. The restore is required whenever the guard has left a backup behind.
+    if (Test-Path $ActiveHoursBackup) {
+        $py = Get-Command py.exe -ErrorAction SilentlyContinue
+        if (-not $py) { throw "py.exe isn't on PATH, so active hours can't be restored from $ActiveHoursBackup; leaving the task in place." }
+        if (-not (Test-Path $ScriptPath)) { throw "Guard not found at $ScriptPath, so active hours can't be restored; leaving the task in place." }
+        & $py.Source -3 $ScriptPath --restore
+        if ($LASTEXITCODE -ne 0) { throw "restart-guard.py --restore failed (exit $LASTEXITCODE); leaving the task in place (it restarts within 5 minutes)." }
+    } else {
+        Write-Host "No active-hours backup at $ActiveHoursBackup: the guard never changed active hours."
+    }
+    if ($task) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
         if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
             throw "Unregister-ScheduledTask completed but '$TaskName' is still present at read-back."
@@ -94,6 +114,10 @@ if ($Unregister) {
     Set-ConfigEnabled $false
     return
 }
+
+$launcher = Get-Command pyw.exe -ErrorAction SilentlyContinue
+if (-not $launcher) { throw "pyw.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
+$pyw = $launcher.Source
 
 if (-not (Test-Path $ScriptPath)) { throw "Guard not found at $ScriptPath. Pull dev-env main first." }
 
@@ -108,12 +132,8 @@ if (Test-Path $ConfigPath) {
 
 # A running guard would otherwise keep its old code: IgnoreNew drops the start below.
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $TaskName
-    # The stop returns before the task has stopped, and a start in that window is dropped too.
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-ScheduledTask -TaskName $TaskName).State -eq 'Running' -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 250
-    }
+    # A start while the old guard is still stopping is dropped too.
+    if (-not (Stop-Guard)) { Write-Warning "The old guard is still running 15 s after Stop-ScheduledTask; it keeps running the old code until it exits." }
 }
 
 $action = New-ScheduledTaskAction -Execute $pyw -Argument ('-3 "{0}"' -f $ScriptPath)
@@ -137,6 +157,13 @@ if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) 
     throw "Register-ScheduledTask completed but '$TaskName' is missing at read-back."
 }
 Start-ScheduledTask -TaskName $TaskName
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Running' -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 250
+}
+if ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Running') {
+    Write-Warning "Registered '$TaskName', but it isn't running 10 s after the start. Check Documents\LOGS\claude-restart-guard_<date>.jsonl for a start_error or already_running line."
+}
 Write-Host "Registered and started scheduled task '$TaskName' (at sign-in and every 5 minutes if it has stopped; non-elevated, hidden)."
 Write-Host "Guard:  $ScriptPath"
 Write-Host "Status: py -3 `"$ScriptPath`" --status"
