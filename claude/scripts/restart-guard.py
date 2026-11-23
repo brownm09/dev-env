@@ -5,8 +5,10 @@ Purpose: a long-running hidden-task process that asks for confirmation before a 
 and defers Windows Update's automatic restart while any Claude session is busy.
 
 Run by the ClaudeRestartGuard scheduled task (register-restart-guard.ps1), at sign-in, non-elevated,
-outside the Claude app's process tree. Every 30 s it asks `_busy_sessions.Detector` which sessions are
-busy: a turn in progress, or a background task still running. A named mutex keeps it to one copy.
+outside the Claude app's process tree. Every 30 s, on a worker thread, it asks `_busy_sessions.Detector`
+which sessions are busy: a turn in progress, or a background task still running. The window's thread
+does no file or registry work, so a slow disk can delay a poll but never the window's answer to
+Windows. A named mutex keeps it to one copy.
 
 Layer 1, a restart you start. The process owns a small top-level window, visible but placed off-screen
 with no taskbar button, because Windows lets only an application with a visible window cancel a
@@ -65,6 +67,7 @@ import datetime as dt
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -376,7 +379,7 @@ def update_active_hours(
 
 # ------------------------------------------------------------------ Layer 1: the window
 
-WM_DESTROY, WM_QUERYENDSESSION, WM_ENDSESSION, WM_TIMER = 0x0002, 0x0011, 0x0016, 0x0113
+WM_DESTROY, WM_QUERYENDSESSION, WM_ENDSESSION, WM_APP_POLLED = 0x0002, 0x0011, 0x0016, 0x8001
 ENDSESSION_CLOSEAPP, ENDSESSION_CRITICAL = 0x00000001, 0x40000000
 ERROR_ALREADY_EXISTS = 183
 
@@ -478,7 +481,20 @@ class Guard:
         if result != self.layer2:
             log("active_hours", result=result)
             self.layer2 = result
-        self._set_reason()
+
+    def _poll_loop(self) -> None:
+        """The worker thread: poll, then ask the window thread to update the block reason, which only
+        the thread that created the window may set. A slow disk delays the next answer, never the
+        window's reply to Windows."""
+        while True:
+            try:
+                self.poll()
+            except Exception as exc:  # noqa: BLE001 -- the guard must keep polling
+                self.log("poll_error", detail=f"{type(exc).__name__}: {exc}")
+            else:
+                self._recovered("poll_error")
+            self.user32.PostMessageW(self.hwnd, WM_APP_POLLED, 0, 0)
+            self._stop.wait(POLL_SECONDS)
 
     def _set_reason(self) -> None:
         if self.hwnd is None or self.user32 is None:
@@ -541,15 +557,15 @@ class Guard:
         user32.ShutdownBlockReasonCreate.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
         user32.ShutdownBlockReasonDestroy.restype = wintypes.BOOL
         user32.ShutdownBlockReasonDestroy.argtypes = [wintypes.HWND]
-        user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+        user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         self.user32 = user32
 
         def wndproc(hwnd, msg, wparam, lparam):
             try:
                 if msg == WM_QUERYENDSESSION:
                     return 1 if self.on_query_end_session(int(lparam) & 0xFFFFFFFF) else 0
-                if msg == WM_TIMER:
-                    self.poll()
+                if msg == WM_APP_POLLED:
+                    self._set_reason()
                     return 0
                 if msg == WM_ENDSESSION:
                     closeapp = bool(int(lparam) & ENDSESSION_CLOSEAPP)
@@ -582,8 +598,8 @@ class Guard:
             log("start_error", detail=f"CreateWindowExW failed: {ctypes.get_last_error()}")
             return 1
         log("start", pid=os.getpid(), config=self.cfg)
-        self.poll()
-        user32.SetTimer(self.hwnd, 1, POLL_SECONDS * 1000, None)
+        self._stop = threading.Event()
+        threading.Thread(target=self._poll_loop, name="poll", daemon=True).start()
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -625,7 +641,8 @@ def status() -> int:
 
 
 def restore_command(running: Callable[[], bool] = guard_running, hours: ActiveHours | None = None,
-                    anchor_path: Path = ANCHOR_PATH, state_path: Path = STATE_PATH) -> int:
+                    anchor_path: Path = ANCHOR_PATH, state_path: Path = STATE_PATH,
+                    logf: Callable[..., None] = log) -> int:
     if running():
         print("ERROR: the guard is running and would defer again within 30 s. Stop it first: "
               "Stop-ScheduledTask ClaudeRestartGuard (register-restart-guard.ps1 -Unregister does this).",
@@ -638,7 +655,7 @@ def restore_command(running: Callable[[], bool] = guard_running, hours: ActiveHo
                   + ".")
             write_since(None, state_path)
             return 0
-        result = finish_deferral(hours or ActiveHours(), anchor, anchor_path, log)
+        result = finish_deferral(hours or ActiveHours(), anchor, anchor_path, logf)
     except (AnchorError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

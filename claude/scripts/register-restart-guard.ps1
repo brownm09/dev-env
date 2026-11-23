@@ -100,7 +100,7 @@ if ($Unregister) {
         & $py.Source -3 $ScriptPath --restore
         if ($LASTEXITCODE -ne 0) { throw "restart-guard.py --restore failed (exit $LASTEXITCODE); leaving the task in place (it restarts within 5 minutes)." }
     } else {
-        Write-Host "No active-hours backup at $ActiveHoursBackup: the guard never changed active hours."
+        Write-Host "No active-hours backup at ${ActiveHoursBackup}: the guard never changed active hours."
     }
     if ($task) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -143,19 +143,25 @@ $daily.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInter
     -RepetitionDuration (New-TimeSpan -Hours 24)).Repetition
 $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
     -LogonType Interactive -RunLevel Limited
+# Priority 4, not the default 7, which also gives low I/O and memory priority. Under memory
+# pressure (312 MB free) a priority-7 guard took 3 minutes to import ctypes and never finished a
+# poll, the same starvation as dev-env #1387. 4 is what a process started from a terminal gets.
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -Priority 4 `
     -Hidden
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $daily) `
     -Principal $principal -Settings $settings -Force `
     -Description "Asks before a restart and defers Windows Update's restart while Claude sessions are working. dev-env #1398 / ADR-165." | Out-Null
 
-if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $task) {
     throw "Register-ScheduledTask completed but '$TaskName' is missing at read-back."
 }
+if ($task.Settings.Priority -ne 4) { throw "Registered '$TaskName' but read back priority $($task.Settings.Priority), not 4." }
 Start-ScheduledTask -TaskName $TaskName
 $deadline = (Get-Date).AddSeconds(10)
 while ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Running' -and (Get-Date) -lt $deadline) {

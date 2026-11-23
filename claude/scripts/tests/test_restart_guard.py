@@ -34,6 +34,19 @@ rg = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rg)
 
 TS = "2026-11-22T16:13:42.762Z"
+_REAL_LOG = rg.log
+
+
+def _no_real_log(event, *args, **fields):
+    raise AssertionError(f"a test reached the real log in Documents\\LOGS ({event}); pass a logf or patch rg.log")
+
+
+def setUpModule():
+    rg.log = _no_real_log
+
+
+def tearDownModule():
+    rg.log = _REAL_LOG
 
 
 def _asst(blocks, stop="tool_use", uuid="a1"):
@@ -391,7 +404,7 @@ class TestRestoreCommand(unittest.TestCase):
         self.hours = FakeHours()
 
     def run_restore(self, running=False):
-        return rg.restore_command(lambda: running, self.hours, self.anchor, self.state)
+        return rg.restore_command(lambda: running, self.hours, self.anchor, self.state, lambda *a, **k: None)
 
     def defer(self):
         rg.update_active_hours(True, {**rg.DEFAULTS, "deferUpdates": True}, self.hours, self.anchor,
@@ -520,7 +533,7 @@ class TestRegisterScript(unittest.TestCase):
     def test_registration_settings(self):
         for needle in ("-RunLevel Limited", "-Hidden", "-MultipleInstances IgnoreNew",
                        "ExecutionTimeLimit ([TimeSpan]::Zero)", "block = $false", "deferUpdates = $false",
-                       "-Encoding unicode", "UTF8Encoding($false)"):
+                       "-Encoding unicode", "UTF8Encoding($false)", "-Priority 4"):
             self.assertIn(needle, self.TEXT)
         self.assertNotIn("RunAs", self.TEXT)
 
