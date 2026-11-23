@@ -15,9 +15,9 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 CLAUDE_MD = os.path.join(REPO, "claude", "CLAUDE.md")
 REFERENCE = os.path.join(REPO, "docs", "REFERENCE.md")
 
-# One entry per capped instruction file. Each ceiling is 4-5% above the file's size after its
-# trim, and each known-bad size is the file before that trim: when the issue was filed, and when
-# the trim landed.
+# One entry per capped instruction file. Each ceiling started 4-5% above the file's size after its
+# trim, and later raises are noted on the entry. Each known-bad size is the file before that trim:
+# when the issue was filed, and when the trim landed.
 CAPPED_FILES = (
     {
         "name": "claude/CLAUDE.md",
