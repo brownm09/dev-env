@@ -31,7 +31,8 @@ log "=== journal-compose-with-retry starting (max $MAX_RETRIES attempts) ==="
 # day a missed run left uncomposed (dev-env#1413, ADR-084 amendment 2026-11-23). $DATE above
 # stays yesterday because only yesterday can still have a live session writing to it, which is
 # all the liveness guard below checks.
-git -C "$EJ" fetch origin --prune --quiet
+git -C "$EJ" fetch origin --prune --quiet >>"$LOG_FILE" 2>&1 \
+    || log "WARNING: fetch failed; the date list below comes from the last fetch's refs."
 if ! DATES=$(py -3 C:/Users/brown/.claude/scripts/uncomposed-journal-dates.py 2>>"$LOG_FILE"); then
     log "Could not list uncomposed dates (see the error above). Manual intervention required."
     exit 1

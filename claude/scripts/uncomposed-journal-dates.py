@@ -6,8 +6,9 @@ Purpose: date selection for the nightly journal compose, so a missed run is caug
 The nightly compose used to target only yesterday (ADR-084), so a run missed while the
 routine host was off was never retried (dev-env#1413, #875). This lists every date D with
 today - LOOKBACK_DAYS <= D < today whose remote draft/<D> still holds a date-matching stub,
-sessions/<project>/<D>_HHMMSS.stub.md. /journal-compose deletes the stubs it composes, so a
-composed day drops out, and it skips any project already composed for that date.
+sessions/<project>/<D>_HHMMSS.stub.md for a project with no composed journal for D on
+origin/main. /journal-compose deletes the stubs it composes, so a composed day drops out; the
+origin/main check also drops a draft branch that outlived its compose.
 
 Today is never listed: /journal-compose's today-guard (ADR-017) would refuse it.
 
@@ -38,10 +39,31 @@ def stub_re(d: str) -> re.Pattern:
     return re.compile(rf"^sessions/[^/]+/{re.escape(d)}_\d{{6}}\.stub\.md$")
 
 
-def select_dates(drafts: dict[str, list[str]], today: date, lookback: int = LOOKBACK_DAYS) -> list[str]:
+def composed_pairs(main_paths: list[str]) -> set[tuple[str, str]]:
+    """(project, YYYY-MM-DD) pairs with a composed journal on main: a non-stub .md directly in
+    sessions/<project>/, the same rule as composed_project_dates_on_main() in
+    new-day-journal-check.py (a report or retro in a subdirectory doesn't count, dev-env#1209)."""
+    pairs = set()
+    for p in main_paths:
+        parts = p.split("/")
+        if len(parts) != 3 or parts[0] != "sessions":
+            continue
+        fname = parts[2]
+        if fname.endswith(".stub.md") or not fname.endswith(".md"):
+            continue
+        if len(fname) >= 10 and fname[4] == "-" and fname[7] == "-":
+            pairs.add((parts[1], fname[:10]))
+    return pairs
+
+
+def select_dates(drafts: dict[str, list[str]], composed: set[tuple[str, str]], today: date,
+                 lookback: int = LOOKBACK_DAYS) -> list[str]:
     """Return the draft dates to compose, oldest first.
 
-    drafts maps each draft date (YYYY-MM-DD) to the paths on its branch.
+    drafts maps each draft date (YYYY-MM-DD) to the paths on its branch. A date counts only
+    if some stub's project has no composed journal for it yet: a draft branch can outlive its
+    compose (the compose/<D> conflict route), and relisting it would re-run the compose every
+    night for nothing.
     """
     earliest = today - timedelta(days=lookback)
     out = []
@@ -53,7 +75,7 @@ def select_dates(drafts: dict[str, list[str]], today: date, lookback: int = LOOK
         if not (earliest <= day < today):
             continue
         pattern = stub_re(d)
-        if any(pattern.match(p) for p in paths):
+        if any(pattern.match(p) and (p.split("/")[1], d) not in composed for p in paths):
             out.append(d)
     return sorted(out)
 
@@ -82,10 +104,12 @@ def main() -> int:
             if not (earliest <= day < today):
                 continue  # skip the ls-tree for drafts select_dates would drop anyway
             drafts[m.group(1)] = git("ls-tree", "-r", "--name-only", ref, "--", "sessions/").splitlines()
+        composed = composed_pairs(
+            git("ls-tree", "-r", "--name-only", "origin/main", "--", "sessions/").splitlines())
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"uncomposed-journal-dates: git failed: {exc}", file=sys.stderr)
         return 2
-    for d in select_dates(drafts, today):
+    for d in select_dates(drafts, composed, today):
         print(d)
     return 0
 

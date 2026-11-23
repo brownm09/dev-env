@@ -66,17 +66,43 @@ CASES = [
      []),
 ]
 
+# (name, drafts, composed journal paths on origin/main, want): a draft branch that outlived
+# its compose (the compose/<D> conflict route) must not be relisted every night.
+MAIN_CASES = [
+    ("a leftover draft whose only project is composed is excluded",
+     {"2026-11-18": [stub("dev-env", "2026-11-18")]},
+     ["sessions/dev-env/2026-11-18-routine-runs.md"],
+     []),
+    ("a partly composed day is listed for the project still uncomposed",
+     {"2026-11-18": [stub("dev-env", "2026-11-18"), stub("career-playbook", "2026-11-18")]},
+     ["sessions/dev-env/2026-11-18-routine-runs.md"],
+     ["2026-11-18"]),
+    ("a report on main does not count as a composed journal",
+     {"2026-11-18": [stub("dev-env", "2026-11-18")]},
+     ["sessions/dev-env/reports/2026-11-18-audit.md"],
+     ["2026-11-18"]),
+    ("a stub left on main does not count as a composed journal",
+     {"2026-11-18": [stub("dev-env", "2026-11-18")]},
+     [stub("dev-env", "2026-11-18")],
+     ["2026-11-18"]),
+    ("another project's composed journal does not exclude this one",
+     {"2026-11-18": [stub("dev-env", "2026-11-18")]},
+     ["sessions/meta/2026-11-18-meta-triggers.md"],
+     ["2026-11-18"]),
+]
+
 
 def main() -> int:
     failed = 0
-    for name, drafts, want in CASES:
-        got = ujd.select_dates(drafts, TODAY)
+    runs = [(n, d, [], w) for n, d, w in CASES] + MAIN_CASES
+    for name, drafts, main_paths, want in runs:
+        got = ujd.select_dates(drafts, ujd.composed_pairs(main_paths), TODAY)
         if got != want:
             failed += 1
             print(f"FAIL {name}: got {got}, want {want}")
         else:
             print(f"ok   {name}")
-    print(f"Tests: {len(CASES) - failed} passed, 0 skipped, {failed} failed")
+    print(f"Tests: {len(runs) - failed} passed, 0 skipped, {failed} failed")
     return 1 if failed else 0
 
 
