@@ -5,15 +5,18 @@ Required when changing `_machine_installs.py`, `claude/machine-installs.json`, o
 Run: py -3 claude/scripts/tests/test_machine_installs.py
 
 The parity test reads the real manifest and the real register-*.ps1 glob, so a new installer
-with no manifest entry fails here. Everything else runs on fixtures: task XML strings, a fake
-`subprocess.run`, temp config files and a temp nudge stamp. Nothing queries or changes this
+with no manifest entry fails here. Everything else runs on fixtures: the query's JSON output, a
+fake `subprocess.run`, temp config files and a temp nudge stamp. Nothing queries or changes this
 machine's scheduled tasks.
 
-Scope gap: `--install` (which runs the register scripts) and the real schtasks output on another
-Windows language are not covered; run `py -3 claude/scripts/_machine_installs.py` on the machine.
+Scope gap: `--install` (which runs the register scripts) and the PowerShell query itself are not
+covered here; run `py -3 claude/scripts/_machine_installs.py` on the machine. The query was checked
+on LETHEON on 2026-11-22 against a throwaway task with a non-ASCII path, a disabled task and a
+missing name containing a quote.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,22 +29,17 @@ sys.path.insert(0, str(SCRIPTS))
 import _machine_installs as mi  # noqa: E402
 
 MANIFEST = SCRIPTS.parent / "machine-installs.json"
-
-TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Settings>{settings}<Hidden>true</Hidden></Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>C:\\Python\\Launcher\\pyw.exe</Command>
-      <Arguments>{arguments}</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"""
+ACCESS_DENIED = -2147024891  # 0x80070005
 
 
-def task_xml(arguments: str, enabled: bool = True) -> str:
-    return TASK_XML.format(arguments=arguments, settings="" if enabled else "<Enabled>false</Enabled>")
+def temp_dir(test: unittest.TestCase) -> Path:
+    d = Path(tempfile.mkdtemp())
+    test.addCleanup(shutil.rmtree, d, ignore_errors=True)
+    return d
+
+
+def row(name: str, arguments: str = r'-3 "C:\x\a.py"', enabled: bool = True) -> dict:
+    return {"name": name, "found": True, "enabled": enabled, "command": "pyw.exe", "arguments": arguments}
 
 
 ENTRY = {
@@ -83,13 +81,13 @@ class TestManifestParity(unittest.TestCase):
 
 class TestLoadManifest(unittest.TestCase):
     def _write(self, text: str) -> Path:
-        path = Path(tempfile.mkdtemp()) / "m.json"
+        path = temp_dir(self) / "m.json"
         path.write_text(text, encoding="utf-8")
         return path
 
     def test_unreadable_empty_and_malformed_raise(self):
         cases = {
-            "missing file": Path(tempfile.mkdtemp()) / "absent.json",
+            "missing file": temp_dir(self) / "absent.json",
             "invalid JSON": self._write("{"),
             "no installs": self._write('{"installs": []}'),
             "entry with no tasks": self._write('{"installs": [{"name": "x", "register": "r.ps1", "tasks": []}]}'),
@@ -100,39 +98,67 @@ class TestLoadManifest(unittest.TestCase):
                 mi.load_manifest(path)
 
 
-class TestTaskXml(unittest.TestCase):
-    def test_reads_action_and_enabled(self):
-        info = mi.parse_task_xml(task_xml(r'-3 "C:\x\a.py" --tick'))
-        self.assertEqual(info, mi.TaskInfo(True, r"C:\Python\Launcher\pyw.exe", r'-3 "C:\x\a.py" --tick'))
+class TestParseQueryOutput(unittest.TestCase):
+    def parse(self, rows, names=("T",)):
+        return mi.parse_query_output(list(names), json.dumps(rows))
 
-    def test_disabled(self):
-        self.assertFalse(mi.parse_task_xml(task_xml("a.py", enabled=False)).enabled)
+    def test_found_with_action_and_enabled(self):
+        state = self.parse([row("T", r'-3 "C:\x\a.py" --tick', enabled=False)])["T"]
+        self.assertEqual(state, mi.TaskState(True, mi.TaskInfo(False, "pyw.exe", r'-3 "C:\x\a.py" --tick'), ""))
 
-    def test_not_task_xml(self):
-        self.assertIsNone(mi.parse_task_xml("ERROR: nope"))
-        self.assertIsNone(mi.parse_task_xml('<Task xmlns="x"><Actions/></Task>'))
+    def test_only_not_found_is_missing(self):
+        missing = self.parse([{"name": "T", "found": False, "hresult": mi.TASK_NOT_FOUND, "error": "The system cannot find the file specified."}])["T"]
+        self.assertIs(missing.found, False)
+        denied = self.parse([{"name": "T", "found": False, "hresult": ACCESS_DENIED, "error": "Access is denied."}])["T"]
+        self.assertIsNone(denied.found, "a task that can't be read is unknown, never missing")
+        self.assertIn("0x80070005", denied.detail)
+
+    def test_no_program_unanswered_and_garbage_are_unknown(self):
+        self.assertIsNone(self.parse([dict(row("T"), command="")])["T"].found)
+        self.assertIsNone(self.parse([row("Other")])["T"].found)
+        self.assertIsNone(mi.parse_query_output(["T"], "Get-ScheduledTask : error")["T"].found)
+        self.assertIsNone(mi.parse_query_output(["T"], '{"name": "T"}')["T"].found)
+
+    def test_escaped_non_ascii_round_trips(self):
+        # The query escapes non-ASCII to \uXXXX; schtasks turned this em dash into "-".
+        text = '[{"name":"T","found":true,"enabled":true,"command":"pyw.exe","arguments":"C:\\\\Ren\\u00e9\\u2014\\\\a.py"}]'
+        self.assertEqual(mi.parse_query_output(["T"], text)["T"].info.arguments, "C:\\Ren\u00e9\u2014\\a.py")
 
 
-class TestQueryTask(unittest.TestCase):
-    def test_found_missing_and_unknown(self):
-        def ok(args, **_):
-            return subprocess.CompletedProcess(args, 0, task_xml("a.py").encode(), b"")
+class TestQueryTasks(unittest.TestCase):
+    def test_one_run_for_every_name(self):
+        seen = []
 
-        def missing(args, **_):
-            return subprocess.CompletedProcess(args, 1, b"", b"ERROR: The system cannot find the file specified.\r\n")
+        def run(args, **kwargs):
+            seen.append((args, kwargs["timeout"]))
+            return subprocess.CompletedProcess(args, 0, json.dumps([row("A"), row("B")]).encode(), b"")
+
+        states = mi.query_tasks(["A", "B", "A"], run)
+        self.assertEqual(len(seen), 1, "one PowerShell run, so the check has one timeout")
+        self.assertLess(seen[0][1], 30, "below hook-liveness-check.py's 30 s timeout")
+        self.assertIn("'A', 'B'", seen[0][0][-1])
+        self.assertTrue(states["A"].found and states["B"].found)
+
+    def test_names_are_quoted_for_powershell(self):
+        self.assertIn("'it''s'", mi.query_script(["it's"]))
+
+    def test_a_failed_run_makes_every_task_unknown(self):
+        def failing(args, **_):
+            return subprocess.CompletedProcess(args, 1, b"", b"New-Object : Retrieving the COM class factory failed\r\n")
 
         def broken(*a, **k):
-            raise OSError("no schtasks")
+            raise OSError("no powershell")
 
         def slow(*a, **k):
-            raise subprocess.TimeoutExpired("schtasks", 10)
+            raise subprocess.TimeoutExpired("powershell", 20)
 
-        self.assertTrue(mi.query_task("T", ok).found)
-        state = mi.query_task("T", missing)
-        self.assertIs(state.found, False)
-        self.assertIn("cannot find", state.detail)
-        self.assertIsNone(mi.query_task("T", broken).found)
-        self.assertIsNone(mi.query_task("T", slow).found)
+        for run in (failing, broken, slow):
+            with self.subTest(run.__name__):
+                states = mi.query_tasks(["A", "B"], run)
+                self.assertEqual({s.found for s in states.values()}, {None})
+
+    def test_no_names_runs_nothing(self):
+        self.assertEqual(mi.query_tasks([], lambda *a, **k: self.fail("ran")), {})
 
 
 class TestScriptPaths(unittest.TestCase):
@@ -170,20 +196,29 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(f.status, mi.PROBLEM)
         self.assertIn("disabled", f.detail)
 
-    def test_config_missing_off_or_unreadable_is_a_problem(self):
+    def test_config_missing_or_unreadable_is_a_problem(self):
         good = found(str(SCRIPTS_DIR / "auto-resume-launcher.py"))
-        for cstate, words in (("missing", "is missing"), ("off", '"enabled": false'), ("unreadable", "not readable")):
+        for cstate, words in (("missing", "is missing"), ("unreadable", "not readable")):
             with self.subTest(cstate):
                 f = self._one(good, config=cstate)
                 self.assertEqual(f.status, mi.PROBLEM)
                 self.assertIn(words, f.detail)
+
+    def test_config_turned_off_is_a_deliberate_skip(self):
+        # register-auto-resume.ps1 -Unregister removes the task and sets "enabled": false.
+        # --install must not undo that by re-running the register script.
+        f = self._one(mi.TaskState(False, None, "not registered"), config="off")
+        self.assertEqual(f.status, mi.SKIPPED)
+        self.assertEqual(f.fix, "")
+        self.assertIn('"enabled": false', f.detail)
+        self.assertIn(str(SCRIPTS_DIR / "register-auto-resume.ps1"), f.detail)
 
     def test_skipped_install_is_not_checked(self):
         f = self._one(mi.TaskState(False, None, "not registered"), skips={"auto-resume"})
         self.assertEqual(f.status, mi.SKIPPED)
 
     def test_unreadable_task_is_unknown_not_missing(self):
-        f = self._one(mi.TaskState(None, None, "schtasks could not run: OSError"))
+        f = self._one(mi.TaskState(None, None, "the Task Scheduler query failed: OSError"))
         self.assertEqual(f.status, mi.UNKNOWN)
 
     def test_outside_app_fix_says_where_to_run_it(self):
@@ -191,9 +226,25 @@ class TestEvaluate(unittest.TestCase):
         self.assertIn("not a Claude desktop session", f.fix)
 
 
+class TestCheck(unittest.TestCase):
+    def test_reads_skips_and_configs_from_home_and_queries_only_what_it_checks(self):
+        home = temp_dir(self)
+        (home / "machine.json").write_text('{"skip_installs": ["deploy-approval-notifier"]}', encoding="utf-8")
+        (home / "auto-resume.json").write_text('{"enabled": true}', encoding="utf-8")
+        asked = []
+
+        def query(names):
+            asked.extend(names)
+            return {"ClaudeAutoResumeLauncher": found(str(home / "scripts" / "auto-resume-launcher.py"))}
+
+        findings = {f.name: f.status for f in mi.check([ENTRY, OUTSIDE], query, home)}
+        self.assertEqual(findings, {"auto-resume": mi.OK, "deploy-approval-notifier": mi.SKIPPED})
+        self.assertEqual(asked, ["ClaudeAutoResumeLauncher"], "a skipped install's tasks are not queried")
+
+
 class TestConfigAndSkips(unittest.TestCase):
     def test_config_state(self):
-        d = Path(tempfile.mkdtemp())
+        d = temp_dir(self)
         (d / "on.json").write_text('{"enabled": true}', encoding="utf-8")
         (d / "off.json").write_text('{"enabled": false}', encoding="utf-8")
         (d / "bad.json").write_text("{", encoding="utf-8")
@@ -214,7 +265,7 @@ class TestDailyNudge(unittest.TestCase):
     PROBLEM = [mi.Finding(mi.PROBLEM, "auto-resume", "ClaudeAutoResumeLauncher is not registered", "powershell -File x.ps1")]
 
     def setUp(self):
-        home = Path(tempfile.mkdtemp())
+        home = temp_dir(self)
         self.stamp = home / "stamp.txt"
         self.scripts = home / "scripts"
         self.scripts.mkdir()

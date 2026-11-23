@@ -65,7 +65,6 @@ from pathlib import Path
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
-import _machine_installs  # imports _winsubp: its daily check runs schtasks
 from _settings_sync import iter_hook_entries, py_tokens
 
 # Reads the TRACKED source (claude/settings.shared.json), not the live machine-local
@@ -200,6 +199,25 @@ def format_self_check_failure(reason: str, hook_count: int) -> str:
     )
 
 
+def machine_install_nudge(data: dict) -> str:
+    """The once-a-day machine-installs advisory (dev-env#1397), or "". A scheduled routine's
+    session (an automated `<tag>` prompt, or a headless `sdk-` entrypoint) neither sees it nor
+    uses up the day's: on the routine host one often runs before anyone opens a session."""
+    prompt = data.get("prompt", "") if isinstance(data, dict) else ""
+    if _hookutil.AUTOMATED_PROMPT.match(prompt or ""):
+        return ""
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk-"):
+        return ""
+    import _machine_installs  # here, not at the top: most prompts never get this far
+
+    return _machine_installs.daily_nudge()
+
+
+def advisory_text(stale_warning: str, installs: str) -> str:
+    """The stale-hook warning and the installs advisory as one message; "" when neither."""
+    return "\n\n".join(part for part in (stale_warning, installs) if part)
+
+
 def _already_ran(session_id: str) -> bool:
     return _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists()
 
@@ -252,14 +270,12 @@ def main() -> None:
     _mark_done(session_id)
     now = time.time()
     stale = stale_hooks(hook_events, _hookutil.HEARTBEAT_DIR, now, DEFAULT_CADENCE_DAYS)
-    messages = [format_warning(stale, now, DEFAULT_CADENCE_DAYS)] if stale else []
-    installs = _machine_installs.daily_nudge()
-    if installs:
-        messages.append(installs)
-    if not messages:
+    text = advisory_text(format_warning(stale, now, DEFAULT_CADENCE_DAYS) if stale else "",
+                         machine_install_nudge(data))
+    if not text:
         sys.exit(0)
 
-    _hookout.emit_advisory("UserPromptSubmit", "\n\n".join(messages), audience="model")
+    _hookout.emit_advisory("UserPromptSubmit", text, audience="model")
 
 
 if __name__ == "__main__":

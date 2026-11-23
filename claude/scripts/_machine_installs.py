@@ -11,10 +11,13 @@ every installer, and this module answers the question for one machine:
 
 - `evaluate()` is the pure decision. Each install is `ok`, a `problem` (a task missing, disabled,
   or running a script other than the junctioned `~/.claude/scripts/<script>`, or its config file
-  missing or turned off), `skipped` (named in `skip_installs` in ~/.claude/machine.json, for a
-  difference that is deliberate) or `unknown` (a task couldn't be read, which is never reported
-  as missing).
-- `query_task()` reads one task with `schtasks /Query /TN <name> /XML`, about 0.2 s each.
+  missing or unreadable), `skipped` (named in `skip_installs` in ~/.claude/machine.json, or its
+  config file has `"enabled": false`, which is how a register script's `-Unregister` turns it
+  off: both are deliberate) or `unknown` (a task couldn't be read, which is never reported as
+  missing).
+- `query_tasks()` reads every task in one PowerShell run through the Task Scheduler COM API,
+  2 to 5 s on LETHEON, with one timeout below the hook's. Only "not found" (0x80070002) counts
+  as missing.
 - `py -3 _machine_installs.py --install` runs the register script of each install with a
   problem, then checks again. An `outside_app` install (one that writes HKCU, which a Claude
   desktop session can't make real) is never run here: its command is printed to run from a
@@ -27,14 +30,12 @@ empty, or lists no task raises `ManifestError`, so a caller can't mistake "nothi
 """
 from __future__ import annotations
 
-import argparse
 import datetime
 import json
 import os
 import re
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
@@ -47,7 +48,7 @@ MACHINE_JSON = CLAUDE_HOME / "machine.json"
 NUDGE_STAMP = CLAUDE_HOME / "scratch" / "machine-installs-nudge.txt"
 
 OK, PROBLEM, SKIPPED, UNKNOWN = "ok", "problem", "skipped", "unknown"
-QUERY_TIMEOUT = 10.0
+QUERY_TIMEOUT = 20.0  # the one Task Scheduler query; hook-liveness-check.py's timeout is 30 s
 REGISTER_TIMEOUT = 180.0
 
 
@@ -117,48 +118,91 @@ def read_skips(path: Path = MACHINE_JSON) -> set[str]:
 # ------------------------------------------------------------------ tasks
 
 
-def _local(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
+# HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), which ITaskFolder::GetTask raises for a task that
+# isn't registered. It is the only error read as "missing": unlike schtasks' message it isn't
+# localized, and any other error (access denied, a stopped service) means the task's state is
+# unknown.
+TASK_NOT_FOUND = -2147024894  # 0x80070002
 
 
-def parse_task_xml(text: str) -> TaskInfo | None:
-    """The first Exec action and the Enabled setting from `schtasks /XML` output. None when the
-    text isn't task XML or has no Exec action."""
-    text = re.sub(r"^\s*<\?xml[^>]*\?>", "", text or "")
+def _ps_quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def query_script(names: Iterable[str]) -> str:
+    """PowerShell that reads each named task through the Task Scheduler COM API and prints one
+    JSON array. Non-ASCII is escaped to \\uXXXX, so the output is ASCII whatever the console
+    code page. schtasks can't be used for this: it writes its XML in the OEM code page, where on
+    2026-11-22 an em dash in a task's path came back as "-", and its full listing took over 30 s."""
+    return (
+        "$ErrorActionPreference = 'Stop'; "
+        "$svc = New-Object -ComObject Schedule.Service; $svc.Connect(); "
+        "$folder = $svc.GetFolder('\\'); "
+        f"$rows = @(foreach ($n in @({', '.join(_ps_quote(n) for n in names)})) {{ "
+        "try { $t = $folder.GetTask($n); "
+        "$exec = @($t.Definition.Actions | Where-Object { $_.Type -eq 0 })[0]; "
+        "[pscustomobject]@{ name = $n; found = $true; enabled = [bool]$t.Enabled; "
+        "command = [string]$exec.Path; arguments = [string]$exec.Arguments } } "
+        "catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; "
+        "[pscustomobject]@{ name = $n; found = $false; hresult = $e.HResult; error = $e.Message } } }); "
+        "$json = ConvertTo-Json -InputObject $rows -Compress; "
+        "[regex]::Replace($json, '[^\\x00-\\x7F]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value })"
+    )
+
+
+def _text(data: bytes | str | None) -> str:
+    return data.decode("utf-8", "replace") if isinstance(data, bytes) else data or ""
+
+
+def parse_query_output(names: list[str], stdout: str) -> dict[str, TaskState]:
+    """Each name's TaskState from `query_script`'s JSON. A name the output doesn't answer for is
+    unknown, never missing."""
+    def unknown(why: str) -> dict[str, TaskState]:
+        return {n: TaskState(None, None, why) for n in names}
+
     try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
-        return None
-    sections = {_local(child.tag): child for child in root}
-    enabled = True  # Task Scheduler omits <Settings><Enabled> when it is true
-    for child in sections.get("Settings", []):
-        if _local(child.tag) == "Enabled":
-            enabled = (child.text or "").strip().lower() != "false"
-    for action in sections.get("Actions", []):
-        if _local(action.tag) == "Exec":
-            fields = {_local(c.tag): (c.text or "").strip() for c in action}
-            if fields.get("Command"):
-                return TaskInfo(enabled, fields["Command"], fields.get("Arguments", ""))
-    return None
+        rows = json.loads(stdout)
+    except ValueError:
+        return unknown("the Task Scheduler query returned no readable result")
+    if not isinstance(rows, list):
+        return unknown("the Task Scheduler query returned no readable result")
+    states: dict[str, TaskState] = {}
+    for row in rows:
+        name = row.get("name") if isinstance(row, dict) else None
+        if name not in names:
+            continue
+        if row.get("found") is True:
+            if row.get("command"):
+                info = TaskInfo(bool(row.get("enabled")), row["command"], row.get("arguments") or "")
+                states[name] = TaskState(True, info, "")
+            else:
+                states[name] = TaskState(None, None, "it has no program to run")
+        elif row.get("hresult") == TASK_NOT_FOUND:
+            states[name] = TaskState(False, None, "not registered")
+        else:
+            hresult = row.get("hresult")
+            code = f" (0x{hresult & 0xFFFFFFFF:08X})" if isinstance(hresult, int) else ""
+            states[name] = TaskState(None, None, f"{(row.get('error') or 'an error').strip()}{code}")
+    for name in names:
+        states.setdefault(name, TaskState(None, None, "the Task Scheduler query did not answer for it"))
+    return states
 
 
-def query_task(name: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> TaskState:
+def query_tasks(names: Iterable[str], run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> dict[str, TaskState]:
+    """Every named task's state from one PowerShell run, so the whole check has one timeout."""
+    names = list(dict.fromkeys(names))
+    if not names:
+        return {}
     try:
-        proc = run(["schtasks", "/Query", "/TN", name, "/XML"], capture_output=True,
-                   stdin=subprocess.DEVNULL, timeout=QUERY_TIMEOUT)
+        proc = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", query_script(names)],
+                   capture_output=True, stdin=subprocess.DEVNULL, timeout=QUERY_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return TaskState(None, None, f"schtasks could not run: {type(exc).__name__}")
-    out = proc.stdout.decode("utf-8", "replace") if isinstance(proc.stdout, bytes) else proc.stdout or ""
-    err = proc.stderr.decode("utf-8", "replace") if isinstance(proc.stderr, bytes) else proc.stderr or ""
+        return {n: TaskState(None, None, f"the Task Scheduler query failed: {type(exc).__name__}") for n in names}
     if proc.returncode != 0:
-        # schtasks exits 1 both for a missing task and for one it may not read; its message is
-        # localized, so it is passed on rather than matched.
+        err = _text(proc.stderr)
         first = next((line.strip() for line in err.splitlines() if line.strip()), f"exit {proc.returncode}")
-        return TaskState(False, None, f"not registered ({first})")
-    info = parse_task_xml(out)
-    if info is None:
-        return TaskState(None, None, "schtasks returned no readable action")
-    return TaskState(True, info, "")
+        return {n: TaskState(None, None, f"the Task Scheduler query failed: {first}") for n in names}
+    return parse_query_output(names, _text(proc.stdout))
 
 
 _PY_TOKEN = re.compile(r'"([^"]+?\.py)"|(\S+?\.py)\b', re.IGNORECASE)
@@ -212,6 +256,16 @@ def evaluate(
         if name in skips:
             findings.append(Finding(SKIPPED, name, "skipped on this machine by skip_installs in ~/.claude/machine.json", ""))
             continue
+        config = entry.get("config")
+        if config and configs.get(config) == "off":
+            # How the register script's -Unregister leaves it: a deliberate opt-out, which
+            # --install must not undo by re-running the script.
+            findings.append(Finding(
+                SKIPPED, name,
+                f'turned off: ~/.claude/{config} has "enabled": false. To turn it back on: {register_command(entry, scripts_dir)}',
+                "",
+            ))
+            continue
         problems: list[str] = []
         unknown: list[str] = []
         for task in entry["tasks"]:
@@ -229,13 +283,10 @@ def evaluate(
                     )
                 elif not state.info.enabled:
                     problems.append(f"{task['name']} is disabled")
-        config = entry.get("config")
         if config:
             cstate = configs.get(config, "unreadable")
             if cstate == "missing":
                 problems.append(f"~/.claude/{config} is missing")
-            elif cstate == "off":
-                problems.append(f'~/.claude/{config} has "enabled": false')
             elif cstate == "unreadable":
                 problems.append(f"~/.claude/{config} is not readable JSON")
         fix = register_command(entry, scripts_dir)
@@ -252,15 +303,16 @@ def evaluate(
 
 
 def check(
-    manifest: Path = MANIFEST,
-    query: Callable[[str], TaskState] = query_task,
+    installs: list[dict] | None = None,
+    query: Callable[[list[str]], dict[str, TaskState]] = query_tasks,
     claude_home: Path = CLAUDE_HOME,
 ) -> list[Finding]:
-    """Read this machine's state and evaluate it. Raises ManifestError."""
-    installs = load_manifest(manifest)
+    """Read this machine's state and evaluate it. `installs` defaults to the manifest, which
+    raises ManifestError when it can't be read."""
+    installs = load_manifest() if installs is None else installs
     skips = read_skips(claude_home / "machine.json")
     wanted = [e for e in installs if e["name"] not in skips]
-    tasks = {t["name"]: query(t["name"]) for e in wanted for t in e["tasks"]}
+    tasks = query([t["name"] for e in wanted for t in e["tasks"]])
     configs = {e["config"]: config_state(claude_home / e["config"]) for e in wanted if e.get("config")}
     return evaluate(installs, tasks, skips, configs, claude_home / "scripts")
 
@@ -308,7 +360,7 @@ def daily_nudge(
     """The advisory text, at most once per calendar day per machine. "" when not due, when
     nothing is wrong, or when the check itself fails (the doctor reports that one)."""
     today = today or datetime.date.today().isoformat()
-    # No ~/.claude/scripts means this home has no dev-env install to check (a test's temp home).
+    # No ~/.claude/scripts means setup.sh never linked this home, so it has no installs to check.
     if os.name != "nt" or not scripts_dir.exists() or not nudge_due(stamp, today):
         return ""
     mark_nudged(stamp, today)
@@ -328,9 +380,10 @@ def _print(findings: list[Finding]) -> None:
             print(f"         fix: {f.fix}")
 
 
-def install(findings: list[Finding], installs: list[dict], scripts_dir: Path) -> bool:
-    """Run the register script of each install with a problem, except outside_app ones.
-    True when every one it ran exited 0."""
+def install(findings: list[Finding], installs: list[dict], scripts_dir: Path = SCRIPTS_DIR) -> bool:
+    """Run the register script of each install with a problem, except outside_app ones, from
+    the junctioned ~/.claude/scripts, the same path each fix line names. True when every one it
+    ran exited 0."""
     by_name = {e["name"]: e for e in installs}
     ok = True
     for f in findings:
@@ -339,7 +392,7 @@ def install(findings: list[Finding], installs: list[dict], scripts_dir: Path) ->
         entry = by_name[f.name]
         if entry.get("outside_app"):
             print(f"Not run here: {f.name} writes HKCU, which a Claude desktop session can't make real. Run it yourself:")
-            print(f"  {register_command(entry, SCRIPTS_DIR)}")
+            print(f"  {register_command(entry, scripts_dir)}")
             continue
         script = scripts_dir / entry["register"]
         print(f"Registering {f.name}: {script}")
@@ -362,6 +415,8 @@ def install(findings: list[Finding], installs: list[dict], scripts_dir: Path) ->
 
 
 def main(argv: list[str] | None = None) -> int:
+    import argparse  # here, not at the top: the hook that imports this module never parses arguments
+
     parser = argparse.ArgumentParser(description="Check this machine's dev-env scheduled tasks against machine-installs.json.")
     parser.add_argument("--install", action="store_true", help="run the register script of each install with a problem")
     args = parser.parse_args(argv)
@@ -370,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         installs = load_manifest()
-        findings = check()
+        findings = check(installs)
         if not args.install:
             _print(findings)
             return 1 if any(f.status == PROBLEM for f in findings) else 0
@@ -378,10 +433,10 @@ def main(argv: list[str] | None = None) -> int:
             print("Every machine-local install is in place.")
             _print(findings)
             return 0
-        ran_ok = install(findings, installs, Path(__file__).resolve().parent)
+        ran_ok = install(findings, installs)
         print()
         print("After registering:")
-        after = check()
+        after = check(installs)
         _print(after)
     except ManifestError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

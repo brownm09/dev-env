@@ -45,9 +45,10 @@ What it checks, and why each one matters on a second machine (dev-env#1114, part
 - dev-env's gitignored .claude/hook-config.json, which the project-board hook needs.
 - This machine's routine-host flag in ~/.claude/machine.json (#1110) -- informational.
 - Each machine-local install in claude/machine-installs.json (#1397): its scheduled tasks
-  exist, are enabled and run the junctioned ~/.claude/scripts copy, and its config file is on.
+  exist, are enabled and run the junctioned ~/.claude/scripts copy, and its config file exists.
   A missing or wrong one WARNs with its register command; one named in `skip_installs` in
-  ~/.claude/machine.json is INFO; an unreadable or empty manifest FAILs (ADR-144). The decision
+  ~/.claude/machine.json, or whose config is turned off, is INFO; an unreadable or empty
+  manifest FAILs (ADR-144). The decision
   lives in _machine_installs.py, which setup.sh and the daily nudge share.
 
 The decisions live in pure `*_result` / `*_results` helpers, so the tests are fixture-only
