@@ -1,10 +1,10 @@
 ---
 name: daily-journal-compose
-description: Assemble yesterday's session stubs across all projects into canonical daily journal entries and open PRs.
+description: Assemble yesterday's session stubs, and any day a missed run left uncomposed, across all projects into canonical daily journal entries and open PRs.
 schedule: "0 7 * * *"
 ---
 
-Compose yesterday's engineering journal entries for all active projects. Run fully autonomously — do not ask the user anything.
+Compose yesterday's engineering journal entries, plus any recent day a missed run left uncomposed, for all active projects. Run fully autonomously — do not ask the user anything.
 
 > **Autonomous-run guard (do not strip when regenerating the live copy).** This is an unattended
 > scheduled run with no human present. Do **not** open with a greeting, a question, or any "how can I
@@ -18,8 +18,9 @@ Compose yesterday's engineering journal entries for all active projects. Run ful
 > pin is **inert** — the scheduler ignores it — making this imperative the sole effective, model-agnostic
 > mitigation). See the **Restorable live-copy imperative** at the bottom of this file.
 
-**Objective:** If any project has stubs dated yesterday, run `/journal-compose` once (it fans out
-across projects internally), then report the resulting PR URL(s).
+**Objective:** For every past day in the last two weeks whose draft still holds stubs (yesterday,
+plus any day a missed run left behind), run `/journal-compose` once per day, oldest first (it fans
+out across projects internally), then report the resulting PR URL(s).
 
 **Steps:**
 0. **Fetch the engineering-journal repo** (read-only) before reading any stubs:
@@ -33,33 +34,30 @@ across projects internally), then report the resulting PR URL(s).
    could `rebase`/`reset --hard` it), the same class of hazard ADR-082 closes for the skill it
    invokes.
 
-1. Determine **yesterday's local calendar date** in Git Bash — local time, not UTC, to match the
-   stub-filename/branch-naming convention (`claude/CLAUDE.md`), and yesterday rather than today so
-   this always targets a day that's genuinely complete: `/journal-compose`'s today-guard
+1. List the dates to compose, oldest first:
+   ```bash
+   DATES=$(py -3 C:/Users/brown/.claude/scripts/uncomposed-journal-dates.py) || exit 1
+   ```
+   The script prints each **local** calendar date `D` from 14 days ago up to yesterday whose
+   `origin/draft/<D>` still holds a date-matching stub (`sessions/<project>/<D>_HHMMSS.stub.md`).
+   The canonical checkout rests on `main` (ADR-082) and never holds stubs directly, so the script
+   reads the remote draft branches, not a working tree. Yesterday is usually the only date. An
+   earlier date means a run was missed, typically because the routine host was off
+   ([dev-env#1413](https://github.com/brownm09/dev-env/issues/1413),
+   [#875](https://github.com/brownm09/dev-env/issues/875)). Today is never listed: the today-guard
    ([ADR-017](https://github.com/brownm09/dev-env/blob/main/docs/adr/017-journal-compose-today-guard.md))
-   would otherwise refuse every run, since neither this routine nor its Windows Task Scheduler
-   counterpart (`journal-compose-with-retry.sh`) ever passes `--force`
-   ([ADR-084](https://github.com/brownm09/dev-env/blob/main/docs/adr/084-nightly-compose-targets-yesterday.md)).
-   ```bash
-   DATE=$(date -d yesterday +%Y-%m-%d)
-   ```
-2. Check the remote for yesterday's stubs. The canonical checkout permanently rests on `main` now
-   (ADR-082) and never holds stubs directly — read from `origin/draft/${DATE}` instead of any
-   local working tree:
-   ```bash
-   git -C C:/Users/brown/Git/engineering-journal show-ref --verify --quiet \
-     refs/remotes/origin/draft/${DATE} || exit 0
-   git -C C:/Users/brown/Git/engineering-journal ls-tree -r "origin/draft/${DATE}" --name-only \
-     | grep -E "^sessions/[^/]+/${DATE}_[0-9]{6}\.stub\.md$" | sort
-   ```
-   Stub filenames follow the pattern `YYYY-MM-DD_HHMMSS.stub.md` where `HHMMSS` is the **local**
-   session start time (per `claude/CLAUDE.md`'s stub-filename convention — not UTC).
-3. If the `ls-tree`/`grep` above produced no output (or the branch didn't exist, per the
-   `show-ref` guard above), exit silently with no output.
-4. Extract the unique project directory names from the matched paths (the path segment between `sessions/` and the filename).
-5. Run `/journal-compose ${DATE}` **once** — its own multi-project mode fans out per project
-   internally and composes them in parallel; do not loop and invoke it once per project (that
-   directly contradicts the skill's own "do NOT compose projects sequentially" guidance). The
+   would refuse it, and neither this routine nor its Windows Task Scheduler counterpart
+   (`journal-compose-with-retry.sh`) ever passes `--force`
+   ([ADR-084](https://github.com/brownm09/dev-env/blob/main/docs/adr/084-nightly-compose-targets-yesterday.md)
+   and its 2026-11-23 amendment).
+2. If `DATES` is empty, exit silently with no output.
+3. For each `DATE` in `DATES`, in order, run steps 4 and 5. Finish one date, including its PR
+   merge, before starting the next: every compose rewrites `README.md`, so two open compose PRs
+   conflict. If a date's compose fails, record the failure and continue with the next date.
+4. Extract the unique project directory names from that date's stubs (the path segment between `sessions/` and the filename).
+5. Run `/journal-compose ${DATE}` **once for that date**. Its own multi-project mode fans out per
+   project internally and composes them in parallel; do not loop and invoke it once per project
+   (that directly contradicts the skill's own "do NOT compose projects sequentially" guidance). The
    `/journal-compose` skill:
    - Creates an isolated compose worktree from `origin/draft/${DATE}` (ADR-082) — everything
      below happens inside that worktree, not the canonical checkout
@@ -71,9 +69,9 @@ across projects internally), then report the resulting PR URL(s).
    - Commits and opens one PR (covering every project composed in this run)
    If a canonical document for a project already exists for that date (i.e., stubs were already
    composed), the skill skips that project on its own.
-6. Collect and return the PR URL(s) produced, together with the PR body's `Meta journal:` status
-   line (`composed`, `none`, or `FAILED — …`) — in an unattended run that line is the only place
-   the meta outcome is visible.
+6. Collect and return, per date, the PR URL(s) produced (or the failure), together with the PR
+   body's `Meta journal:` status line (`composed`, `none`, or `FAILED — …`) — in an unattended run
+   that line is the only place the meta outcome is visible.
 
 **Constraints:**
 - Engineering journal repo: `C:/Users/brown/Git/engineering-journal`
@@ -82,7 +80,7 @@ across projects internally), then report the resulting PR URL(s).
 - Use Git Bash syntax. Temp files go to `C:/Users/brown/.claude/scratch/`
 - Never prompt the user. If stubs span multiple projects, the single `/journal-compose` call's
   own multi-project mode handles them in parallel — do not ask, and do not invoke the skill more
-  than once per run.
+  than once per date.
 - **Meta triggers are never asked about, declined, or deferred — there is no prompt.** When any
   project's stubs contain meta-relevant content (`CLAUDE.md` changes, platform constraints,
   remediated workflow failures, conventions, `dev-env` PRs, journal-structure changes, new
@@ -103,8 +101,8 @@ across projects internally), then report the resulting PR URL(s).
 - **Never pass `--force` from this routine, under any circumstance, and never reason that `--force`
   semantics are implied.** If `/journal-compose` refuses because of the today-guard, that is
   **success** — it means there is nothing yet composable for that date, not a problem to work
-  around. This routine's own date math (step 1 above) already guarantees the target is always
-  yesterday, so the guard should never fire here at all; if it does, something upstream (the date
+  around. This routine's own date selection (step 1 above) already guarantees every target is
+  before today, so the guard should never fire here at all; if it does, something upstream (the date
   computation, a config-sync race) is wrong, and the fix is to diagnose that — never to add
   `--force`. A prior run of this exact routine reasoned its way past this guard on a task-framing
   inference alone, without the guard ever actually refusing; the guard is now also mechanically

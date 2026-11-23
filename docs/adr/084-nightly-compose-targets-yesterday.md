@@ -150,6 +150,32 @@ permanently overriding the guard for every automated run. Rejected because:
 
 ---
 
+## Amendment, 2026-11-23: catch up missed days
+
+**Problem.** Targeting only yesterday means a day whose nightly run never fired, usually because
+the routine host was off or not logged in ([#875](https://github.com/brownm09/dev-env/issues/875)),
+is never composed: the next run targets the new yesterday. A 2026-11-16 check found 20 uncomposed
+draft branches going back to May. They were composed by hand on 2026-11-17, and three more days
+(2026-11-17 to 11-19) were missed within the week
+([#1413](https://github.com/brownm09/dev-env/issues/1413)).
+
+**Decision.** Both automated entry points compose every date `D` with
+`today - 14 days <= D < today` whose `origin/draft/<D>` still holds a date-matching stub, oldest
+first, one `/journal-compose <D>` per date, with each PR merged before the next starts.
+`claude/scripts/uncomposed-journal-dates.py` selects the dates. This decision's core is unchanged:
+today is never a target, and `--force` is never passed. The retry script's liveness guard still
+checks only yesterday, the only date a live session can still be writing.
+
+**Why 14 days.** Two weeks covers a long absence from the routine host and bounds the work of the
+first run after it. A day older than that is still reported to sessions by
+`new-day-journal-check.py` check 2 and is composed by hand.
+
+**Alternative rejected: leave the routine alone and rely on the check-2 warning.** That warning
+reaches sessions, but the global rules forbid a normal session from composing, so each recovery
+needs someone to open a dedicated session. That is how the May-to-October backlog built up.
+
+---
+
 ## References
 
 - `claude/routines/daily-journal-compose/SKILL.md` — Step 1
