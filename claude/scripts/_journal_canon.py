@@ -98,6 +98,12 @@ See ADR-133.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+# One override for every journal consumer (dev-env#1409). A cloud session's setup script sets
+# it to the attached engineering-journal clone, which is not under ~/Git. A hook's own
+# variable, where it has one, still wins over it, so existing tests keep their contract.
+SHARED_ENV_VAR = "DEV_ENV_JOURNAL_PATH"
 
 # The literal all four hooks hardcoded independently before this extraction. Single-sourced
 # here so no hook needs its own copy of the string; also the converged default for
@@ -125,8 +131,20 @@ def resolve_journal_path(env_var: str, default: str = DEFAULT_JOURNAL_PATH) -> s
     not `os.environ.get(env_var, default)`. Two of the four consumers feed this straight
     into a blocking guard's exemption allowlist; a degenerate empty override should not
     silently produce a degenerate allowlist entry (dev-env#982 review).
+
+    Precedence: the hook's own `env_var`, then `SHARED_ENV_VAR`, then `default`.
     """
-    return os.environ.get(env_var) or default
+    return os.environ.get(env_var) or os.environ.get(SHARED_ENV_VAR) or default
+
+
+def journal_repo() -> Path:
+    """The engineering-journal checkout for a script with no env var of its own:
+    `SHARED_ENV_VAR` when set and non-empty, else `~/Git/engineering-journal`.
+
+    The default is home-relative, exactly what each of these scripts hardcoded before
+    (dev-env#1409), so on a machine without the override nothing changes.
+    """
+    return Path(os.environ.get(SHARED_ENV_VAR) or Path.home() / "Git" / "engineering-journal")
 
 
 def normalize_journal_path(path: str | None) -> str:

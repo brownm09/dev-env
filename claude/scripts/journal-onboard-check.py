@@ -15,8 +15,9 @@ import sys
 from pathlib import Path
 
 import _hookutil
+import _journal_canon
 
-JOURNAL_SESSIONS = Path.home() / "Git" / "engineering-journal" / "sessions"
+JOURNAL_SESSIONS = _journal_canon.journal_repo() / "sessions"
 SENTINEL_PREFIX = "journal_onboard_"
 
 

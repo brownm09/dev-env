@@ -115,6 +115,52 @@ def test_resolve_journal_path_is_unnormalized() -> str:
     return "resolve_journal_path returns the env value verbatim -- no case/separator normalization"
 
 
+# --- the shared override (dev-env#1409) ----------------------------------------------------
+
+SHARED = _journal_canon.SHARED_ENV_VAR
+
+
+def test_shared_env_var_overrides_default() -> str:
+    got = _with_env(SHARED, "/home/user/engineering-journal", lambda: resolve_journal_path(UNSET_ENV_VAR))
+    assert got == "/home/user/engineering-journal", f"expected the shared override, got {got!r}"
+    return f"{SHARED} overrides the default when the hook's own variable is unset"
+
+
+def test_hook_env_var_beats_shared_env_var() -> str:
+    var = "CANONICAL_MUTATE_GUARD_JOURNAL_PATH"
+    got = _with_env(SHARED, "/shared", lambda: _with_env(var, "D:/own", lambda: resolve_journal_path(var)))
+    assert got == "D:/own", f"expected the hook's own variable to win, got {got!r}"
+    return f"a hook's own variable wins over {SHARED}"
+
+
+def test_empty_shared_env_var_falls_back() -> str:
+    got = _with_env(SHARED, "", lambda: resolve_journal_path(UNSET_ENV_VAR))
+    assert got == DEFAULT_JOURNAL_PATH, f"expected the default, got {got!r}"
+    got_repo = _with_env(SHARED, "", _journal_canon.journal_repo)
+    assert got_repo == Path.home() / "Git" / "engineering-journal", got_repo
+    return f"an empty {SHARED} counts as unset in both resolvers"
+
+
+def test_journal_repo_default_and_override() -> str:
+    assert SHARED not in os.environ, f"{SHARED} must not be set while the suite runs"
+    assert _journal_canon.journal_repo() == Path.home() / "Git" / "engineering-journal"
+    got = _with_env(SHARED, "/home/user/engineering-journal", _journal_canon.journal_repo)
+    assert got == Path("/home/user/engineering-journal"), got
+    return "journal_repo() is ~/Git/engineering-journal by default and follows the override"
+
+
+def test_migrated_script_reads_shared_override() -> str:
+    # The wiring, not just the helper: a script that used to hardcode the path picks the
+    # override up at import time. Reverting its JOURNAL_REPO line turns this red.
+    mod = _with_env(
+        SHARED,
+        "/home/user/engineering-journal",
+        lambda: _load_hook_module("journal-stop-check.py", "journal_canon_test_jsc"),
+    )
+    assert mod.JOURNAL_REPO == Path("/home/user/engineering-journal"), mod.JOURNAL_REPO
+    return f"journal-stop-check.py's JOURNAL_REPO follows {SHARED}"
+
+
 # --- normalize_journal_path --------------------------------------------------------------
 
 
@@ -272,6 +318,11 @@ def main() -> int:
             "resolve_journal_path: empty env var falls back to default",
             test_resolve_journal_path_empty_env_var_falls_back_to_default,
         ),
+        ("shared override: beats the default", test_shared_env_var_overrides_default),
+        ("shared override: a hook's own variable beats it", test_hook_env_var_beats_shared_env_var),
+        ("shared override: empty counts as unset", test_empty_shared_env_var_falls_back),
+        ("journal_repo(): default and override", test_journal_repo_default_and_override),
+        ("journal_repo(): a migrated script reads the override", test_migrated_script_reads_shared_override),
     ]
     failed = 0
     for name, fn in tests:

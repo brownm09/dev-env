@@ -136,6 +136,7 @@ import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
 from _hookinput import load_hook_input
 import _hookutil
+import _journal_canon
 import json
 import re
 import subprocess
@@ -168,7 +169,7 @@ from _gh_issue_state import (
     should_stop_paging,
 )
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 SENTINEL_PREFIX = "pending-tiles-reconciled-"
 
 # Index lines shown before truncating. The full total and the dropped count are always

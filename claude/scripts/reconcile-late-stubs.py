@@ -28,9 +28,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+import _journal_canon
 from _journal_late import BEGINNING, DRAFT_BRANCH, RECONCILED_TAG_PREFIX, late_commits
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 LATE_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{6})\.(stub\.md|manifest\.jsonl)")

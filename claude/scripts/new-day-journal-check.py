@@ -54,9 +54,10 @@ from datetime import date
 from pathlib import Path
 
 import _hookutil
+import _journal_canon
 from _journal_late import CONTENT_PATHS, DRAFT_BRANCH, RECONCILED_TAG_PREFIX, late_commits
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 SCRATCH = Path.home() / ".claude" / "scratch"
 TODAY = date.today().strftime("%Y-%m-%d")
 FLAG_MAX_AGE_HOURS = 24

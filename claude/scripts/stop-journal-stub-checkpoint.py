@@ -74,6 +74,7 @@ Exit 2 — a report/analysis/verification session is ending with no stub;
 from __future__ import annotations
 
 import _hookutil
+import _journal_canon
 import re
 import sys
 
@@ -364,7 +365,7 @@ def format_reminder(cwd: str = "") -> str:
         "investigation / verification is itself a journal boundary -- no PR required. "
         "Before ending the turn:\n"
         "  1. Identify the project journal path from cwd (sessions/<project>/ under "
-        "C:/Users/brown/Git/engineering-journal).\n"
+        f"{_journal_canon.journal_repo().as_posix()}).\n"
         "  2. Check out or create today's draft/YYYY-MM-DD branch there.\n"
         "  3. Write sessions/<project>/YYYY-MM-DD_HHMMSS.stub.md capturing what was "
         "investigated/verified and the outcome. Inline a short analysis; put anything "

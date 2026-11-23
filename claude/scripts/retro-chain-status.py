@@ -98,6 +98,7 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+import _journal_canon
 from _journal_shards import iter_tile_shards, shard_number
 from _gh_issue_state import (
     GH_CALL_TIMEOUT,
@@ -106,7 +107,7 @@ from _gh_issue_state import (
     repo_from_issue_url,
 )
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 
 # The status vocabulary, defined once so code, tests, and callers can never drift apart on the
 # literal strings (found already drifted once within this same PR -- an early draft of

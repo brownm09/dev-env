@@ -47,9 +47,10 @@ from pathlib import Path
 
 from _hookio import load_hook_input, read_command, read_command_output, scan_top_level
 import _hookutil
+import _journal_canon
 from _journal_schema import decode_shard_bytes, has_unresolved_open_pr, parse_manifest_text
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 # Per-session sentinel (dev-env#980, ADR-091 Amendment 2) -- the file is
 # named f"{SENTINEL_PREFIX}{session_id}.flag" via _hookutil.sentinel_path, so
 # each session's push arms only its OWN sentinel. Prior to this fix, a single

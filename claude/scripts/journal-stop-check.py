@@ -59,6 +59,7 @@ artifact (dev-env#1221).
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import _hookout
 import _hookutil
+import _journal_canon
 import functools
 import glob
 import json
@@ -78,7 +79,7 @@ from pathlib import Path
 # serve pending_task_count()'s TaskCreate tool_result parsing.
 from _hookutil import _content_items, _result_text, _user_message_texts, iter_tool_uses
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 # Must match stub-push-archive-reminder.py's SENTINEL_PREFIX -- per-session
 # sentinel (dev-env#980, ADR-091 Amendment 2), duplicated as a literal in
 # both files like JOURNAL_REPO already is rather than shared via import.

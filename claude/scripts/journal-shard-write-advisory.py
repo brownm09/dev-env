@@ -72,6 +72,7 @@ import sys
 from pathlib import Path
 
 import _hookutil
+import _journal_canon
 
 try:
     from _journal_schema import (
@@ -95,7 +96,7 @@ MAX_CANDIDATES = 20
 MAX_SHARD_BYTES = 1_048_576
 MAX_FILES_SHOWN = 10
 MAX_COMMAND_CHARS = 2_000
-JOURNAL_FALLBACK = Path.home() / "Git" / "engineering-journal"
+JOURNAL_FALLBACK = _journal_canon.journal_repo()
 
 # Raw scans over the whole command text — see module docstring for why this is
 # deliberately not `scan_top_level`-anchored. `re.ASCII` restricts `\w` to plain

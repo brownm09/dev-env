@@ -98,6 +98,7 @@ from __future__ import annotations
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 from _hookinput import load_hook_input
 import _hookutil
+import _journal_canon
 import json
 import re
 import subprocess
@@ -112,7 +113,7 @@ from urllib.parse import urlparse
 # walk that precedes them, shared for the same anti-drift reason (dev-env#881).
 from _journal_shards import iter_pr_shards, project_dirs, read_legacy_entries, shard_pr_number
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 SENTINEL_PREFIX = "open-prs-reconciled-"
 
 # Probing is bounded by BOTH a wall clock and a count, because the count alone cannot bound

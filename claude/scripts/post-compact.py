@@ -23,9 +23,10 @@ from pathlib import Path
 
 import _hookout
 import _hookutil
+import _journal_canon
 from _journal_shards import iter_pr_shards, iter_tile_shards, read_legacy_entries, shard_number
 
-JOURNAL_REPO = Path.home() / "Git" / "engineering-journal"
+JOURNAL_REPO = _journal_canon.journal_repo()
 
 # Pending tiles listed after a /compact before truncating. Matches
 # reconcile-pending-tiles.py's cap; the true total is always stated alongside.
