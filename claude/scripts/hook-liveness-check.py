@@ -36,6 +36,12 @@ full check (settings.json parse + one heartbeat-file read per non-exempt wired
 hook) is real synchronous I/O on the UserPromptSubmit critical path that
 should not repeat on every single prompt in a session.
 
+Machine installs (dev-env#1397): the same "something that should be running isn't" check, for
+the scheduled tasks in claude/machine-installs.json. Once per calendar day per machine (a stamp
+in ~/.claude/scratch), `_machine_installs.daily_nudge()` checks them with schtasks (about 1 s)
+and adds an advisory naming each missing or wrong install and its register command. A failure
+of that check adds nothing: dev-env-doctor.py reports it.
+
 Stdin JSON shape (UserPromptSubmit):
   {
     "hook_event_name": "UserPromptSubmit",
@@ -193,6 +199,25 @@ def format_self_check_failure(reason: str, hook_count: int) -> str:
     )
 
 
+def machine_install_nudge(data: dict) -> str:
+    """The once-a-day machine-installs advisory (dev-env#1397), or "". A scheduled routine's
+    session (an automated `<tag>` prompt, or a headless `sdk-` entrypoint) neither sees it nor
+    uses up the day's: on the routine host one often runs before anyone opens a session."""
+    prompt = data.get("prompt", "") if isinstance(data, dict) else ""
+    if _hookutil.AUTOMATED_PROMPT.match(prompt or ""):
+        return ""
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk-"):
+        return ""
+    import _machine_installs  # here, not at the top: most prompts never get this far
+
+    return _machine_installs.daily_nudge()
+
+
+def advisory_text(stale_warning: str, installs: str) -> str:
+    """The stale-hook warning and the installs advisory as one message; "" when neither."""
+    return "\n\n".join(part for part in (stale_warning, installs) if part)
+
+
 def _already_ran(session_id: str) -> bool:
     return _hookutil.sentinel_path(SENTINEL_PREFIX, session_id).exists()
 
@@ -245,12 +270,12 @@ def main() -> None:
     _mark_done(session_id)
     now = time.time()
     stale = stale_hooks(hook_events, _hookutil.HEARTBEAT_DIR, now, DEFAULT_CADENCE_DAYS)
-    if not stale:
+    text = advisory_text(format_warning(stale, now, DEFAULT_CADENCE_DAYS) if stale else "",
+                         machine_install_nudge(data))
+    if not text:
         sys.exit(0)
 
-    _hookout.emit_advisory(
-        "UserPromptSubmit", format_warning(stale, now, DEFAULT_CADENCE_DAYS), audience="model"
-    )
+    _hookout.emit_advisory("UserPromptSubmit", text, audience="model")
 
 
 if __name__ == "__main__":

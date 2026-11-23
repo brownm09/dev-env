@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13  
 **Status:** Accepted  
-**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10, 2026-07-14, 2026-08-09, 2026-09-28 (see Amendment sections below)
+**Amended:** 2026-07-01, 2026-07-06, 2026-07-08, 2026-07-10, 2026-07-14, 2026-08-09, 2026-09-28, 2026-11-22 (see Amendment sections below)
 
 ---
 
@@ -283,6 +283,62 @@ symlinks for `scripts`, `skills`, `hooks` and `templates`, and a junction for `r
 
 Points 1 and 2 were revised on 2026-09-29, after the PR's review found that restore couldn't return to the
 captured state in several cases and that the privilege gate relied on inference.
+
+---
+
+## Amendment (2026-11-22) — machine-local scheduled tasks are listed, installed and checked
+
+[dev-env#1397](https://github.com/brownm09/dev-env/issues/1397), part of
+[#1396](https://github.com/brownm09/dev-env/issues/1396).
+
+**Context.** The links reach every machine through git, but the scheduled tasks the
+`claude/scripts/register-*.ps1` scripts create don't. Each was a step someone had to remember per machine,
+and nothing reported a missed one. On LETHEON on 2026-11-22, three of the four had never been run. So
+auto-resume ([ADR-152](152-auto-resume-interrupted-desktop-sessions.md)) was off, and the Docker start
+hook ([ADR-158](158-docker-lifecycle-outside-the-app-process-tree.md)) was calling a task that didn't
+exist. The doctor passed.
+
+**Decision.**
+
+1. `claude/machine-installs.json` lists each installer: its register script, the tasks it creates, the
+   script each task runs, any config file it needs, and whether it writes `HKCU`. `test_machine_installs.py`
+   fails when a `register-*.ps1` has no entry, so a new installer can't be added without one.
+2. `_machine_installs.py` decides, for one machine, whether each install is `ok`, a `problem`, `skipped` or
+   `unknown`. A problem is a task that is missing, disabled, or running a copy other than the junctioned
+   `~/.claude/scripts/<script>` (a worktree's copy, for instance), or a config file that is missing or
+   unreadable. A config file with `"enabled": false` is `skipped`: that is how a register script's
+   `-Unregister` turns an install off, and setup re-running the script would undo the choice. All tasks are
+   read in one PowerShell run through the Task Scheduler COM API, with one timeout below the hook's. Only
+   "not found" (0x80070002) counts as missing, so a task that can't be read is `unknown`.
+3. Three callers share it:
+   - The doctor, a WARN per problem, with the register command.
+   - `setup.sh`, which runs the register script of each install with a problem, so a second run changes
+     nothing.
+   - `hook-liveness-check.py`, which names the problems in the first prompt of each day from a person.
+     A scheduled routine's session doesn't count, since on the routine host one often runs first.
+4. An install that writes `HKCU` (the deploy-approval notifier's URL scheme) is never run by setup: a
+   Claude desktop session's `HKCU` writes stay private to the app. Its command is printed for a terminal
+   opened outside the app.
+5. A deliberate difference between machines goes in `"skip_installs"` in `~/.claude/machine.json`, which
+   turns that install's line into INFO and keeps it out of the nudge.
+6. On a machine with no `~/.claude/auto-resume.json`, setup's run of `register-auto-resume.ps1` creates
+   it with that script's default, `include: ["all"]`. Auto-resume is then on for every interrupted session
+   there, where before it was off until someone ran the script. To keep a machine without it, run
+   `register-auto-resume.ps1 -Unregister` there, or list `auto-resume` in `skip_installs`.
+
+**Rejected.**
+
+- **The doctor alone.** It runs at setup and when someone thinks to run it. The LETHEON gap went unnoticed
+  for weeks for exactly that reason.
+- **Setup running every register script on every run.** Several of them restart a running task, and the
+  window-flash monitor stops and restarts its recorder, so an unconditional re-run would disturb a healthy
+  machine for nothing.
+- **Per-machine roles in the manifest.** No installer applies to only some machines today, and
+  `skip_installs` covers a one-off difference.
+- **`schtasks /Query /TN <name> /XML`, one run per task.** Measured on LETHEON on 2026-11-22: it writes the
+  XML in the console's OEM code page, so an em dash in a task's path came back as "-". Its exit code is the
+  same for a missing task and an unreadable one, and its message is localized. `Get-ScheduledTask` took
+  18.6 s and a full `schtasks` listing over 30 s, against 5 s for the COM query.
 
 ---
 

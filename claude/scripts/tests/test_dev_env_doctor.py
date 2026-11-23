@@ -584,6 +584,23 @@ def test_exit_code():
     return "FAIL present -> 1, else 0"
 
 
+def test_machine_install_results() -> str:
+    mi = doc._machine_installs
+    findings = [
+        mi.Finding(mi.OK, "a", "T runs x.py", ""),
+        mi.Finding(mi.PROBLEM, "b", "T is not registered", "powershell -File register-b.ps1"),
+        mi.Finding(mi.UNKNOWN, "c", "could not read T", ""),
+        mi.Finding(mi.SKIPPED, "d", "skipped on this machine", ""),
+    ]
+    results = doc.machine_install_results(findings)
+    assert _statuses(results) == [PASS, WARN, WARN, INFO], _statuses(results)
+    assert "fix: powershell -File register-b.ps1" in results[1].detail, results[1].detail
+    assert "fix:" not in results[0].detail, results[0].detail
+    empty = doc.machine_install_results([])
+    assert _statuses(empty) == [FAIL], "zero findings must FAIL, not pass vacuously (ADR-144)"
+    return "OK/problem/unknown/skipped -> PASS/WARN/WARN/INFO; a problem names its fix; none -> FAIL"
+
+
 def main() -> int:
     tests = [
         ("LINKED_ITEMS / HOME_LINKS match setup.sh's link arrays", test_link_lists_match_setup_sh),
@@ -618,6 +635,7 @@ def main() -> int:
         ("journal clone and today's draft branch", test_journal_results),
         ("dev-env board config", test_hook_config_result),
         ("routine-host flag", test_machine_role_result),
+        ("machine installs by status, empty -> FAIL", test_machine_install_results),
         ("a crashing check becomes a FAIL line", test_guarded),
         ("exit code", test_exit_code),
     ]

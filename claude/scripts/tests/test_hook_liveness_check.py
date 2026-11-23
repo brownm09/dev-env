@@ -397,6 +397,38 @@ def test_wired_hook_events_agrees_with_hook_wiring_module() -> str:
     return "wired_hook_events() agrees with tests/_hook_wiring.wired_script_events() against the real claude/settings.shared.json"
 
 
+def test_machine_install_nudge_runs_for_a_person_only() -> str:
+    from unittest import mock
+    import _machine_installs
+
+    calls = []
+
+    def fake_nudge():
+        calls.append(1)
+        return "[machine-installs] 1 missing"
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_ENTRYPOINT"}
+    with mock.patch.object(_machine_installs, "daily_nudge", fake_nudge):
+        with mock.patch.dict(os.environ, env, clear=True):
+            person = hook_liveness_check.machine_install_nudge({"prompt": "fix the bug"})
+            routine = hook_liveness_check.machine_install_nudge({"prompt": "<scheduled-task name=x>run"})
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}):
+            headless = hook_liveness_check.machine_install_nudge({"prompt": "fix the bug"})
+    assert person == "[machine-installs] 1 missing", person
+    assert routine == "" and headless == "", (routine, headless)
+    assert len(calls) == 1, f"a routine's session must not use up the day's nudge: {len(calls)} calls"
+    return "person -> nudge; <tag> prompt and sdk- entrypoint -> '' without calling daily_nudge"
+
+
+def test_advisory_text_keeps_both_parts() -> str:
+    both = hook_liveness_check.advisory_text("[hook-liveness] stale", "[machine-installs] missing")
+    assert both == "[hook-liveness] stale\n\n[machine-installs] missing", both
+    assert hook_liveness_check.advisory_text("", "[machine-installs] missing") == "[machine-installs] missing"
+    assert hook_liveness_check.advisory_text("[hook-liveness] stale", "") == "[hook-liveness] stale"
+    assert hook_liveness_check.advisory_text("", "") == ""
+    return "stale + installs joined; either alone; neither -> ''"
+
+
 # --- behavioral layer: real main() over stdin via subprocess --------------------
 # HOME/USERPROFILE isolated to a temp dir (mirrors test_stop_journal_stub_checkpoint.py)
 # so _hookutil.HEARTBEAT_DIR and the once-per-session sentinel never touch the real
@@ -575,6 +607,8 @@ def main() -> int:
         ("format_self_check_failure: names reason + count", test_format_self_check_failure_names_reason_and_count),
         ("format_self_check_failure: distinct from format_warning", test_format_self_check_failure_distinct_from_format_warning),
         ("wired_hook_events: agrees with _hook_wiring against real settings.json", test_wired_hook_events_agrees_with_hook_wiring_module),
+        ("machine_install_nudge: a person's session only", test_machine_install_nudge_runs_for_a_person_only),
+        ("advisory_text: stale warning and installs nudge together", test_advisory_text_keeps_both_parts),
         ("e2e: healthy session, no stale -> silent", test_e2e_healthy_session_no_stale_is_silent),
         ("e2e: stale hook -> additionalContext warning", test_e2e_stale_hook_emits_additionalcontext),
         ("e2e: unreadable settings.json -> self-check failure", test_e2e_unreadable_settings_emits_self_check_failure),

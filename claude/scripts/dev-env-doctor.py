@@ -44,6 +44,12 @@ What it checks, and why each one matters on a second machine (dev-env#1114, part
   or session already pushed it (#1111).
 - dev-env's gitignored .claude/hook-config.json, which the project-board hook needs.
 - This machine's routine-host flag in ~/.claude/machine.json (#1110) -- informational.
+- Each machine-local install in claude/machine-installs.json (#1397): its scheduled tasks
+  exist, are enabled and run the junctioned ~/.claude/scripts copy, and its config file exists.
+  A missing or wrong one WARNs with its register command; one named in `skip_installs` in
+  ~/.claude/machine.json, or whose config is turned off, is INFO; an unreadable or empty
+  manifest FAILs (ADR-144). The decision
+  lives in _machine_installs.py, which setup.sh and the daily nudge share.
 
 The decisions live in pure `*_result` / `*_results` helpers, so the tests are fixture-only
 and never read this machine's real state; `collect()` does the I/O around them, and a check
@@ -66,6 +72,7 @@ from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
 import _winsubp  # noqa: F401  -- UTF-8 decoding + no console flash for child processes (ADR-007)
+import _machine_installs
 import _repo_scan
 # The files a hook command names, extracted exactly as the settings sync's hooks_guard does
 # (ADR-148), so the doctor and the sync can never disagree about which files a hook needs.
@@ -628,6 +635,26 @@ def machine_role_result(raw: bytes | None) -> Result:
     return Result(INFO, "routine host", f"{'yes' if host else 'no'} (~/.claude/machine.json)")
 
 
+_INSTALL_STATUS = {
+    _machine_installs.OK: PASS,
+    _machine_installs.PROBLEM: WARN,
+    _machine_installs.UNKNOWN: WARN,
+    _machine_installs.SKIPPED: INFO,
+}
+
+
+def machine_install_results(findings: list[_machine_installs.Finding]) -> list[Result]:
+    """One line per install in claude/machine-installs.json (#1397). Zero findings FAILs, since
+    a manifest always lists something: an empty result means the check read nothing."""
+    if not findings:
+        return [Result(FAIL, "machine installs", "no installs were checked -- claude/machine-installs.json read as empty")]
+    return [
+        Result(_INSTALL_STATUS[f.status], "machine installs",
+               f"{f.name}: {f.detail}" + (f" -- fix: {f.fix}" if f.fix else ""))
+        for f in findings
+    ]
+
+
 def guarded(check: str, fn: Callable[[], list[Result]]) -> list[Result]:
     """Run one check; if it crashes, report that as its FAIL line instead of losing the report."""
     try:
@@ -803,6 +830,17 @@ def _check_machine() -> list[Result]:
     return [machine_role_result(raw)]
 
 
+def _check_installs() -> list[Result]:
+    if os.name != "nt":
+        return [Result(INFO, "machine installs", "scheduled tasks are Windows-only")]
+    try:
+        # The manifest beside the running code, so the list always matches the code reading it.
+        findings = _machine_installs.check()
+    except _machine_installs.ManifestError as exc:
+        return [Result(FAIL, "machine installs", str(exc))]
+    return machine_install_results(findings)
+
+
 def collect(offline: bool, settings_path: Path) -> list[Result]:
     results: list[Result] = [Result(
         INFO, "machine", f"{platform.node()} | home {HOME} | Python {platform.python_version()}",
@@ -828,6 +866,7 @@ def collect(offline: bool, settings_path: Path) -> list[Result]:
     config = repo_root / ".claude" / "hook-config.json"
     results += guarded("board config", lambda: [hook_config_result(config, config.is_file())])
     results += guarded("routine host", _check_machine)
+    results += guarded("machine installs", _check_installs)
     return results
 
 
