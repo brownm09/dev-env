@@ -2,7 +2,7 @@
 
 This directory holds dev-env's hook scripts, shared library modules, and on-demand utility
 scripts (wired Claude Code hooks, shared `_foo.py` modules, and utility/setup scripts across
-`.py`/`.sh`/`.ps1`). The rows below index the 115 files that existed on 2026-11-07
+`.py`/`.sh`/`.ps1`, and one `.js`). The rows below index the 115 files that existed on 2026-11-07
 ([dev-env#830](https://github.com/brownm09/dev-env/issues/830)), so a newer script isn't listed
 here. A newer script carries its own entry, a `Purpose:` line near its top, so two PRs that each
 add a script can't conflict here ([dev-env#1311](https://github.com/brownm09/dev-env/issues/1311)).
@@ -197,6 +197,17 @@ invocation instead.
 | `auto-resume-launcher.py` | Scheduled-task payload (`--dry-run` to preview) | After the Claude app starts, opens each opted-in session cut off mid-turn before that start with `claude://code/continue?session=`, so its auto-resume hook fires; skips sessions already running. |
 | `register-window-flash-monitor.ps1` | `powershell -File register-window-flash-monitor.ps1 [-Unregister]` | Per-machine, run-once: registers the hidden `ClaudeWindowFlashMonitor` task that keeps `window-flash-monitor.py` running. ADR-155. |
 | `window-flash-monitor.py` | Scheduled-task payload; `py -3 window-flash-monitor.py --report [YYYY-MM-DD]` by hand | Records console flashes, the focus each one took and the process behind it, and reports them by day. Observes only. ADR-155. |
+
+## Switchyard
+
+A `.js` file is outside the parity gate's `.py`/`.sh`/`.ps1` scope, so it can't carry its entry
+the way a newer script does — a `Purpose:` line it never reads. It takes a row here instead, which
+costs the frozen count nothing because the gate counts only those three extensions. It runs as
+`node claude/scripts/<file>.js [args]`.
+
+| Script | Event / Invocation | Purpose |
+|---|---|---|
+| `switchyard-lane.js` | `node switchyard-lane.js [owner/repo]` | Answers one question: is that repo's Switchyard work-in-progress lane free, so a dispatch would be admitted? Read-only. Evaluates `wipHold()`'s own `OPEN_OR_ORPHAN` predicate over every run's attempts, prints the holders by name when held, and labels `awaitingMerge.perRepo` on its face as the different cap it is. Exits 2 without answering if `switchyard`'s `src/store.ts` no longer contains the predicate it encodes, if `src/admission.ts` no longer has the cap groups it reads, or if the argument isn't an `owner/repo`. Guarded by `tests/test_switchyard_lane.py`. The readings that look authoritative and aren't are in [`docs/REFERENCE.md`](../../docs/REFERENCE.md#switchyard-lanes-which-readings-dont-answer-is-the-lane-free) ([dev-env#1406](https://github.com/brownm09/dev-env/issues/1406)). |
 
 ---
 
