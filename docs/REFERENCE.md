@@ -1934,6 +1934,8 @@ The reasoning, incidents and edge cases behind the rules in [`claude/CLAUDE.md`]
   - **Each call goes through a UAC prompt, and answering it is the user's approval.** [Microsoft's `sudo` documentation](https://learn.microsoft.com/en-us/windows/advanced-settings/sudo/) says "a prompt will open asking you to verify that you want to continue", and `consent.exe`, the process behind that prompt, was seen running during a test call. If the user declines, `sudo` prints a cancelled message and exits non-zero ([source](https://github.com/microsoft/sudo/blob/main/sudo/src/main.rs); not run). Report that and don't retry. A scheduled routine shouldn't count on `sudo`, since nobody may be there to answer the prompt.
   - **From the Bash tool, prefix `MSYS_NO_PATHCONV=1` when an argument starts with `/`.** Git Bash otherwise rewrites `/c` to `C:/`, so `sudo cmd /c "exit 7"` opened an interactive elevated prompt and hung until the tool timed out. `</dev/null` doesn't prevent this: the elevated process still reads the console. Killing `sudo` can leave the elevated child running, so after a hang look for it with `Get-CimInstance Win32_Process`. Its `CommandLine` reads as null, as it does for any elevated process, so identify it by name and by a start time during the hung call, then end it with `sudo taskkill /PID <pid> /F`. If that doesn't single it out, leave it and tell the user. See [ADR-041](adr/041-no-terminal-spawn-in-windows-scripts.md) Amendment 1 and [dev-env#1231](https://github.com/brownm09/dev-env/issues/1231).
 
+- **`HKCU` writes from a Claude desktop session stay private to the app.** The desktop app is a packaged (MSIX) app, and [Microsoft documents](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes) that its writes under `HKCU` are copied to a private per-user, per-app location. A session's shell tools inherit this. The write reports success and reads back correctly from the session, while the rest of Windows never sees it.
+  - **The route:** a process Task Scheduler starts isn't under the app. Put the change and its read-back in a script that logs to a file outside `AppData`, and run it as a one-shot task: `Register-ScheduledTask` with a `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <script>` action and `New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited`, which needs no elevation. Then `Start-ScheduledTask`, wait for the `Ready` state, check `LastTaskResult`, read the log and `Unregister-ScheduledTask`.
   - **A session's own reads can't settle it.** Tested 2026-11-06 with throwaway keys: a task never saw a session's write, and a session did see a task's write to a key it hadn't written. But once a session has written a key, it keeps reading its own value after the real one changes, and a session's delete doesn't reach the real key. Microsoft says these writes are kept through app upgrades and deleted only when the app is removed. So after a fix from outside, a session can still show the old value; check from a task.
   - **A Terminal panel tab isn't private.** Tested 2026-11-06 with throwaway keys: a tab's write reached a task and the session, and a tab didn't see a session's write. The cause isn't known and this was one run, so the task stays the route to rely on.
   - **What this doesn't cover.** An `HKLM` policy written through `sudo` from a session, a file deleted under `AppData`, and scheduled tasks and a package removed from a session all took effect for both sides. Registering a task from a session works, which is what makes the route possible. New files in a new `AppData` folder stay private too, as the same Microsoft page says and [win11-init-tools#108](https://github.com/brownm09/win11-init-tools/issues/108) saw.
@@ -2237,7 +2239,23 @@ Also observed on a **freshly created** `git worktree add`/`EnterWorktree` checko
 
 For PowerShell or batch scripts on Windows, do not author or accept patterns that spawn a new console window or trigger UAC re-launch from inside the script: `Start-Process -Verb RunAs` self-relaunch, `Start-Process ... -NoExit` sibling consoles, `cmd /c start ... powershell ...`, or any equivalent round-trip. In agent-driven and non-interactive contexts the UAC dialog may have no desktop to render against, the prompt hangs the session or is silently dismissed, the new console dies before producing output, and the user pays cleanup tokens to disentangle the orphan processes.
 
+### Detail: Suppression
+
+**Telling a pre-existing error from a new one (rule 2).** Before adding a suppression, check whether the error predates the branch by running the tests without this branch's changes. The original recipe was:
+
+```bash
+git stash && npm test 2>&1 | grep -i error; git stash pop
+```
+
+The stash stack is shared by every worktree and session, so in a shared checkout use a temporary WIP commit or a named stash entry (`git stash push -u -m <tag>`, then `git stash apply <sha>`) instead of a bare `git stash pop`. If the error exists on the base branch, don't suppress it: file a GitHub issue, or batch it into an existing one, and leave the error as it is.
+
+**What the pre-PR grep covers (rule 3).** The pattern catches end-of-expression assertions (`!;`, `!,`, `!)`) and chained access (`!.`, `![`). It doesn't catch every `!`, so also scan the diff's added lines by hand for any other `!` that could be a suppression. For every match, either a PR-body note names the line and the invariant it relies on, or the suppression is removed and replaced by a proper fix. See [ADR-026](adr/026-suppression-policy.md).
+
 ### Detail: Test integrity
+
+**What rule 1's justification looks like.** It names the specific tests or thresholds and says why removal or degradation is right, for example "deleted tests for the removed `/legacy-export` endpoint".
+
+**Tests that can't fail (rule 4).** A mock returning the empty case, an assertion on one lucky index, and a test iterating the code's own input all pass without proving anything.
 
 **Scope note.** The grep patterns above target JavaScript/TypeScript test frameworks (Jest, Vitest, Mocha). For pytest, Go `testing`, or Rust projects, extend the patterns to cover the language's idioms (`@pytest.mark.skip`, `pytest.skip(`, `t.Skip(`, `#[ignore]`, etc.) before running. A clean grep against JS-only patterns in a non-JS repo is not evidence the policy was satisfied.
 
