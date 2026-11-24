@@ -33,6 +33,11 @@ jobs:
       - name: Checkout
         # SHA-pinned (supply-chain hardening); trailing comment tracks the tag.
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        # The job runs a pull request's own code, and Switchyard takes this
+        # check as its gate for worker pull requests (dev-env#1422), so keep
+        # the job token out of .git/config.
+        with:
+          persist-credentials: false
 
       # Pin to Python 3.12 -- the version the user's `py -3` launcher resolves to
       # in production (C:\...\Programs\Python\Python312). The runner's own `py -3`
