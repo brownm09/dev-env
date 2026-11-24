@@ -2366,6 +2366,20 @@ When uncertain after the three steps, surface the uncertainty explicitly: "the g
 
 **Rationale incident.** lifting-logbook [PR #395](https://github.com/merickvaughn/lifting-logbook/pull/395) (2026-06-01). The `staging.yml` deploy-prereq guard printed a "Staging Clerk secret key is not configured" error and pointed to `docs/deploy.md` Step 4. The actual upstream chain was a transient 504 from Artifact Registry in `build-images` → `deploy-api` skipped because of `needs: build-images` → empty `clerk_configured` output → integration-tests' `!= 'true'` check fired the misconfig message. The secret was already correctly set. Both the github-actions bot and I reported the wrong root cause until the user pushed back. Full trace: [PR #395 comment](https://github.com/merickvaughn/lifting-logbook/pull/395#issuecomment-4594434736). See [ADR-034](adr/034-error-message-diligence.md).
 
+### Detail: Documentation and citations
+
+**Primary-source categories, with examples.** *Official documentation* for technology and framework choices (NestJS, Next.js, Prisma). *Specifications* for protocol and standard choices (IETF RFCs, OASIS specs, the GraphQL spec, OpenID Connect). *Foundational writings* for architectural patterns (Cockburn's Hexagonal Architecture, Uncle Bob's Clean Architecture, Fowler's articles). These examples moved here from `claude/CLAUDE.md` to make room under its size cap for the research-sources rule below ([dev-env#1401](https://github.com/brownm09/dev-env/issues/1401)).
+
+**Research outputs record their sources.** A research output is a survey, comparison, landscape scan or similar finding written to a repo file or a report, not a chat answer. It records three things, so a reader can check it and a later session can re-run it:
+
+1. **Every query run**, verbatim.
+2. **Every page loaded**, by full URL.
+3. **The source of each claim:** the page it came from, or a *snippet only* mark when the claim rests on a search-result summary and the page itself was never loaded.
+
+When a research subagent does the searching, have it return its queries and fetched URLs alongside its findings, and write them to the output or a sources file next to it. Working examples are in career-playbook: `outside_work/survey_sources.md`, and the daily briefing routine in `outside_work/briefing_routine.md`, both with tables of queries and pages loaded and a *snippet only* mark per claim.
+
+Stated by the user on 2026-11-22: "Sources should always be documented." The rationale incident is the career-playbook outside-work survey ([brownm09/career-playbook#2430](https://github.com/brownm09/career-playbook/issues/2430)): every row linked a page, but the searches that found them weren't recorded and several side claims had no source, so the survey couldn't be checked or re-run. Nothing enforces this mechanically.
+
 ### Detail: User references
 
 **Reopen an application yourself before asking the user to test something in it.** When the session closed the application, or had the user close it, launch it and confirm the process and its window exist, then ask. Don't ask the user to reopen it, and don't make the launch wait on an action of theirs. The exception is a step that needs the user's own hands first, such as a sign-in, or elevation once `sudo` has failed (see *Platform & Environment*): say so and state exactly what is needed. Stated by the user on 2026-11-05, after a session asked for a RetroArch test while RetroArch was still closed ([dev-env#1211](https://github.com/brownm09/dev-env/issues/1211)). Nothing enforces this mechanically.

@@ -495,12 +495,10 @@ If still unsure, say "the guard printed X; I have not yet confirmed the underlyi
 
 When writing or updating any architectural documentation (ADRs, design docs, READMEs):
 
-- **Cite primary sources, not summaries.** Three categories:
-  - *Official documentation* — for technology and framework choices (NestJS, Next.js, Prisma, etc.)
-  - *Specifications* — for protocol and standard choices (IETF RFCs, OASIS specs, GraphQL spec, OpenID Connect)
-  - *Foundational writings* — for architectural patterns (Cockburn's Hexagonal Architecture, Uncle Bob's Clean Architecture, Fowler articles)
+- **Cite primary sources, not summaries:** *official documentation* for technology choices, *specifications* for protocols and standards, *foundational writings* for architectural patterns. [Detail](../docs/REFERENCE.md#detail-documentation-and-citations)
 - **Regulatory references** (GDPR, HIPAA, SOC 2) must link to the primary regulatory source, not a summary or blog post.
 - **When making any technical recommendation in a response** — a technology, Claude Code feature, workflow pattern, or architectural approach — include a primary source link in that same response. If no authoritative primary source exists, explicitly label the recommendation as based on observed behavior or heuristic.
+- **Research written to a file records its sources:** the queries run, the pages loaded, and each claim's page, or *snippet only* if just a search summary backs it.
 
 ---
 
