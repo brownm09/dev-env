@@ -15,7 +15,7 @@
     once the log looks right; the guard rereads it every 30 seconds. An existing file is never
     overwritten.
 
-    The task is non-elevated and windowless (ADR-041): Limited run level, Interactive logon, pyw.exe
+    The task is non-elevated and opens no console (ADR-041): Limited run level, Interactive logon, pyw.exe
     with no console, marked Hidden, no time limit, started at sign-in and tried again every 5 minutes,
     which is ignored while the guard runs. The guard's own window is off-screen with no taskbar
     button. Registering again is safe: it stops the running guard and starts the one named by
