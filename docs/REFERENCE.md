@@ -2372,7 +2372,7 @@ When uncertain after the three steps, surface the uncertainty explicitly: "the g
 
 **Research outputs record their sources.** A research output is a survey, comparison, landscape scan or similar finding written to a repo file or a report, not a chat answer. It records three things, so a reader can check it and a later session can re-run it:
 
-1. **Every query run**, with the tool or engine that ran it.
+1. **Every query run**, verbatim.
 2. **Every page loaded**, by full URL.
 3. **The source of each claim:** the page it came from, or a *snippet only* mark when the claim rests on a search-result summary and the page itself was never loaded.
 
