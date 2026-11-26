@@ -221,6 +221,13 @@ def _same_file(a: str | Path, b: str | Path) -> bool:
     return norm(a) == norm(b)
 
 
+def _program_exists(command: str) -> bool:
+    """A task's program given as a full path must still be there: a Python upgrade can remove the
+    pythonw.exe a task names. A bare name (pyw.exe) is found on PATH at run time, so it passes."""
+    path = os.path.expandvars(command.strip().strip('"'))
+    return not os.path.isabs(path) or os.path.exists(path)
+
+
 # ------------------------------------------------------------------ the decision
 
 
@@ -281,6 +288,8 @@ def evaluate(
                     problems.append(
                         f"{task['name']} runs {', '.join(runs) or repr(state.info.arguments)}, not {expected}"
                     )
+                elif not _program_exists(state.info.command):
+                    problems.append(f"{task['name']} runs {state.info.command}, which no longer exists")
                 elif not state.info.enabled:
                     problems.append(f"{task['name']} is disabled")
         if config:

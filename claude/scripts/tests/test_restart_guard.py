@@ -211,8 +211,8 @@ class TestQueryEndSession(unittest.TestCase):
         self.assertTrue(rg.query_end_session_answer(self.BUSY, {**block, "enabled": False}, 0))
 
     def test_window_is_one_windows_asks(self):
-        # Measured on build 26300: Windows never sent WM_QUERYENDSESSION to an off-screen tool window,
-        # and killed its process; an off-screen owned window was asked and blocked the restart.
+        # Measured on build 26300: Windows never sent WM_QUERYENDSESSION to an off-screen tool window;
+        # an off-screen owned window was asked and blocked the restart.
         self.assertTrue(rg.GUARD_STYLE & rg.WS_VISIBLE)
         self.assertFalse(rg.GUARD_EX_STYLE & rg.WS_EX_TOOLWINDOW)
 
@@ -543,6 +543,11 @@ class TestRegisterScript(unittest.TestCase):
                        "-Encoding unicode", "UTF8Encoding($false)", "-Priority 4"):
             self.assertIn(needle, self.TEXT)
         self.assertNotIn("RunAs", self.TEXT)
+
+    def test_task_runs_pythonw_not_the_launcher(self):
+        # The launcher's job takes the guard down when a restart ends the windowless launcher.
+        self.assertIn("-Execute $pythonw", self.TEXT)
+        self.assertNotIn("Get-Command pyw.exe", self.TEXT)
 
     def test_unregister_stops_the_guard_before_restoring(self):
         block = self.TEXT[self.TEXT.index("if ($Unregister) {"):]

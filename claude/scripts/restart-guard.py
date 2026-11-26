@@ -15,7 +15,7 @@ owned by a hidden window so it has no taskbar button, because Windows lets only 
 visible window cancel a shutdown
 (https://learn.microsoft.com/en-us/windows/win32/shutdown/shutdown-changes-for-windows-vista). It is
 not a tool window: measured on Windows 11 build 26300, an off-screen tool window is never sent
-WM_QUERYENDSESSION and its process is killed, while an off-screen owned window is asked and can block.
+WM_QUERYENDSESSION, while an off-screen owned window is asked and can block.
 While sessions are busy it sets a block reason (ShutdownBlockReasonCreate) naming them and answers
 WM_QUERYENDSESSION with FALSE, from the state of the last poll so the answer is immediate. Windows
 then shows its "apps are preventing restart" screen with that reason, and Restart anyway still works.
@@ -57,7 +57,8 @@ the busy set, each WM_QUERYENDSESSION and the answer, each change in what Layer 
 distinct error once (then `recovered`). Files older than LOG_RETENTION_DAYS are deleted.
 
 Usage:
-  pyw -3 restart-guard.py            run the guard (what the task runs)
+  pythonw restart-guard.py           run the guard (the task runs pythonw.exe directly: a restart
+                                     ends the pyw launcher, and its job kills the guard with it)
   py -3 restart-guard.py --status    print the busy sessions and what the guard would do now
   py -3 restart-guard.py --restore   end the deferral: put the captured active hours back. Refuses
                                      while the guard runs; stop the task first.

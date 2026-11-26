@@ -15,11 +15,12 @@
     once the log looks right; the guard rereads it every 30 seconds. An existing file is never
     overwritten.
 
-    The task is non-elevated and opens no console (ADR-041): Limited run level, Interactive logon, pyw.exe
-    with no console, marked Hidden, no time limit, started at sign-in and tried again every 5 minutes,
-    which is ignored while the guard runs. The guard's own window is off-screen with no taskbar
-    button. Registering again is safe: it stops the running guard and starts the one named by
-    -ScriptPath.
+    The task is non-elevated and opens no console (ADR-041): Limited run level, Interactive logon,
+    pythonw.exe run directly (not the pyw.exe launcher, which a restart ends before the guard is
+    asked), marked Hidden, no time limit, started at sign-in and tried again every 5 minutes, which is
+    ignored while the guard runs. The guard's own window is off-screen with no taskbar button.
+    Registering again is safe: it stops the running guard and starts the one named by -ScriptPath.
+    Re-run it after a Python upgrade, which can remove the pythonw.exe the task names.
 
 .PARAMETER ScriptPath
     The guard to run. Defaults to the junctioned ~/.claude/scripts path, which tracks dev-env main;
@@ -32,7 +33,7 @@
     ~/.claude/restart-guard.json. If the guard won't stop, or an active-hours backup exists and the
     restore can't run or fails, it throws and leaves the task registered. Re-run without switches to
     turn it back on; the config keeps your settings. Needs py.exe only when there is a backup to
-    restore, and never pyw.exe.
+    restore, and never pyw.exe or pythonw.exe.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File register-restart-guard.ps1
@@ -115,9 +116,16 @@ if ($Unregister) {
     return
 }
 
-$launcher = Get-Command pyw.exe -ErrorAction SilentlyContinue
-if (-not $launcher) { throw "pyw.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
-$pyw = $launcher.Source
+# The task runs pythonw.exe itself, not the pyw.exe launcher. The launcher has no window, so a
+# restart ends it at once, and it keeps its child in a job that dies with it: measured on LETHEON
+# on 2026-11-25, the guard was killed before Windows asked it anything. py.exe finds the pythonw.exe
+# that "py -3" would use; re-run this script after a Python upgrade (the doctor warns when it's gone).
+$launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+if (-not $launcher) { throw "py.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
+$pythonw = (& $launcher.Source -3 -c "import os, sys; print(os.path.join(os.path.dirname(sys.executable), 'pythonw.exe'))" | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $pythonw -or -not (Test-Path -LiteralPath $pythonw)) {
+    throw "Could not find pythonw.exe beside the Python that 'py -3' runs (got '$pythonw')."
+}
 
 if (-not (Test-Path $ScriptPath)) { throw "Guard not found at $ScriptPath. Pull dev-env main first." }
 
@@ -136,7 +144,7 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     if (-not (Stop-Guard)) { Write-Warning "The old guard is still running 15 s after Stop-ScheduledTask; it keeps running the old code until it exits." }
 }
 
-$action = New-ScheduledTaskAction -Execute $pyw -Argument ('-3 "{0}"' -f $ScriptPath)
+$action = New-ScheduledTaskAction -Execute $pythonw -Argument ('"{0}"' -f $ScriptPath)
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
 $daily = New-ScheduledTaskTrigger -Daily -At '00:00'
 $daily.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval (New-TimeSpan -Minutes 5) `
