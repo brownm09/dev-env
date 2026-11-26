@@ -130,11 +130,22 @@ def wired_script_events(settings: dict) -> dict[str, set[str]]:
     A command that resolves to no .py basename is skipped (it contributes no
     script). Used by the output-contract gate to classify a script's emissions
     against context vs. non-context events.
+
+    Raises ValueError when the settings yield no wired script at all: a `hooks` block
+    this parser cannot read is a defect, and every gate that loops over the result
+    would otherwise pass against nothing (dev-env#1081). hook_entries() itself still
+    returns [] so dev-env-doctor.py can report its own empty case.
     """
     out: dict[str, set[str]] = {}
     for e in hook_entries(settings):
         for script in e.scripts:  # a dispatcher and each of its handlers (dev-env#851)
             out.setdefault(script, set()).add(e.event)
+    if not out:
+        raise ValueError(
+            "no wired hook script found in the settings' `hooks` block: "
+            "claude/settings.shared.json's `hooks` is missing, renamed or not the "
+            "event -> [group] -> hooks shape this parser reads (dev-env#1081)"
+        )
     return out
 
 
