@@ -484,9 +484,9 @@ def _classify_emission(stream, gov, is_json, channel, only_noncontext, dropped=F
     return None
 
 
-def _scan_output_contract():
+def _scan_output_contract(settings: dict | None = None):
     """Return {(script, check): [linenos]} for every output-contract offense."""
-    settings = wiring.load_settings()
+    settings = wiring.load_settings() if settings is None else settings
     events_by_script = wiring.wired_script_events(settings)
     offenses: dict[tuple[str, str], list[int]] = {}
     for script in wiring.wired_scripts(settings):
@@ -503,9 +503,9 @@ def _scan_output_contract():
     return offenses
 
 
-def _scan_nonascii():
+def _scan_nonascii(settings: dict | None = None):
     """Return {script: [linenos]} for every non-ASCII raw emission."""
-    settings = wiring.load_settings()
+    settings = wiring.load_settings() if settings is None else settings
     out: dict[str, list[int]] = {}
     for script in wiring.wired_scripts(settings):
         source = (wiring.SCRIPTS_DIR / script).read_text(encoding="utf-8")

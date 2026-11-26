@@ -126,10 +126,10 @@ def classify_heartbeat(source: str, expected_name: str, filename: str = "<string
 # ---------------------------------------------------------------------------
 
 
-def _scan_real_repo() -> dict[str, str]:
+def _scan_real_repo(settings: dict | None = None) -> dict[str, str]:
     """Return {script: reason} for every wired script that is NOT compliant.
     An empty dict means every wired hook passes."""
-    settings = wiring.load_settings()
+    settings = wiring.load_settings() if settings is None else settings
     scripts = wiring.wired_scripts(settings)
     problems: dict[str, str] = {}
     for script in scripts:
