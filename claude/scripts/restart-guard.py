@@ -10,9 +10,12 @@ which sessions are busy: a turn in progress, or a background task still running.
 does no file or registry work, so a slow disk can delay a poll but never the window's answer to
 Windows. A named mutex keeps it to one copy.
 
-Layer 1, a restart you start. The process owns a small top-level window, visible but placed off-screen
-with no taskbar button, because Windows lets only an application with a visible window cancel a
-shutdown (https://learn.microsoft.com/en-us/windows/win32/shutdown/shutdown-changes-for-windows-vista).
+Layer 1, a restart you start. The process owns a small window, visible but placed off-screen and
+owned by a hidden window so it has no taskbar button, because Windows lets only an application with a
+visible window cancel a shutdown
+(https://learn.microsoft.com/en-us/windows/win32/shutdown/shutdown-changes-for-windows-vista). It is
+not a tool window: measured on Windows 11 build 26300, an off-screen tool window is never sent
+WM_QUERYENDSESSION and its process is killed, while an off-screen owned window is asked and can block.
 While sessions are busy it sets a block reason (ShutdownBlockReasonCreate) naming them and answers
 WM_QUERYENDSESSION with FALSE, from the state of the last poll so the answer is immediate. Windows
 then shows its "apps are preventing restart" screen with that reason, and Restart anyway still works.
@@ -382,6 +385,12 @@ def update_active_hours(
 WM_DESTROY, WM_QUERYENDSESSION, WM_ENDSESSION, WM_APP_POLLED = 0x0002, 0x0011, 0x0016, 0x8001
 ENDSESSION_CLOSEAPP, ENDSESSION_CRITICAL = 0x00000001, 0x40000000
 ERROR_ALREADY_EXISTS = 183
+WS_POPUP, WS_VISIBLE = 0x80000000, 0x10000000
+WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x00000080, 0x08000000
+# The guard window: owned (see Guard.run), never activated, off-screen and 1x1. Never WS_EX_TOOLWINDOW.
+GUARD_EX_STYLE = WS_EX_NOACTIVATE
+GUARD_STYLE = WS_POPUP | WS_VISIBLE
+GUARD_RECT = (-32000, -32000, 1, 1)
 
 
 def query_end_session_answer(busy: list, cfg: dict, lparam: int) -> bool:
@@ -587,13 +596,17 @@ class Guard:
         if not user32.RegisterClassW(ctypes.byref(wc)):
             log("start_error", detail=f"RegisterClassW failed: {ctypes.get_last_error()}")
             return 1
-        WS_POPUP, WS_VISIBLE = 0x80000000, 0x10000000
-        WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x00000080, 0x08000000
-        # Visible, so Windows lets it cancel a shutdown; off-screen, 1x1 and a tool window, so it
-        # has no taskbar button and is never seen. The title is what the blocking screen names.
-        self.hwnd = user32.CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "ClaudeRestartGuard",
-                                           "Claude sessions", WS_POPUP | WS_VISIBLE,
-                                           -32000, -32000, 1, 1, None, None, hinst, None)
+        # A hidden owner, so the guard window gets no taskbar button or Alt+Tab entry.
+        owner = user32.CreateWindowExW(0, "ClaudeRestartGuard", "Claude sessions owner", WS_POPUP,
+                                       0, 0, 0, 0, None, None, hinst, None)
+        if not owner:
+            log("start_error", detail=f"CreateWindowExW (owner) failed: {ctypes.get_last_error()}")
+            return 1
+        # Visible, so Windows lets it cancel a shutdown; off-screen and 1x1, so it is never seen. Not
+        # a tool window: Windows treats an off-screen tool window as having no visible window (see the
+        # module docstring). The title is what the blocking screen names.
+        self.hwnd = user32.CreateWindowExW(GUARD_EX_STYLE, "ClaudeRestartGuard", "Claude sessions",
+                                           GUARD_STYLE, *GUARD_RECT, owner, None, hinst, None)
         if not self.hwnd:
             log("start_error", detail=f"CreateWindowExW failed: {ctypes.get_last_error()}")
             return 1

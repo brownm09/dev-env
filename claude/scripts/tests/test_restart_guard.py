@@ -10,8 +10,9 @@ active-hours registry values, and a temp backup anchor and state file. Nothing r
 sessions, writes the registry or creates the guard's window. The one exception is
 `test_an_exited_process_is_not_alive`, which starts and waits for a short Python child process.
 
-Scope gap: whether Windows lists the off-screen window on its "apps are preventing restart" screen,
-and what Windows Update does when active hours move, can only be seen on a real machine. See the ADR's
+Scope gap: whether Windows asks the guard's window and lists it on its "apps are preventing restart"
+screen, and what Windows Update does when active hours move, can only be seen on a real machine.
+`test_window_is_one_windows_asks` pins only the window style that measurement found. See the ADR's
 verification steps.
 """
 import datetime as dt
@@ -208,6 +209,12 @@ class TestQueryEndSession(unittest.TestCase):
                         "Restart Manager asking the guard to close is never refused")
         self.assertTrue(rg.query_end_session_answer(self.BUSY, rg.DEFAULTS, 0), "report-only never refuses")
         self.assertTrue(rg.query_end_session_answer(self.BUSY, {**block, "enabled": False}, 0))
+
+    def test_window_is_one_windows_asks(self):
+        # Measured on build 26300: Windows never sent WM_QUERYENDSESSION to an off-screen tool window,
+        # and killed its process; an off-screen owned window was asked and blocked the restart.
+        self.assertTrue(rg.GUARD_STYLE & rg.WS_VISIBLE)
+        self.assertFalse(rg.GUARD_EX_STYLE & rg.WS_EX_TOOLWINDOW)
 
 
 class TestConfig(unittest.TestCase):
