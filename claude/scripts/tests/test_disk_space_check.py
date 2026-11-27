@@ -8,8 +8,9 @@ stdin. This test exercises the pure `classify_free_space()` helper extracted
 from main()'s inline if/elif so the threshold boundaries are pinned offline
 (no disk, no network, no subprocess), matching the repo's fixture-only test
 convention (test_worktree_npm_install.py). The disk_usage syscall, marker-file
-I/O, and the detached reclaim spawn are intentionally not tested — they touch
-real disk/process state and the repo avoids mocking those boundaries.
+I/O, and the detached reclaim spawn are intentionally not run — they touch
+real disk/process state. Only the spawn's arguments are recorded, by the
+fake-home relocation case (dev-env#1113).
 
 Usage:
     py -3 claude/scripts/tests/test_disk_space_check.py
@@ -18,7 +19,11 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import os
+import subprocess
 import sys
+import tempfile
+from unittest import mock
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -100,6 +105,57 @@ def test_scratch_is_home_derived_not_hardcoded() -> str:
     return "SCRATCH is Path.home() / '.claude' / 'scratch', not a hardcoded literal"
 
 
+def _load_relocated(fake_home: Path, scan_override: "str | None"):
+    """Load a fresh copy of the script with Path.home() pointed at fake_home
+    and DEV_ENV_SCAN_DIR set to scan_override (unset when None), since
+    SCAN_DIR and TARGET_DRIVE are read once at import (dev-env#1113)."""
+    env = {k: v for k, v in os.environ.items() if k != "DEV_ENV_SCAN_DIR"}
+    if scan_override is not None:
+        env["DEV_ENV_SCAN_DIR"] = scan_override
+    spec = importlib.util.spec_from_file_location("disk_space_check_relocated", SCRIPT)
+    assert spec and spec.loader, f"cannot load module spec from {SCRIPT}"
+    mod = importlib.util.module_from_spec(spec)
+    with mock.patch.object(Path, "home", return_value=fake_home), \
+            mock.patch.dict(os.environ, env, clear=True):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _captured_scan_dir(mod) -> str:
+    """Run the reclaim spawn with subprocess.Popen recorded and return the
+    --scan-dir it passed to reclaim-worktree-disk.py."""
+    calls = []
+
+    def record(args, *a, **k):
+        calls.append(list(args) if isinstance(args, list) else [args])
+        raise OSError("recorded, not run")
+
+    with mock.patch.object(subprocess, "Popen", record):
+        mod._spawn_reclaim("")
+    reclaim = [c for c in calls if str(mod.RECLAIM_SCRIPT) in c]
+    assert reclaim, f"reclaim script never spawned: {calls}"
+    args = reclaim[0]
+    return args[args.index("--scan-dir") + 1]
+
+
+def test_scan_dir_relocates_to_fake_home() -> str:
+    fake_home = Path(tempfile.gettempdir()) / "relocated home" / "someone"
+    mod = _load_relocated(fake_home, None)
+    scan = _captured_scan_dir(mod)
+    assert scan == (fake_home / "Git").as_posix(), (
+        f"--scan-dir should be under the fake home {fake_home}, got {scan}"
+    )
+    want_drive = fake_home.anchor.replace("\\", "/") or "C:/"
+    assert mod.TARGET_DRIVE == want_drive, (
+        f"TARGET_DRIVE should be the fake home's anchor {want_drive}, got {mod.TARGET_DRIVE}"
+    )
+    override = (Path(tempfile.gettempdir()) / "elsewhere" / "repos").as_posix()
+    mod = _load_relocated(fake_home, override)
+    scan = _captured_scan_dir(mod)
+    assert scan == override, f"DEV_ENV_SCAN_DIR should win, got {scan}"
+    return "--scan-dir is <home>/Git under a fake home; DEV_ENV_SCAN_DIR wins when set"
+
+
 def main() -> int:
     tests = [
         ("ample space is ok", test_ample_space_is_ok),
@@ -110,6 +166,7 @@ def main() -> int:
         ("zero free is act", test_zero_free_is_act),
         ("cleanup gated to UserPromptSubmit only", test_cleanup_gated_to_user_prompt_submit),
         ("SCRATCH is Path.home()-derived, not hardcoded", test_scratch_is_home_derived_not_hardcoded),
+        ("SCAN_DIR relocates to a fake home; DEV_ENV_SCAN_DIR wins", test_scan_dir_relocates_to_fake_home),
     ]
     failed = 0
     for name, fn in tests:

@@ -41,6 +41,7 @@ Exit 0 always — a background-housekeeping systemMessage toast at most (via _ho
 PR5 of dev-env#717); never blocks Claude.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
+import os
 import subprocess
 import sys
 
@@ -70,7 +71,9 @@ RECLAIM_MSG = (
     "now-idle worktrees in the background (regenerable on next use)."
 )
 
-SCAN_DIR = "C:/Users/brown/Git"
+# The tree scanned for idle worktrees: the profile's Git directory, so another
+# machine's home works unmodified; DEV_ENV_SCAN_DIR overrides it (dev-env#1113).
+SCAN_DIR = os.environ.get("DEV_ENV_SCAN_DIR") or (Path.home() / "Git").as_posix()
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 
 
