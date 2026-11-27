@@ -347,15 +347,16 @@ def test_stale_canonical_recovery_decision_suffixed_branch_matches_today() -> st
 # silently reinstate the exact dev-env#866 blind spot with a green suite.
 
 
-def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG", resurrected=lambda: []):
+def _run_main(cwd, session_id, scratch, rollover="ROLLOVER-MSG", resurrected=lambda: [], remote_ahead=False):
     """Drive main() with stubbed checks; return the emitted systemMessage ('' if silent)."""
     orig = {
         name: getattr(mod, name)
         for name in (
             "day_rollover_message", "stale_draft_artifacts", "unmerged_draft_branches",
-            "late_commit_branches", "cleanup_stale_flags", "SCRATCH",
+            "late_commit_branches", "cleanup_stale_flags", "SCRATCH", "remote_today_not_in_head",
         )
     }
+    mod.remote_today_not_in_head = lambda: remote_ahead
     mod.day_rollover_message = lambda: rollover
     mod.stale_draft_artifacts = lambda: ["/x/sessions/dev-env/2026-07-01_010101.stub.md"]
     mod.unmerged_draft_branches = lambda: ["2026-07-01"]
@@ -436,6 +437,99 @@ def test_main_quiet_run_still_arms_the_sentinel() -> str:
         assert (scratch / f"journal_hook_rollover_{sid}.flag").exists(), \
             "a quiet run must still arm the sentinel, or every prompt respawns git"
     return "a quiet run arms its sentinel instead of re-running the check on the next prompt"
+
+
+def test_main_remote_ahead_advisory_prints_once_per_window() -> str:
+    """Check 6 rides check 4's sentinel: it fires in a worktree session and prints once."""
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch, sid = Path(tmp), "sid-remote-ahead"
+        first = _run_main(WORKTREE_CWD, sid, scratch, rollover=None, remote_ahead=True)
+        assert f"origin/draft/{mod.TODAY}" in first, first
+        for needle in ("fetch", f"checkout draft/{mod.TODAY}", f"merge --ff-only origin/draft/{mod.TODAY}", "Never force-push"):
+            assert needle in first, f"advisory must say {needle!r}; got {first!r}"
+        assert first.count("[journal-hook]") == 1, first
+        second = _run_main(WORKTREE_CWD, sid, scratch, rollover=None, remote_ahead=True)
+        assert second == "", f"the advisory must print once per sentinel window; got {second!r}"
+    return "the remote-ahead advisory names the branch and the recovery, and prints once"
+
+
+# --- Check 6: remote-ahead, against a real bare origin and two clones (dev-env#1111) --------
+REMOTE_TODAY = "2099-02-02"
+
+
+def _two_clones(tmp: str) -> tuple[Path, Path]:
+    """A bare origin with one commit on main, and two clones of it (two machines)."""
+    origin = Path(tmp) / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    clones = []
+    for name in ("a", "b"):
+        clone = Path(tmp) / name
+        subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
+        _run_git(clone, "config", "user.email", "test@example.com")
+        _run_git(clone, "config", "user.name", "Test")
+        _run_git(clone, "config", "core.hooksPath", str(Path(tmp) / "no-hooks"))
+        clones.append(clone)
+    a, b = clones
+    _run_git(a, "checkout", "-q", "-b", "main")
+    _run_git(a, "commit", "-q", "--allow-empty", "-m", "init")
+    _run_git(a, "push", "-q", "origin", "main")
+    _run_git(b, "fetch", "-q", "origin")
+    _run_git(b, "checkout", "-q", "main")
+    return a, b
+
+
+def _stub_commit(clone: Path, stem: str) -> None:
+    (clone / "sessions" / "p").mkdir(parents=True, exist_ok=True)
+    (clone / "sessions" / "p" / f"{stem}.stub.md").write_text("a session\n", encoding="utf-8")
+    _run_git(clone, "add", "-A")
+    _run_git(clone, "commit", "-q", "-m", f"stub {stem}")
+
+
+def _remote_ahead_against(clone: Path) -> bool:
+    orig = (mod.JOURNAL_REPO, mod.TODAY)
+    mod.JOURNAL_REPO, mod.TODAY = clone, REMOTE_TODAY
+    try:
+        return mod.remote_today_not_in_head()
+    finally:
+        mod.JOURNAL_REPO, mod.TODAY = orig
+
+
+def test_remote_ahead_true_when_remote_tip_not_in_head() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = _two_clones(tmp)
+        _run_git(a, "checkout", "-q", "-b", f"draft/{REMOTE_TODAY}")
+        _stub_commit(a, f"{REMOTE_TODAY}_090000")
+        _run_git(a, "push", "-q", "-u", "origin", f"draft/{REMOTE_TODAY}")
+        _run_git(b, "checkout", "-q", "-b", f"draft/{REMOTE_TODAY}")
+        _stub_commit(b, f"{REMOTE_TODAY}_100000")
+        _run_git(b, "fetch", "-q", "origin")
+        assert _remote_ahead_against(b), "machine B lacks machine A's pushed stub: expected the advisory"
+    return "origin/draft/<today> holding a commit HEAD lacks -> advisory"
+
+
+def test_remote_ahead_false_after_merging_the_remote_tip() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = _two_clones(tmp)
+        _run_git(a, "checkout", "-q", "-b", f"draft/{REMOTE_TODAY}")
+        _stub_commit(a, f"{REMOTE_TODAY}_090000")
+        _run_git(a, "push", "-q", "-u", "origin", f"draft/{REMOTE_TODAY}")
+        _run_git(b, "checkout", "-q", "-b", f"draft/{REMOTE_TODAY}")
+        _stub_commit(b, f"{REMOTE_TODAY}_100000")
+        _run_git(b, "fetch", "-q", "origin")
+        _run_git(b, "merge", "-q", "--no-edit", f"origin/draft/{REMOTE_TODAY}")
+        assert not _remote_ahead_against(b), "the remote tip is now in HEAD: no advisory"
+    return "after merging origin/draft/<today>, its tip is contained -> no advisory"
+
+
+def test_remote_ahead_false_without_a_remote_branch_for_today() -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = _two_clones(tmp)
+        _run_git(a, "checkout", "-q", "-b", "draft/2099-02-01")
+        _stub_commit(a, "2099-02-01_090000")
+        _run_git(a, "push", "-q", "-u", "origin", "draft/2099-02-01")
+        _run_git(b, "fetch", "-q", "origin")
+        assert not _remote_ahead_against(b), "no origin/draft/<today>: no advisory"
+    return "no remote branch for today (only another day's) -> no advisory"
 
 
 # --- Check 5: stale-canonical self-healing — real-repo end-to-end tests (dev-env#911) -----
@@ -887,6 +981,10 @@ def main() -> int:
         ("worktree emission does not suppress checks 1-3", test_main_worktree_emission_does_not_suppress_canonical_checks),
         ("rollover re-suppresses within the recheck window", test_main_rollover_resuppresses_within_the_recheck_window),
         ("a quiet run still arms the sentinel", test_main_quiet_run_still_arms_the_sentinel),
+        ("remote-ahead advisory names the recovery and prints once", test_main_remote_ahead_advisory_prints_once_per_window),
+        ("remote-ahead (two clones): remote tip not in HEAD -> advisory", test_remote_ahead_true_when_remote_tip_not_in_head),
+        ("remote-ahead (two clones): after merging the tip -> no advisory", test_remote_ahead_false_after_merging_the_remote_tip),
+        ("remote-ahead (two clones): no remote branch for today -> no advisory", test_remote_ahead_false_without_a_remote_branch_for_today),
         ("stale-recovery: silent cases (today/non-draft/dirty/under-threshold/unknown-idle)", test_stale_canonical_recovery_decision_silent_cases),
         ("stale-recovery: dirty short-circuits before idle is consulted", test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle),
         ("stale-recovery: fires when clean and idle >= threshold", test_stale_canonical_recovery_decision_fires_when_clean_and_idle),

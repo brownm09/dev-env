@@ -2,7 +2,7 @@
 """
 UserPromptSubmit hook: detect stale journal work in engineering-journal.
 
-Five checks:
+Six checks:
 1. *_draft.md files from a previous calendar day still on disk (composed but
    branch not yet deleted, or composition never ran).
 2. Remote draft/* branches with no composed journal file on main — never
@@ -31,8 +31,14 @@ Five checks:
    (a real `git checkout main`) instead of only printing advice — the
    dirty-tree gate is what makes that safe; see
    `stale_canonical_recovery_decision`.
+6. Remote-ahead (dev-env#1111): with an engineering-journal clone on each of two
+   machines, the other machine may already have pushed today's draft branch. When
+   `refs/remotes/origin/draft/<today>` exists and its tip is not an ancestor of the
+   canonical's HEAD, advise fetching, checking out draft/<today> and fast-forwarding
+   to it, never force-pushing over it. Reads the last fetch's remote-tracking ref, so
+   no network call.
 
-Checks 4 and 5 are the only ones that also run in Claude-managed worktree
+Checks 4, 5 and 6 are the only ones that also run in Claude-managed worktree
 sessions: those write stubs into the canonical via `git -C`, so they are
 exactly who needs the warning (and who benefits from the auto-recovery),
 whereas checks 1-3 concern the canonical's own housekeeping and would be
@@ -784,6 +790,43 @@ def stale_canonical_recovery_message() -> str | None:
     )
 
 
+def remote_today_not_in_head() -> bool:
+    """True when origin/draft/<TODAY> exists in the canonical and its tip is not contained in
+    HEAD, i.e. another clone pushed today's stubs this checkout lacks (dev-env#1111). False
+    when the ref is absent or on any failure. Subprocess boundary."""
+    try:
+        tip = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/draft/{TODAY}^{{commit}}"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if tip.returncode != 0:
+            return False
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", tip.stdout.strip(), "HEAD"],
+            cwd=JOURNAL_REPO,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode != 0
+    except Exception:
+        return False
+
+
+def format_remote_ahead(today: str) -> str:
+    ej = JOURNAL_REPO.as_posix()
+    return (
+        f"[journal-hook] origin/draft/{today} has commits the journal canonical does not "
+        f"(another clone pushed today's stubs). Before writing a stub, run: "
+        f"git -C {ej} fetch origin && git -C {ej} checkout draft/{today} && "
+        f"git -C {ej} merge --ff-only origin/draft/{today}. Never force-push draft/{today}: "
+        f"that deletes the other clone's stubs."
+    )
+
+
 def emit(messages: list[str]) -> None:
     """Print the accumulated systemMessage, if any. Flag bookkeeping is the caller's job —
     the two checks are gated by separate sentinels, so `emit` must not own either."""
@@ -866,6 +909,8 @@ def main() -> None:
         rollover = day_rollover_message()
         if rollover:
             messages.append(rollover)
+        if remote_today_not_in_head():
+            messages.append(format_remote_ahead(TODAY))
         if rollover_flag is not None:
             touch_flag(rollover_flag)
 
