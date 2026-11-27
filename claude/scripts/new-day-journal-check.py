@@ -793,8 +793,12 @@ def stale_canonical_recovery_message() -> str | None:
 def remote_today_not_in_head() -> bool:
     """True when origin/draft/<TODAY> exists in the canonical and its tip is not contained in
     HEAD, i.e. another clone pushed today's stubs this checkout lacks (dev-env#1111). False
-    when the ref is absent or on any failure. Subprocess boundary."""
+    when the ref is absent, when today is already composed on origin/main (the squash-merge
+    leaves the deleted branch's remote-tracking ref behind until a prune, and its tip is never
+    in main's ancestry), or on any failure. Subprocess boundary."""
     try:
+        if TODAY in composed_dates_on_main():
+            return False
         tip = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/draft/{TODAY}^{{commit}}"],
             cwd=JOURNAL_REPO,
@@ -822,7 +826,9 @@ def format_remote_ahead(today: str) -> str:
         f"[journal-hook] origin/draft/{today} has commits the journal canonical does not "
         f"(another clone pushed today's stubs). Before writing a stub, run: "
         f"git -C {ej} fetch origin && git -C {ej} checkout draft/{today} && "
-        f"git -C {ej} merge --ff-only origin/draft/{today}. Never force-push draft/{today}: "
+        f"git -C {ej} merge --ff-only origin/draft/{today}. If the fast-forward fails because "
+        f"this clone has its own commits on draft/{today}, run the same merge without "
+        f"--ff-only (add --no-edit). Never force-push draft/{today}: "
         f"that deletes the other clone's stubs."
     )
 

@@ -445,7 +445,7 @@ def test_main_remote_ahead_advisory_prints_once_per_window() -> str:
         scratch, sid = Path(tmp), "sid-remote-ahead"
         first = _run_main(WORKTREE_CWD, sid, scratch, rollover=None, remote_ahead=True)
         assert f"origin/draft/{mod.TODAY}" in first, first
-        for needle in ("fetch", f"checkout draft/{mod.TODAY}", f"merge --ff-only origin/draft/{mod.TODAY}", "Never force-push"):
+        for needle in ("fetch", f"checkout draft/{mod.TODAY}", f"merge --ff-only origin/draft/{mod.TODAY}", "without --ff-only", "Never force-push"):
             assert needle in first, f"advisory must say {needle!r}; got {first!r}"
         assert first.count("[journal-hook]") == 1, first
         second = _run_main(WORKTREE_CWD, sid, scratch, rollover=None, remote_ahead=True)
@@ -488,10 +488,12 @@ def _stub_commit(clone: Path, stem: str) -> None:
 def _remote_ahead_against(clone: Path) -> bool:
     orig = (mod.JOURNAL_REPO, mod.TODAY)
     mod.JOURNAL_REPO, mod.TODAY = clone, REMOTE_TODAY
+    mod.composed_dates_on_main.cache_clear()  # memoized per process; each fixture is a new repo
     try:
         return mod.remote_today_not_in_head()
     finally:
         mod.JOURNAL_REPO, mod.TODAY = orig
+        mod.composed_dates_on_main.cache_clear()
 
 
 def test_remote_ahead_true_when_remote_tip_not_in_head() -> str:
@@ -530,6 +532,29 @@ def test_remote_ahead_false_without_a_remote_branch_for_today() -> str:
         _run_git(b, "fetch", "-q", "origin")
         assert not _remote_ahead_against(b), "no origin/draft/<today>: no advisory"
     return "no remote branch for today (only another day's) -> no advisory"
+
+
+def test_remote_ahead_false_once_today_is_composed_on_main() -> str:
+    """After the day's compose squash-merges draft/<today>, the deleted branch's remote-tracking
+    ref lingers until a prune and its tip is never in main's ancestry. That is not another
+    clone's unseen work, so no advisory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = _two_clones(tmp)
+        _run_git(a, "checkout", "-q", "-b", f"draft/{REMOTE_TODAY}")
+        _stub_commit(a, f"{REMOTE_TODAY}_090000")
+        _run_git(a, "push", "-q", "-u", "origin", f"draft/{REMOTE_TODAY}")
+        _run_git(b, "fetch", "-q", "origin")
+        assert _remote_ahead_against(b), "precondition: before the compose, B is told"
+        _run_git(a, "checkout", "-q", "main")
+        (a / "sessions" / "p").mkdir(parents=True, exist_ok=True)
+        (a / "sessions" / "p" / f"{REMOTE_TODAY}-composed.md").write_text("journal\n", encoding="utf-8")
+        _run_git(a, "add", "-A")
+        _run_git(a, "commit", "-q", "-m", "compose (squash)")
+        _run_git(a, "push", "-q", "origin", "main")
+        _run_git(b, "fetch", "-q", "origin")
+        _run_git(b, "merge", "-q", "--ff-only", "origin/main")
+        assert not _remote_ahead_against(b), "today is composed on origin/main: no advisory"
+    return "today composed on origin/main, stale origin/draft/<today> left behind -> no advisory"
 
 
 # --- Check 5: stale-canonical self-healing — real-repo end-to-end tests (dev-env#911) -----
@@ -985,6 +1010,7 @@ def main() -> int:
         ("remote-ahead (two clones): remote tip not in HEAD -> advisory", test_remote_ahead_true_when_remote_tip_not_in_head),
         ("remote-ahead (two clones): after merging the tip -> no advisory", test_remote_ahead_false_after_merging_the_remote_tip),
         ("remote-ahead (two clones): no remote branch for today -> no advisory", test_remote_ahead_false_without_a_remote_branch_for_today),
+        ("remote-ahead (two clones): today composed on main -> no advisory", test_remote_ahead_false_once_today_is_composed_on_main),
         ("stale-recovery: silent cases (today/non-draft/dirty/under-threshold/unknown-idle)", test_stale_canonical_recovery_decision_silent_cases),
         ("stale-recovery: dirty short-circuits before idle is consulted", test_stale_canonical_recovery_decision_dirty_short_circuits_before_idle),
         ("stale-recovery: fires when clean and idle >= threshold", test_stale_canonical_recovery_decision_fires_when_clean_and_idle),
