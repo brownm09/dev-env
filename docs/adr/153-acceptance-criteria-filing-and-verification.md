@@ -536,12 +536,14 @@ negated keyword in a table row. GitHub links rows, but the check skips them beca
 | 4 | Report only the linked issues that also have negated wording, using `closingIssuesReferences` | Every match is already linked, so it adds a field to the query and changes no result. If a new unlinked form causes a false warning, this is the fix to reach for |
 
 **Held-out result (2026-11-27, dev-env#1317).** `accidental_closes` was run over every PR merged in the
-same 7 repos after PR 1312 (merged 2026-11-07T05:28:03Z), using the bodies as they stand now. The
-pattern had been fixed before any of these PRs existed, so this is the held-out set the calibration
-lacked. The start condition (100 PRs) was met.
+same 7 repos after PR 1312 (merged 2026-11-07T05:28:03Z), using the bodies as they stand now. None of
+these PRs had merged when the pattern was refined, so none was in the corpus it was refined
+against: this is the held-out set the calibration lacked. The start condition (100 PRs) was met.
 
-- **Corpus:** 281 PRs: lifting-logbook 143, switchyard 55, dev-env 54, career-playbook 25,
-  cover-letter-runtime 4, win11-init-tools 0, tech-leadership-reference 0.
+- **Corpus:** 299 PRs: lifting-logbook 147, switchyard 55, dev-env 54, career-playbook 25,
+  win11-init-tools 14, cover-letter-runtime 4, tech-leadership-reference 0. Counted with the REST
+  search `repo:<r> is:pr is:merged merged:>2026-11-07T05:28:03Z`. A first count gave
+  win11-init-tools 0, although PRs 115 and 118 merged there that day; the recount added its 14.
 - **Matches:** 1.
 
 | # | PR | Issue it said it didn't close | Label |
@@ -554,7 +556,7 @@ property above. The harm was nil: #1339 duplicated #1325, and its owner reopened
 a duplicate 5 hours later. Body wording that merely sits near a real closing keyword, the form that
 caught career-playbook PR 1533, didn't recur.
 
-**Decision: stay report-only.** One true match and no false ones in 281 PRs is a good sign for the
+**Decision: stay report-only.** One true match and no false ones in 299 PRs is a good sign for the
 pattern, but one match can't bound a false-block rate, and a block that is wrong stops a merge. The
 one true match was also harmless, so the warning's cost of "reopen it" was lower than a block's
 cost of building an override that doesn't exist yet. Revisit when either (a) a held-out match is
