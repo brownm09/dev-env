@@ -202,7 +202,7 @@ def test_reclaim_msg_content_and_ascii() -> str:
 def _load_relocated(fake_home: Path, scan_override: "str | None"):
     """Load a fresh copy of the script with Path.home() pointed at fake_home
     and DEV_ENV_SCAN_DIR set to scan_override (unset when None), since
-    SCAN_DIR and TARGET_DRIVE are read once at import (dev-env#1113)."""
+    SCAN_DIR is read once at import (dev-env#1113)."""
     env = {k: v for k, v in os.environ.items() if k != "DEV_ENV_SCAN_DIR"}
     if scan_override is not None:
         env["DEV_ENV_SCAN_DIR"] = scan_override
