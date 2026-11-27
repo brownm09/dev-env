@@ -86,8 +86,11 @@ from pathlib import Path
 from _hookinput import load_hook_input
 import _hookutil
 
-TARGET_DRIVE = "C:/"
-SCAN_DIR = "C:/Users/brown/Git"
+# Drive whose free space gates reclamation, and the tree scanned for idle
+# worktrees. Both derive from the profile so another machine's home works
+# unmodified; DEV_ENV_SCAN_DIR overrides the scan tree (dev-env#1113).
+TARGET_DRIVE = Path.home().anchor.replace("\\", "/") or "C:/"
+SCAN_DIR = os.environ.get("DEV_ENV_SCAN_DIR") or (Path.home() / "Git").as_posix()
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 
 # Truncation audit (dev-env#970). One sentinel per session per worktree — see the

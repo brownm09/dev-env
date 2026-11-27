@@ -45,7 +45,11 @@ Exit 0 = all pass.
 """
 
 import importlib.util
+import os
+import subprocess
 import sys
+import tempfile
+from unittest import mock
 from pathlib import Path
 
 # tests/ -> scripts/ -> claude/ -> repo root
@@ -195,6 +199,53 @@ def test_reclaim_msg_content_and_ascii() -> str:
     return "RECLAIM_MSG content pinned + .isascii() consistency guard (dev-env#736)"
 
 
+def _load_relocated(fake_home: Path, scan_override: "str | None"):
+    """Load a fresh copy of the script with Path.home() pointed at fake_home
+    and DEV_ENV_SCAN_DIR set to scan_override (unset when None), since
+    SCAN_DIR is read once at import (dev-env#1113)."""
+    env = {k: v for k, v in os.environ.items() if k != "DEV_ENV_SCAN_DIR"}
+    if scan_override is not None:
+        env["DEV_ENV_SCAN_DIR"] = scan_override
+    spec = importlib.util.spec_from_file_location("post_pr_merge_reclaim_relocated", SCRIPT)
+    assert spec and spec.loader, f"cannot load module spec from {SCRIPT}"
+    mod = importlib.util.module_from_spec(spec)
+    with mock.patch.object(Path, "home", return_value=fake_home), \
+            mock.patch.dict(os.environ, env, clear=True):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _captured_scan_dir(mod) -> str:
+    """Run the reclaim spawn with subprocess.Popen recorded and return the
+    --scan-dir it passed to reclaim-worktree-disk.py."""
+    calls = []
+
+    def record(args, *a, **k):
+        calls.append(list(args) if isinstance(args, list) else [args])
+        raise OSError("recorded, not run")
+
+    with mock.patch.object(subprocess, "Popen", record):
+        mod._spawn_reclaim("")
+    reclaim = [c for c in calls if str(mod.RECLAIM_SCRIPT) in c]
+    assert reclaim, f"reclaim script never spawned: {calls}"
+    args = reclaim[0]
+    return args[args.index("--scan-dir") + 1]
+
+
+def test_scan_dir_relocates_to_fake_home() -> str:
+    fake_home = Path(tempfile.gettempdir()) / "relocated home" / "someone"
+    mod = _load_relocated(fake_home, None)
+    scan = _captured_scan_dir(mod)
+    assert scan == (fake_home / "Git").as_posix(), (
+        f"--scan-dir should be under the fake home {fake_home}, got {scan}"
+    )
+    override = (Path(tempfile.gettempdir()) / "elsewhere" / "repos").as_posix()
+    mod = _load_relocated(fake_home, override)
+    scan = _captured_scan_dir(mod)
+    assert scan == override, f"DEV_ENV_SCAN_DIR should win, got {scan}"
+    return "--scan-dir is <home>/Git under a fake home; DEV_ENV_SCAN_DIR wins when set"
+
+
 def main() -> int:
     tests = [
         ("merge marker present -> reclaims", test_clean_merge_with_marker_reclaims),
@@ -209,6 +260,7 @@ def main() -> int:
         ("'gh pr merge' text in $() subshell ignored (dev-env#529)", test_merge_text_inside_subshell_not_matched),
         ("gh pr merge --help: guard fires (dev-env#557)", test_help_command_not_successful_merge_and_is_help_only),
         ("unresolved real merge: guard does not suppress fallback", test_unresolved_real_merge_is_not_help_only),
+        ("SCAN_DIR relocates to a fake home; DEV_ENV_SCAN_DIR wins", test_scan_dir_relocates_to_fake_home),
     ]
     failed = 0
     for name, fn in tests:

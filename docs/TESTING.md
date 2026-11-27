@@ -243,6 +243,10 @@ For a one-line navigational map of the older tests, see
    reinstalled during this PR's own review and now scans clean. Named trees are dated observations; the
    reproducible artifacts are the fixtures in this file.
 
+   **`test_scan_dir_relocates_to_fake_home` pins path portability** ([dev-env#1113](https://github.com/brownm09/dev-env/issues/1113)). It reloads the script with
+   `Path.home()` patched to a fake home, records the reclaim call instead of running it, and asserts
+   that `--scan-dir` is `<fake home>/Git`, that `TARGET_DRIVE` is the fake home's anchor, and that `DEV_ENV_SCAN_DIR` wins when set.
+
    ```bash
    py -3 claude/scripts/tests/test_worktree_npm_install.py
    ```
@@ -262,7 +266,11 @@ For a one-line navigational map of the older tests, see
     (`gh api -X PUT repos/{owner}/{repo}/pulls/{N}/merge` + `"merged":true`) as a trigger, and that the
     same call without that marker does not
     ([dev-env#986](https://github.com/brownm09/dev-env/issues/986)). The detached reclaim spawn is not
-    covered (it shells out).
+    run (it shells out); only its arguments are recorded, below.
+
+    **`test_scan_dir_relocates_to_fake_home` pins path portability** ([dev-env#1113](https://github.com/brownm09/dev-env/issues/1113)). It reloads the script with
+    `Path.home()` patched to a fake home, records the reclaim call instead of running it, and asserts
+    that `--scan-dir` is `<fake home>/Git` and that `DEV_ENV_SCAN_DIR` wins when set.
 
     ```bash
     py -3 claude/scripts/tests/test_post_pr_merge_reclaim.py
@@ -1742,6 +1750,10 @@ For a one-line navigational map of the older tests, see
     only for `"UserPromptSubmit"` — `"PreToolUse"`/`"Stop"`/empty are all `False` — so the
     scratch/ directory scan doesn't run on every single Bash call under this hook's `PreToolUse`
     registration.
+
+    **`test_scan_dir_relocates_to_fake_home` pins path portability** ([dev-env#1113](https://github.com/brownm09/dev-env/issues/1113)). It reloads the script with
+    `Path.home()` patched to a fake home, records the reclaim call instead of running it, and asserts
+    that `--scan-dir` is `<fake home>/Git`, that `TARGET_DRIVE` is the fake home's anchor, and that `DEV_ENV_SCAN_DIR` wins when set.
 
     ```bash
     py -3 claude/scripts/tests/test_disk_space_check.py

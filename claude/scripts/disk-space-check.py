@@ -50,6 +50,7 @@ prompt or tool call.
 """
 import _winsubp  # noqa: F401  -- suppress console windows on Windows
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,9 +64,11 @@ import _hookutil
 # marker writes isolates the same way _hookutil.SCRATCH (used by the cleanup
 # call below) already does (dev-env#768 review).
 SCRATCH = Path.home() / ".claude" / "scratch"
-# Drive whose free space gates reclamation, and the tree scanned for idle worktrees.
-TARGET_DRIVE = "C:/"
-SCAN_DIR = "C:/Users/brown/Git"
+# Drive whose free space gates reclamation, and the tree scanned for idle
+# worktrees. Both derive from the profile so another machine's home works
+# unmodified; DEV_ENV_SCAN_DIR overrides the scan tree (dev-env#1113).
+TARGET_DRIVE = Path.home().anchor.replace("\\", "/") or "C:/"
+SCAN_DIR = os.environ.get("DEV_ENV_SCAN_DIR") or (Path.home() / "Git").as_posix()
 RECLAIM_SCRIPT = Path(__file__).resolve().parent / "reclaim-worktree-disk.py"
 
 # Thresholds. Hardcoded constants (single-machine global config); promote to
@@ -193,7 +196,7 @@ def main() -> None:
                     f"[disk-space-check] {free:.1f} GB free on {TARGET_DRIVE} "
                     f"(below {ACT_GB:.0f} GB) — could not start background reclamation. "
                     "Run `py -3 ~/.claude/scripts/reclaim-worktree-disk.py "
-                    "--scan-dir C:/Users/brown/Git` manually."
+                    f'--scan-dir "{SCAN_DIR}"` manually.'
                 )
             _mark_fired(session_id, "act")
     elif band == "warn":
