@@ -346,6 +346,45 @@ purely adding — several original cases were rewritten against the corrected be
 `resolve_default_branch`'s fixture). `claude/scripts/tests/test_worktree_liveness.py` grew
 from 17 to 18 (finding 6's nested-subagent-transcript case).
 
+## Amendment 2 — warn when a worktree session's canonical checkout is behind (2026-11-26)
+
+**Context.** [dev-env#1106](https://github.com/brownm09/dev-env/issues/1106) found that in a
+worktree session, project skills can load from the repo's canonical checkout rather than the
+worktree (`docs/REFERENCE.md` → *Detail: Worktree skill resolution*). In the motivating
+career-playbook incident the canonical was 239 commits behind `origin/main`, and an old
+cover-letter skill ran and recorded its old version with no warning. This hook could not have
+caught it: from a worktree it measured only the worktree's own checkout, and auto-fix is
+deliberately limited to the canonical-or-sole checkout of the session itself.
+
+**Decision** ([dev-env#1427](https://github.com/brownm09/dev-env/issues/1427)). When the
+session's checkout is a linked worktree, the hook also counts
+`refs/heads/<default>..refs/remotes/origin/<default>` (branch refs are shared by every
+worktree, so this runs from the worktree after the existing fetch). When the canonical is
+checked out on the default branch and that count is non-zero, the advisory names the
+canonical's path and the commit count. It is emitted on its own when the worktree itself is
+current, or joined into the single advisory the rest of the hook would emit
+(`_hookout.emit_advisory` exits, so one firing carries one message).
+
+**Judgment calls.**
+- **Warn, never fast-forward the canonical from a worktree session.** The canonical is shared
+  by other sessions, so a mutation from here would bypass both the concurrent-session check
+  (scoped to the session's own checkout) and the canonical-mutate guard's intent
+  ([ADR-071](071-canonical-checkout-mutate-guard-hook.md)). The canonical's own sessions
+  still auto-fix it under the original rules.
+- **Only a canonical on the default branch is measured.** A canonical on a feature branch or
+  detached is a deliberate state, and "behind the default branch" is then rebase distance,
+  not staleness; that case stays silent rather than adding a noisy, low-signal warning.
+- **dev-env stays excluded.** `dev-env-sync.py` already keeps dev-env's canonical current on
+  every prompt (step 2 of the Decision).
+
+**Testing.** Three end-to-end cases in `claude/scripts/tests/test_session_start_sync.py` run
+the real hook as a subprocess against throwaway repos (a bare origin, a canonical clone, a
+clone that pushes ahead, a worktree): the warning names the canonical path and count when it
+is behind (this case fails against the pre-amendment script), and no such warning appears when
+the canonical is current or the session is in the canonical itself. They isolate the
+heartbeat ledger and the user's global git config. This is the first coverage of `main()`'s
+orchestration in this file, for this path only.
+
 ## Consequences
 
 - **Testing.** `claude/scripts/tests/test_session_start_sync.py` (61 cases, post-Amendment-1)
