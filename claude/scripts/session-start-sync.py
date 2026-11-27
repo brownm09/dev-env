@@ -86,6 +86,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NoReturn
 
 import _hookout
 import _hookutil
@@ -511,7 +512,7 @@ def canonical_behind_warning(
     return format_canonical_behind_warning(canonical["path"], default_branch, int(behind))
 
 
-def _emit_or_exit(*texts: "str | None") -> None:
+def _emit_or_exit(*texts: "str | None") -> NoReturn:
     """Emit every non-empty advisory in one message, or exit 0 silently when there are none.
 
     `_hookout.emit_advisory` exits, so a firing can deliver only one message: the canonical
