@@ -3763,6 +3763,18 @@ For a one-line navigational map of the older tests, see
     and so is not valid precedent for this specific citation, an inconsistency Amendment 1
     also corrected across this file, the ADR, and the test file's own docstring).
 
+    ADR-130 Amendment 2 (dev-env#1427) adds the one exception: three end-to-end cases run the
+    real hook as a subprocess against throwaway repos (a bare origin, a canonical clone, a
+    second clone that pushes ahead, and a worktree of the canonical). A worktree session whose
+    canonical `main` is 3 commits behind gets an advisory naming the canonical's path (as
+    `git worktree list` reports it) and "3 commits behind origin/main"; this case fails against
+    the pre-amendment script. A worktree session with a current canonical, and a session in the
+    canonical itself, get no such advisory. The cases isolate the heartbeat ledger
+    (`_heartbeat_isolation`) and point `GIT_CONFIG_GLOBAL` at the null device so the user's
+    global `core.hooksPath` never runs against the test repos. A fourth case pins
+    `format_canonical_behind_warning`'s singular wording. Not covered: a canonical on a feature
+    branch or detached (deliberately silent) and a failed count (fails open to no warning).
+
     `test_worktree_liveness.py` (already covered by item 17; this entry adds no new item number
     for it, only new cases) gains 5 cases for the new `exclude_session_id` parameter on
     `newest_jsonl_mtime`/`worktree_session_is_live`: the excluded session's transcript is

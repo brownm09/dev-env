@@ -53,6 +53,12 @@ addendum, which corrected several defects the original version shipped with — 
 branch prefix bug, the untracked-files-as-dirty bug, and others listed there — found only
 after two independent review passes and live verification against real repos on this machine).
 
+**Stale canonical behind a worktree session (dev-env#1427, ADR-130 Amendment 2).** In a linked
+worktree, project skills can load from the repo's canonical checkout rather than the worktree
+(dev-env#1106), so the hook also checks the canonical: when it is on the default branch and
+behind `origin/<default>`, the advisory names its path and the commit count. It never mutates
+the canonical from a worktree session.
+
 Advisories are delivered via `_hookout.emit_advisory("SessionStart", ..., audience="both")` —
 `SessionStart` is one of the three events whose exit-0 stdout reaches the model
 (`_hookout.STDOUT_MODEL_VISIBLE_EVENTS`), and `audience="both"` additionally surfaces a
@@ -80,6 +86,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NoReturn
 
 import _hookout
 import _hookutil
@@ -369,6 +376,23 @@ def format_autofix_failure(repo_name: str, default_branch: str, git_stderr: str)
     )
 
 
+def format_canonical_behind_warning(canonical_path: str, default_branch: str, behind_count: int) -> str:
+    """Advisory for a worktree session whose repo's canonical checkout is behind the remote.
+
+    Project skills can load from the canonical checkout rather than the worktree (dev-env#1106;
+    `docs/REFERENCE.md` -> "Detail: Worktree skill resolution"), so a stale canonical can
+    silently supply an old skill. This hook never mutates the canonical from a worktree
+    session -- it only names the gap (dev-env#1427).
+    """
+    return (
+        f"[session-start-sync] Canonical checkout {canonical_path} ({default_branch}) is "
+        f"{behind_count} commit{_plural(behind_count)} behind origin/{default_branch}.\n"
+        "  Project skills may load from the canonical checkout, not this worktree, so this "
+        "session could run a stale skill. Fast-forward the canonical before relying on a "
+        "skill's version."
+    )
+
+
 def load_disable_flag(hook_config: dict) -> bool:
     """Reads `"session_start_sync_disabled"` (bool) from a parsed hook-config.json dict.
 
@@ -461,6 +485,46 @@ def run(args: "list[str]", cwd: str, deadline: float) -> "subprocess.CompletedPr
     )
 
 
+def canonical_behind_warning(
+    worktrees: "list[dict]", default_branch: str, repo_root: str, deadline: float
+) -> "str | None":
+    """For a linked-worktree session: the warning when the repo's canonical checkout is on
+    `default_branch` and behind `origin/<default_branch>`, else None (dev-env#1427).
+
+    Branch refs are shared by every worktree of a repo, so the count runs from `repo_root`.
+    A canonical on any other branch (or detached) is not measured: "behind the default
+    branch" is not a staleness signal for an intentional feature branch. Any git failure
+    returns None -- this is advisory and fails open.
+    """
+    canonical = canonical_worktree(worktrees)
+    if canonical is None or canonical.get("branch") != default_branch:
+        return None
+    if not is_valid_ref_name(default_branch):
+        return None
+    counted = run(
+        ["git", "rev-list", "--count", f"refs/heads/{default_branch}..refs/remotes/origin/{default_branch}"],
+        repo_root,
+        deadline,
+    )
+    behind = counted.stdout.strip()
+    if counted.returncode != 0 or not behind.isdigit() or int(behind) == 0:
+        return None
+    return format_canonical_behind_warning(canonical["path"], default_branch, int(behind))
+
+
+def _emit_or_exit(*texts: "str | None") -> NoReturn:
+    """Emit every non-empty advisory in one message, or exit 0 silently when there are none.
+
+    `_hookout.emit_advisory` exits, so a firing can deliver only one message: the canonical
+    warning is folded into whichever advisory the rest of `main()` reaches, or emitted alone
+    on a path that would otherwise exit silently.
+    """
+    joined = "\n".join(t for t in texts if t)
+    if joined:
+        _hookout.emit_advisory("SessionStart", joined, audience="both")
+    sys.exit(0)
+
+
 def main() -> None:
     _hookutil.record_heartbeat("session-start-sync")
     deadline = time.monotonic() + HOOK_TIMEOUT_SECONDS - DEADLINE_SAFETY_MARGIN_SECONDS
@@ -516,6 +580,10 @@ def main() -> None:
     default_ref = run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo_root, deadline)
     default_branch = resolve_default_branch(default_ref.returncode, default_ref.stdout)
 
+    canonical_warning = None
+    if worktrees and not is_canonical:
+        canonical_warning = canonical_behind_warning(worktrees, default_branch, repo_root, deadline)
+
     branch_ref = run(["git", "symbolic-ref", "--short", "HEAD"], repo_root, deadline)
     branch = resolve_current_branch(branch_ref.returncode, branch_ref.stdout)
 
@@ -523,30 +591,26 @@ def main() -> None:
     upstream_ref = upstream.stdout.strip() if upstream.returncode == 0 else None
     compare_ref = resolve_compare_ref(branch, upstream_ref, default_branch)
     if not is_valid_ref_name(compare_ref):
-        sys.exit(0)  # malformed ref from local git state -- don't risk using it in a command
+        _emit_or_exit(canonical_warning)  # malformed ref from local git state -- don't use it
 
     revs = run(["git", "rev-parse", "HEAD", compare_ref], repo_root, deadline)
     if revs.returncode != 0:
-        sys.exit(0)
+        _emit_or_exit(canonical_warning)
     rev_lines = revs.stdout.strip().splitlines()
     if len(rev_lines) != 2:
-        sys.exit(0)  # unexpected output shape -- fail safe
+        _emit_or_exit(canonical_warning)  # unexpected output shape -- fail safe
     local_sha, remote_sha = rev_lines
     if local_sha == remote_sha:
-        sys.exit(0)  # already up to date -- don't spam the healthy path
+        _emit_or_exit(canonical_warning)  # this checkout is up to date
 
     counts = run(["git", "rev-list", "--left-right", "--count", f"{local_sha}...{remote_sha}"], repo_root, deadline)
     ahead_count, behind_count = _parse_left_right_counts(counts)
     repo_name = Path(repo_root).name
 
     if behind_count is None:
-        _hookout.emit_advisory(
-            "SessionStart",
-            format_unmeasured_drift_warning(repo_name, branch, compare_ref),
-            audience="both",
-        )
+        _emit_or_exit(canonical_warning, format_unmeasured_drift_warning(repo_name, branch, compare_ref))
     if behind_count == 0:
-        sys.exit(0)  # strictly ahead of compare_ref (or an unmeasurable ahead side), not stale
+        _emit_or_exit(canonical_warning)  # strictly ahead of compare_ref, not stale
 
     status = run(["git", "status", "--porcelain", "--untracked-files=no"], repo_root, deadline)
     # Untracked files cannot block a fast-forward (except the one case `--ff-only` itself
@@ -633,13 +697,12 @@ def main() -> None:
         concurrent_session=concurrent_session,
     )
     is_untracked_branch = upstream_ref is None and branch != DETACHED
-    _hookout.emit_advisory(
-        "SessionStart",
+    _emit_or_exit(
+        canonical_warning,
         format_stale_warning(
             repo_name, branch, compare_ref, local_sha, remote_sha, behind_count, ahead_count,
             reason, is_untracked_branch=is_untracked_branch,
         ),
-        audience="both",
     )
 
 

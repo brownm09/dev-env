@@ -13,6 +13,10 @@ case -- a thin, filesystem-state-dependent wrapper around `Path.resolve()`, mirr
 `_worktree_topology`'s own private `_norm` (which that module's test suite likewise exercises
 only via its callers, not in isolation).
 
+The one exception is the end-to-end block for dev-env#1427 (ADR-130 Amendment 2), which runs
+the real hook against throwaway git repos to pin the stale-canonical warning for worktree
+sessions.
+
 Several cases here pin specific defects found and fixed after a two-pass adversarial review
 (dev-env#966 PR review, both a correctness/security pass and a reliability/performance/
 maintainability pass, each independently reaching several of the same findings) and verified
@@ -32,6 +36,7 @@ Exit 0 = all pass.
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -52,6 +57,11 @@ sss = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sss)  # safe: main() is guarded by __main__
 
 from _worktree_topology import DETACHED  # noqa: E402 -- resolvable only after sys.path.insert
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _heartbeat_isolation import isolate_heartbeat  # noqa: E402
+
+isolate_heartbeat()
 
 _plural = sss._plural
 is_valid_ref_name = sss.is_valid_ref_name
@@ -584,8 +594,114 @@ def test_read_hook_config_non_dict_json_returns_empty_dict() -> str:
     return "valid JSON that isn't an object (a bare array) -> {}, not the array itself"
 
 
+# --- end-to-end: stale canonical behind a worktree session (dev-env#1427) -----------------
+#
+# These run the real hook as a subprocess against throwaway git repos (a bare origin, a
+# canonical clone, a second clone that pushes ahead), so they cover main()'s own orchestration
+# for this one path. The heartbeat ledger is isolated at import time (dev-env#1163).
+
+_GIT_ENV = dict(
+    os.environ,
+    GIT_AUTHOR_NAME="test", GIT_AUTHOR_EMAIL="test@example.invalid",
+    GIT_COMMITTER_NAME="test", GIT_COMMITTER_EMAIL="test@example.invalid",
+    GIT_CONFIG_NOSYSTEM="1",
+    GIT_CONFIG_GLOBAL=os.devnull,  # keep the user's hooksPath and other global config out
+)
+
+
+def _git(cwd, *args) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=str(cwd), env=_GIT_ENV, capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result.returncode == 0, f"git {' '.join(args)} failed in {cwd}: {result.stderr}"
+    return result.stdout
+
+
+def _commit(repo, name: str) -> None:
+    (Path(repo) / name).write_text(name, encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", name)
+
+
+def _build_repos(tmp: Path, *, ahead: int) -> "tuple[Path, Path]":
+    """origin.git; canonical clone on main; `ahead` commits pushed to origin from another clone;
+    a worktree of canonical on a fresh branch cut from the fetched origin/main.
+    Returns (canonical, worktree)."""
+    origin = tmp / "origin.git"
+    _git(tmp, "init", "-q", "--bare", "-b", "main", str(origin))
+    canonical = tmp / "canonical"
+    _git(tmp, "clone", "-q", str(origin), str(canonical))
+    _commit(canonical, "base.txt")
+    _git(canonical, "push", "-q", "origin", "main")
+    pusher = tmp / "pusher"
+    _git(tmp, "clone", "-q", str(origin), str(pusher))
+    for i in range(ahead):
+        _commit(pusher, f"ahead{i}.txt")
+    if ahead:
+        _git(pusher, "push", "-q", "origin", "main")
+    _git(canonical, "fetch", "-q", "origin")
+    _git(canonical, "remote", "set-head", "origin", "main")
+    worktree = tmp / "wt"
+    _git(canonical, "worktree", "add", "-q", "-b", "feature", str(worktree), "origin/main")
+    return canonical, worktree
+
+
+def _run_hook(cwd: Path) -> "tuple[int, str]":
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=json.dumps({"cwd": str(cwd), "session_id": "test-session"}),
+        env=_GIT_ENV, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    return result.returncode, result.stdout
+
+
+def _canonical_path_as_git_reports(worktree: Path) -> str:
+    porcelain = _git(worktree, "worktree", "list", "--porcelain")
+    return porcelain.splitlines()[0][len("worktree "):].strip()
+
+
+def test_e2e_worktree_session_warns_when_canonical_behind() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        _, worktree = _build_repos(Path(td), ahead=3)
+        code, out = _run_hook(worktree)
+        canonical_path = _canonical_path_as_git_reports(worktree)
+        assert code == 0, f"hook must exit 0, got {code}"
+        assert "Canonical checkout" in out, f"no canonical warning in stdout: {out!r}"
+        assert canonical_path in out, f"canonical path {canonical_path!r} not named: {out!r}"
+        assert "is 3 commits behind origin/main" in out, f"commit count not named: {out!r}"
+        return f"warned, naming {canonical_path} and 3 commits"
+
+
+def test_e2e_worktree_session_silent_when_canonical_current() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        _, worktree = _build_repos(Path(td), ahead=0)
+        code, out = _run_hook(worktree)
+        assert code == 0, f"hook must exit 0, got {code}"
+        assert "Canonical checkout" not in out, f"unexpected canonical warning: {out!r}"
+        return "no canonical warning when canonical is current"
+
+
+def test_e2e_non_worktree_session_no_canonical_warning() -> str:
+    with tempfile.TemporaryDirectory() as td:
+        canonical, _ = _build_repos(Path(td), ahead=3)
+        code, out = _run_hook(canonical)
+        assert code == 0, f"hook must exit 0, got {code}"
+        assert "Canonical checkout" not in out, f"canonical session got the worktree warning: {out!r}"
+        return "canonical session gets no canonical-behind warning"
+
+
+def test_format_canonical_behind_warning_singular() -> str:
+    text = sss.format_canonical_behind_warning("C:/x/repo", "main", 1)
+    assert "is 1 commit behind origin/main" in text, text
+    return "singular commit wording"
+
+
 def main() -> int:
     tests = [
+        ("e2e: worktree session warns when canonical behind", test_e2e_worktree_session_warns_when_canonical_behind),
+        ("e2e: worktree session silent when canonical current", test_e2e_worktree_session_silent_when_canonical_current),
+        ("e2e: non-worktree session gets no canonical warning", test_e2e_non_worktree_session_no_canonical_warning),
+        ("format_canonical_behind_warning: singular", test_format_canonical_behind_warning_singular),
         ("is_valid_ref_name: ordinary names", test_is_valid_ref_name_accepts_ordinary_names),
         ("is_valid_ref_name: leading dash rejected", test_is_valid_ref_name_rejects_leading_dash),
         ("is_valid_ref_name: empty rejected", test_is_valid_ref_name_rejects_empty),
