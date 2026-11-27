@@ -80,7 +80,7 @@ if ($Unregister) {
             if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null }
             try {
                 Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop |
-                    Out-File -FilePath $BackupPath -Encoding utf8 -ErrorAction Stop
+                    Out-File -FilePath $BackupPath -Encoding unicode -ErrorAction Stop  # the export declares UTF-16
             } catch {
                 throw "Failed to back up '$TaskName' to $BackupPath -- refusing to remove it without a restorable backup (ADR-079). $_"
             }
@@ -105,7 +105,8 @@ if ($badRules.Count -gt 0) {
     throw "Unknown -Include rule(s): $($badRules -join ', '). Use all, pinned, cwd:<glob> or session:<local_id>."
 }
 
-$pyw = (Get-Command pyw.exe -ErrorAction SilentlyContinue).Source
+$pywCmd = Get-Command pyw.exe -ErrorAction SilentlyContinue
+$pyw = if ($pywCmd) { $pywCmd.Source }
 if (-not $pyw) { throw "pyw.exe (the Python launcher) is not on PATH; install Python with the py launcher first." }
 if (-not (Test-Path $ScriptPath)) {
     Write-Warning "Launcher not found at $ScriptPath. Registering anyway; it resolves once dev-env main contains auto-resume-launcher.py."
