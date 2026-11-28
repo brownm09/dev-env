@@ -110,6 +110,11 @@ def merge_succeeded(command: str, output: str) -> bool:
     post-pr-merge-{pull,reclaim}.py — moving an issue to Done on a not-yet-merged
     `--auto` would be wrong, whereas a premature pull/reclaim is harmless. (#380)
 
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
+
     Also recognizes the two-step REST merge fallback (`gh api -X PUT
     .../pulls/<N>/merge`, dev-env#986): a `gh pr merge` outage (e.g. a GitHub
     GraphQL rate-limit exhaustion) has a documented REST-only merge path that

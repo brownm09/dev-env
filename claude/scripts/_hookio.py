@@ -47,7 +47,9 @@ into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
 ``read_command_output``'s "never raises, so a hook can call it unguarded" contract to
 the ``tool_input.command`` and ``cwd`` reads. A third helper, ``read_exit_code``, was
 removed in dev-env#1251: the payload never carries ``exitCode``, so it only ever
-returned its caller's default. ``usage-snapshot.py``'s ``main()`` was migrated first; the dev-env#1031
+returned its caller's default.
+
+``usage-snapshot.py``'s ``main()`` was migrated onto these helpers first; the dev-env#1031
 follow-up (PRs #1034/#1035) migrated fourteen more sibling call sites onto the same
 shape, plus five more found by that migration's own strengthened regression test (the
 narrower ``(data.get("tool_input") or {}).get(...)`` variant — see ``read_command``'s
@@ -355,7 +357,7 @@ def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | No
     Returns the merged PR's number when `gh pr view` confirms ``state ==
     "MERGED"``, else ``None``. Fallback only — costs a network round-trip, so
     callers run it only when the marker is missing. That is every ``gh pr
-    merge`` in practice: dev-env#1251's replay found the marker in 0 of 559
+    merge`` in practice: dev-env#1251's replay found the marker in 0 of 519
     recorded merge results. Callers used to gate on an exit code too, but the
     payload never carries one (dev-env#1251).
 

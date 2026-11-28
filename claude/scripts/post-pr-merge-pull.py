@@ -313,6 +313,11 @@ def is_successful_merge(command: str, output: str) -> bool:
     `output` field left this fallback dead because the real payload carries
     `stdout`/`stderr` (#380).
 
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
+
     The command-shape check itself is `scan_top_level`-anchored rather than a
     raw substring test, so `gh pr merge` text inside a heredoc body, a quoted
     argument, or a `$()` subshell no longer counts as an invocation — matching

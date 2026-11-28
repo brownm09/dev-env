@@ -137,6 +137,11 @@ def merge_confirmed(command: str, output: str) -> bool:
     this repo (dev-env#474; mirrors post-pr-merge-project.py's
     merge_succeeded(), see ADR-049/ADR-050).
 
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
+
     gh's already-printed marker does not always survive to this hook's
     captured output when gh exits abruptly right after that same
     local-cleanup failure (dev-env#489) — main() falls back to a live

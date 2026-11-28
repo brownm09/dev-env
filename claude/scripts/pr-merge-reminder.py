@@ -262,6 +262,11 @@ def _is_successful_merge_call(output: str) -> bool:
     neither of which the caller's `is_pr_merge_command` command-shape check
     filters out. Mirrors merge_succeeded() in post-pr-merge-project.py and
     merge_confirmed() in usage-snapshot.py (dev-env#485).
+
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
     """
     return output_has_merge_marker(output)
 
@@ -290,8 +295,13 @@ def _build_messages(
     while a clean exit 0 does NOT mean a merge happened (--help, a queued
     --auto).
 
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
+
     *live_confirmed* — dev-env#504: gh's marker does not always survive to
-    this hook's captured output (dev-env#489); it reached 0 of 559 recorded
+    this hook's captured output (dev-env#489); it reached 0 of 519 recorded
     merge results in dev-env#1251's replay. `main()` resolves the
     live `gh pr view` fallback (a subprocess call) itself, BEFORE calling this
     function, and passes the result here — this function never shells out.
@@ -448,11 +458,14 @@ def main() -> None:
 
     # dev-env#504: when the marker-based check fails for a genuine gh pr
     # merge, fall back to a live `gh pr view` confirmation (dev-env#489)
-    # before conceding no merge happened. gh's marker reached 0 of 559
-    # recorded merge results (dev-env#1251), so this is how a gh pr merge
-    # is confirmed in practice. Until dev-env#1251 this also required a
-    # non-zero exit code, which the payload never carries, so it never ran. Resolved here, not inside _build_messages, so that function's
-    # existing direct-call test suite can never trigger a live subprocess.
+    # before conceding no merge happened. Resolved here, not inside
+    # _build_messages, so that function's existing direct-call test suite
+    # can never trigger a live subprocess.
+    #
+    # gh's marker reached 0 of 519 recorded merge results (dev-env#1251),
+    # so this is how a gh pr merge is confirmed in practice. Until
+    # dev-env#1251 this also required a non-zero exit code, which the
+    # payload never carries, so the fallback never ran.
     #
     # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
     # that prints no marker) can categorically never attempt a real merge —

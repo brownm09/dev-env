@@ -2761,15 +2761,17 @@ regexes would stop the wrong URL but leave the reminder firing for a create that
 and `pr-merge-reminder.py` with `default=0`.
 
 **The measurement.** `claude/scripts/replay-exit-code-presence.py` reads the `toolUseResult` that each
-transcript records for a Bash or PowerShell call. That is the object the hook gets as `tool_response`. Over
-the 60 days to 2026-11-27:
+transcript records for a Bash or PowerShell call. That is the object the hook gets as `tool_response`. It
+classifies each command with the hooks' own predicates (`is_pr_merge_command`, and `scan_top_level` for
+push and create), so a command that only mentions `gh pr merge` in a commit message or a `grep` counts as
+everything else, and it counts each `tool_use_id` once across files. Over the 60 days to 2026-11-28:
 
 | # | Command class | Results | Dict results | With `exitCode` | With gh's merge line | Error results |
 |---|---|---|---|---|---|---|
-| 1 | `gh pr merge` | 621 | 559 | 0 | 0 | 33 |
-| 2 | `git push` | 4,076 | 3,872 | 0 | 0 | 134 |
-| 3 | `gh pr create` / `gh issue create` | 970 | 919 | 0 | 0 | 17 |
-| 4 | everything else | 66,365 | 44,343 | 0 | 5 | 1,786 |
+| 1 | `gh pr merge` | 572 | 519 | 0 | 0 | 29 |
+| 2 | `git push` | 1,731 | 1,646 | 0 | 0 | 49 |
+| 3 | `gh pr create` / `gh issue create` | 771 | 729 | 0 | 0 | 16 |
+| 4 | everything else | 67,239 | 45,123 | 0 | 12 | 1,805 |
 
 Error results are strings, not dicts. They are the calls that exited non-zero, and those run
 `PostToolUseFailure`, not PostToolUse (ADR-053). So a PostToolUse hook never sees a non-zero exit, and the
@@ -2784,7 +2786,7 @@ key it would read one from is never there. `~/.claude/scratch/usage-snapshot-mer
   always true. Every marker-less merge paid the live call, which is how all 218 confirmed merges in the trace
   were confirmed. Its `no_confirm_needed` reason could never be returned.
 - **`pr-merge-reminder.py`** used the same gate with `0`, so it was always false. The live confirmation
-  never ran, and with gh's merge line in 0 of 559 results, the journal reminder never fired for a
+  never ran, and with gh's merge line in 0 of 519 results, the journal reminder never fired for a
   `gh pr merge`. The 35 fires recorded in the window all carry reminder text removed on 2026-07-14, so they
   came from an older copy of the hook. Its `create_push_ok = exit_code == 0 or merge_ok` was always true.
 - **`post-tool-use.py`**'s `if exit_code != 0: sys.exit(0)` never fired. Amendment 31's `created_item_url`
@@ -2795,6 +2797,12 @@ deleted from `_hookio`. The merge hooks call `confirm_merge_via_gh` whenever the
 what they did already. `pr-merge-reminder.py` now does the same, so a merge gets its reminder. A queued
 `--auto` pays the live call there too and comes back unconfirmed, as it already did in the other hooks.
 The usage-snapshot trace drops its `exit_code` field and its `no_confirm_needed` reason.
+
+**Cost.** With the marker never present, each `gh pr merge` now pays one live `gh pr view` in each of six
+hooks: up to 15 s each, though they run in parallel under the dispatcher. That was already true of five of
+them before this change; `pr-merge-reminder.py` is the sixth. Memoizing the confirmation across hooks is
+tracked in dev-env#1036, and the tile-checkpoint handler's budget being shorter than that wait in
+dev-env#1437.
 
 **Calibration.** The replay's own test calibrates its counter with a synthetic transcript holding one result
 with `exitCode` and several without. `pr-merge-reminder.py`'s new end-to-end tests feed `main()` a payload

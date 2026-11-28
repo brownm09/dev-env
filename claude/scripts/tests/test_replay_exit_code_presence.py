@@ -44,13 +44,23 @@ def _corpus(tmp):
     lines += _pair(2, "gh pr merge 6 --squash", {"stdout": "", "stderr": "", "exitCode": 0})
     lines += _pair(3, "gh pr merge 7", {"stdout": "", "stderr": "✓ Squashed and merged pull request #7 (t)"})
     lines += _pair(4, "gh pr merge 8", "Error: Exit code 1\nboom")
-    lines += _pair(5, "git -C repo push origin b", {"stdout": "", "stderr": "done"})
+    lines += _pair(5, "git push origin b", {"stdout": "", "stderr": "done"})
     lines += _pair(6, "gh pr merge 9", {"stdout": "", "stderr": "", "exitCode": 1}, age_days=90)
     lines += _pair(7, "ls", {"stdout": "a", "stderr": ""})
+    # Only mentions the command: not a top-level merge, so "other".
+    lines += _pair(8, "grep -n 'gh pr merge' hooks.py", {"stdout": "", "stderr": "", "exitCode": 0})
     lines.append("not json")
+    # Present-but-non-dict `message` and `input` are skipped, not a crash.
+    lines.append(json.dumps({"type": "user", "message": "tool_result as a string"}))
+    lines.append(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t9", "name": "Bash", "input": ["not", "a", "dict"]}]}}))
     path = Path(tmp) / "proj" / "s.jsonl"
     path.parent.mkdir(parents=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # A resumed session copies an earlier result (same tool_use_id) into a new file.
+    copy = Path(tmp) / "proj" / "t.jsonl"
+    copy.write_text("\n".join(_pair(1, "gh pr merge 5 --squash", {"stdout": "", "stderr": ""})) + "\n",
+                    encoding="utf-8")
 
 
 def test_counts_by_class_within_window() -> str:
@@ -61,8 +71,9 @@ def test_counts_by_class_within_window() -> str:
     assert merge == {"results": 4, "dict_results": 3, "with_exitCode": 1,
                      "with_merge_marker": 1, "error_results": 1}, merge
     assert classes["git push"] == {"results": 1, "dict_results": 1}, classes["git push"]
-    assert classes["other"] == {"results": 1, "dict_results": 1}, classes["other"]
-    return "merge: 4 results, 1 with exitCode, 1 marker, 1 error; 90-day-old result excluded"
+    assert classes["other"] == {"results": 2, "dict_results": 2, "with_exitCode": 1}, classes["other"]
+    return ("merge: 4 results (copied id counted once), 1 with exitCode, 1 marker, 1 error; "
+            "90-day-old result excluded; a mention of the command is 'other'")
 
 
 def test_wider_window_includes_old_result() -> str:
@@ -75,10 +86,12 @@ def test_wider_window_includes_old_result() -> str:
 
 def test_classify() -> str:
     assert replay.classify("cd x && gh.exe pr merge 3") == "gh pr merge"
-    assert replay.classify("git -c a=b push") == "git push"
+    assert replay.classify("git add f && git push") == "git push"
     assert replay.classify("gh issue create -t x") == "gh create"
     assert replay.classify("git status") == "other"
-    return "merge / push / create / other classified"
+    assert replay.classify('git commit -m "fix gh pr merge hook"') == "other"
+    assert replay.classify("cat <<'EOF'\ngh pr merge 3\nEOF") == "other"
+    return "merge / push / create / other classified by top-level statement, as the hooks do"
 
 
 def main() -> int:

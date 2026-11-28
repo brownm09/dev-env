@@ -891,7 +891,7 @@ def test_build_messages_rest_merge_get_method_not_matched() -> str:
 
 # ---------------------------------------------------------------------------
 # main() end-to-end on the real payload shape (dev-env#1251): no exitCode key,
-# and no merge marker -- gh's completed-merge line reached 0 of 559 recorded
+# and no merge marker -- gh's completed-merge line reached 0 of 519 recorded
 # merge results. Before dev-env#1251, main() read the missing exitCode as 0 and
 # never ran the live confirmation, so a real merge never got its reminder.
 # confirm_merge_via_gh is swapped for a fake so no live gh call runs.

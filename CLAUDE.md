@@ -160,6 +160,7 @@ of the older tests is [claude/scripts/tests/README.md](claude/scripts/tests/READ
 116. **deferred-followup-sweep test** — `deferred-followup-sweep.py`. Run: `py -3 claude/scripts/tests/test_deferred_followup_sweep.py`
 117. **duplicate-issue retrieval scorer test** — anything under `experiments/2026-11-issue-dup-retrieval/`. Run: `py -3 claude/scripts/tests/test_issue_dup_eval.py`
 118. **closing-negation test** — `_closing_negation.py` (then also run items 38 and 116). Run: `py -3 claude/scripts/tests/test_closing_negation.py`
+
 ## Experiments
 
 Comparative claims about a process change follow the global `## Experimental Rigor` section and `/experiment-audit`. This repo's experiments keep their harness and results under `experiments/<yyyy-mm>-<slug>/`, and their pre-registration on the tracking issue. dev-env is public, so anything from a private repo is committed as issue numbers and metrics only.
