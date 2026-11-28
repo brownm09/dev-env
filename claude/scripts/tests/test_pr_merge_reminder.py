@@ -912,12 +912,17 @@ REAL_MERGE_PAYLOAD = {
 }
 
 
-def _run_main_with_confirm(confirm_result):
-    """Run pmr.main() on REAL_MERGE_PAYLOAD; return (exit code, stderr, confirm calls)."""
+def _run_main_with_confirm(confirm_result, command=None):
+    """Run pmr.main() on REAL_MERGE_PAYLOAD (with *command* swapped in, if given);
+    return (exit code, stderr, confirm calls)."""
+    import copy
     import io
     import json
     import tempfile
 
+    payload = copy.deepcopy(REAL_MERGE_PAYLOAD)
+    if command is not None:
+        payload["tool_input"]["command"] = command
     calls = []
 
     def fake_confirm(pr_number, repo, cwd):
@@ -928,7 +933,7 @@ def _run_main_with_confirm(confirm_result):
     stderr = io.StringIO()
     with tempfile.TemporaryDirectory() as heartbeat_tmp:
         pmr.confirm_merge_via_gh = fake_confirm
-        pmr.sys.stdin = io.StringIO(json.dumps(REAL_MERGE_PAYLOAD))
+        pmr.sys.stdin = io.StringIO(json.dumps(payload))
         pmr.sys.stderr = stderr
         os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = heartbeat_tmp
         try:
@@ -948,7 +953,7 @@ def _run_main_with_confirm(confirm_result):
 
 def test_main_real_payload_merge_confirmed_live_fires_reminder() -> str:
     code, err, calls = _run_main_with_confirm(2034)
-    assert len(calls) == 1, f"live confirmation must run once, got {calls!r}"
+    assert calls == [(None, "", REAL_MERGE_PAYLOAD["cwd"])], f"live confirmation must run once, from cwd, got {calls!r}"
     assert code == 2, f"expected exit 2 with the merge reminder, got {code}: {err!r}"
     assert "gh pr merge detected" in err, err
     return "real payload (no exitCode, no marker) -> live confirm runs, merge reminder fires (dev-env#1251)"
@@ -956,9 +961,19 @@ def test_main_real_payload_merge_confirmed_live_fires_reminder() -> str:
 
 def test_main_real_payload_merge_unconfirmed_stays_silent() -> str:
     code, err, calls = _run_main_with_confirm(None)
-    assert len(calls) == 1, f"live confirmation must run once, got {calls!r}"
+    assert calls == [(None, "", REAL_MERGE_PAYLOAD["cwd"])], f"live confirmation must run once, from cwd, got {calls!r}"
     assert code == 0 and err == "", f"unconfirmed merge must stay silent, got {code}: {err!r}"
     return "real payload, live confirm finds no merge (e.g. queued --auto) -> silent"
+
+
+def test_main_real_payload_help_never_confirms() -> str:
+    # With no exit-code gate, is_merge_help_only is the only thing keeping
+    # `gh pr merge --help` from a live gh pr view that could misattribute a
+    # merged PR (dev-env#557). A confirm that would succeed must still not run.
+    code, err, calls = _run_main_with_confirm(2034, command="gh pr merge --help")
+    assert calls == [], f"--help must never reach the live confirmation, got {calls!r}"
+    assert code == 0 and err == "", f"--help must stay silent, got {code}: {err!r}"
+    return "gh pr merge --help on the real payload shape -> no live confirm, silent (dev-env#557)"
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1182,7 @@ def main() -> int:
         ("build_messages: live_confirmed omitted -> unchanged", test_build_messages_live_confirmed_default_none_unchanged),
         ("main(): real payload, merge confirmed live -> reminder (dev-env#1251)", test_main_real_payload_merge_confirmed_live_fires_reminder),
         ("main(): real payload, merge unconfirmed -> silent (dev-env#1251)", test_main_real_payload_merge_unconfirmed_stays_silent),
+        ("main(): real payload, --help never confirms (dev-env#557)", test_main_real_payload_help_never_confirms),
         ("build_messages: REST merge fallback + \"merged\":true -> fires (dev-env#986/#991)", test_build_messages_rest_merge_with_marker_fires),
         ("build_messages: REST merge fallback without marker -> no message", test_build_messages_rest_merge_without_marker_no_message),
         ("build_messages: REST merge chained with push -> no duplicate reminder (dev-env#986/#991)", test_build_messages_rest_merge_chained_push_no_duplicate_reminder),
