@@ -191,6 +191,15 @@ class TestEvaluate(unittest.TestCase):
         self.assertEqual(f.status, mi.PROBLEM)
         self.assertIn("runs", f.detail)
 
+    def test_task_whose_program_is_gone_is_a_problem(self):
+        script = f'"{SCRIPTS_DIR / "auto-resume-launcher.py"}"'
+        gone = mi.TaskState(True, mi.TaskInfo(True, r"C:\NoSuch\Python312\pythonw.exe", script), "")
+        f = self._one(gone)
+        self.assertEqual(f.status, mi.PROBLEM)
+        self.assertIn("no longer exists", f.detail)
+        here = mi.TaskState(True, mi.TaskInfo(True, sys.executable, script), "")
+        self.assertEqual(self._one(here).status, mi.OK)
+
     def test_disabled_task_is_a_problem(self):
         f = self._one(found(str(SCRIPTS_DIR / "auto-resume-launcher.py"), enabled=False))
         self.assertEqual(f.status, mi.PROBLEM)
