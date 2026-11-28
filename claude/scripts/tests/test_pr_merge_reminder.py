@@ -19,21 +19,16 @@ must still get the create reminder even when the merge sub-check is
 incomplete (a queued --auto, or --help) — previously the shared early exit
 inside the is_merge branch suppressed the create message too.
 
-The create/push gate is `exit_code == 0 or merge_ok`, NOT `is_merge` alone —
-an earlier draft of the #494 fix used `is_merge or exit_code == 0`, which
-reintroduced a false positive: `is_merge` is a static text match, true even
-when `&&` short-circuited before merge ever ran (create itself failing), so
-that draft fired a false "PR created" reminder. `merge_ok` (the confirmed-
-merge marker) is used instead because a completed merge is independent proof
-create already succeeded, valid evidence even when the chain's aggregate
-exit code is non-zero (the #275 worktree case, chained with a preceding
-create).
+dev-env#1251 removed the `exit_code` parameter from `_build_messages`: the
+payload never carries `exitCode`, and PostToolUse never runs for a call that
+exited non-zero (ADR-053), so the old `exit_code == 0 or merge_ok` create/push
+gate was always true. The cases that needed a non-zero exit code to reach the
+hook were removed with it.
 
 The live _open_pr_for_cwd subprocess boundary is not exercised here (repo
 convention: no subprocess mocks). The _build_messages cases below avoid ever
-reaching that call by only combining is_push=True with a failing
-create_push_ok or with is_create/is_merge also true — both conditions
-short-circuit before _open_pr_for_cwd would be invoked.
+reaching that call by only combining is_push=True with is_create/is_merge also
+true, which short-circuits before _open_pr_for_cwd would be invoked.
 
 dev-env#504 added a live `gh pr view` fallback (dev-env#489's fix, already
 wired into post-pr-merge-project.py) for when gh's marker doesn't survive a
@@ -45,15 +40,15 @@ The three `live_confirmed` tests below exercise only the pure override
 logic, not the live call.
 
 dev-env#557 added `and not is_merge_help_only(command)` into that same
-`main()`-inline `if (is_merge and not _is_successful_merge_call(output) and
-should_confirm_via_gh(exit_code, output)):` condition that gates whether
+`main()`-inline `if (is_merge and not _is_successful_merge_call(output)):`
+condition that gates whether
 `main()` even attempts the live `gh pr view` call — a `gh pr merge --help`
 command can categorically never attempt a real merge, so it must never pay
 for (or be misattributed by) that live confirmation. Since this condition is
 inline in `main()` rather than its own function, the composition test below
 directly evaluates the same boolean expression `main()` evaluates, pinning
-that a `--help` command with no marker and a non-zero exit code — which
-would otherwise satisfy every other clause — is excluded once
+that a `--help` command with no marker — which would otherwise satisfy
+every other clause — is excluded once
 `is_merge_help_only` is added, while an equivalent non-help unresolved merge
 still satisfies the full condition (the live check is still attempted for
 that case, matching dev-env#504's existing behavior unchanged).
@@ -97,15 +92,14 @@ _effective_merge_repo = pmr._effective_merge_repo
 _effective_create_repo = pmr._effective_create_repo
 _build_messages = pmr._build_messages
 
-# read_command_output, effective_merge_dir, should_confirm_via_gh, and
-# is_merge_help_only live in _hookio (a sibling). SCRIPT.parent already on
+# read_command_output, effective_merge_dir, and is_merge_help_only live in
+# _hookio (a sibling). SCRIPT.parent already on
 # sys.path, so import them directly.
 from _hookio import (  # noqa: E402
     effective_merge_dir,
     is_absolute_path,
     is_merge_help_only,
     read_command_output,
-    should_confirm_via_gh,
 )
 
 
@@ -221,7 +215,6 @@ def test_shard_step_via_stdout_field() -> str:
         "tool_response": {
             "stdout": "https://github.com/brownm09/dev-env/pull/404\n",
             "stderr": "",
-            "exitCode": 0,
         }
     }
     output = read_command_output(data)
@@ -237,7 +230,6 @@ def test_shard_step_legacy_output_field_empty_gives_fallback() -> str:
     data = {
         "tool_response": {
             "output": "https://github.com/brownm09/dev-env/pull/999",
-            "exitCode": 0,
         }
     }
     # read_command_output prefers stdout/stderr; falls back to .output only
@@ -293,7 +285,6 @@ def test_merge_call_clean_exit_no_marker_does_not_fire() -> str:
 #
 # main()'s live-gh-pr-view-attempt condition is inline, not its own function:
 #   is_merge and not _is_successful_merge_call(output)
-#       and should_confirm_via_gh(exit_code, output)
 #       and not is_merge_help_only(command)
 # These tests evaluate that exact expression directly (mirroring what main()
 # computes) to pin that adding `is_merge_help_only` excludes a --help command
@@ -301,33 +292,32 @@ def test_merge_call_clean_exit_no_marker_does_not_fire() -> str:
 # non-help unresolved merge still satisfies the full condition unchanged.
 # ---------------------------------------------------------------------------
 
-def _live_confirm_attempted(command: str, output: str, exit_code: int) -> bool:
+def _live_confirm_attempted(command: str, output: str) -> bool:
     """Re-derive main()'s inline live-confirmation-attempt condition."""
     is_merge = is_pr_merge_command(command)
     return (
         is_merge
         and not _is_successful_merge_call(output)
-        and should_confirm_via_gh(exit_code, output)
         and not is_merge_help_only(command)
     )
 
 
 def test_live_confirm_not_attempted_for_help_command() -> str:
-    # gh pr merge --help: is_merge True, no marker, non-zero/-1 exit would
-    # satisfy should_confirm_via_gh -- but is_merge_help_only excludes it.
+    # gh pr merge --help: is_merge True and no marker -- but
+    # is_merge_help_only excludes it.
     command = "gh pr merge --help"
     output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
-    assert not _live_confirm_attempted(command, output, -1)
-    return "gh pr merge --help (no marker, exit -1) -> live confirmation NOT attempted (dev-env#557)"
+    assert not _live_confirm_attempted(command, output)
+    return "gh pr merge --help (no marker) -> live confirmation NOT attempted (dev-env#557)"
 
 
 def test_live_confirm_still_attempted_for_unresolved_real_merge() -> str:
     # The dev-env#489/#504 case this fallback exists for: a genuine merge with
-    # a lost marker and non-zero exit must still attempt the live check.
+    # a lost marker must attempt the live check.
     command = "gh pr merge --squash --delete-branch"
     output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
-    assert _live_confirm_attempted(command, output, 1)
-    return "unresolved real merge (no marker, non-help, exit 1) -> live confirmation still attempted (unchanged)"
+    assert _live_confirm_attempted(command, output)
+    return "unresolved real merge (no marker, non-help) -> live confirmation attempted"
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +612,6 @@ def test_build_messages_chained_create_and_queued_auto_still_creates() -> str:
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --auto",
         cwd="/session/cwd",
-        exit_code=0,
         output="https://github.com/brownm09/dev-env/pull/500\n",
         is_create=True,
         is_merge=True,
@@ -639,7 +628,6 @@ def test_build_messages_chained_create_and_help_shaped_merge_still_creates() -> 
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --help",
         cwd="/session/cwd",
-        exit_code=0,
         output=(
             "https://github.com/brownm09/dev-env/pull/500\n"
             "Merge a pull request\n\nUSAGE\n  gh pr merge [<number> | <url> | <branch>] [flags]"
@@ -657,7 +645,6 @@ def test_build_messages_chained_create_and_successful_merge_both_fire() -> str:
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --squash --delete-branch",
         cwd="/session/cwd",
-        exit_code=0,
         output=(
             "https://github.com/brownm09/dev-env/pull/500\n"
             "Squashed and merged pull request #500"
@@ -672,25 +659,10 @@ def test_build_messages_chained_create_and_successful_merge_both_fire() -> str:
     return "chained create + successful merge -> both reminders fire"
 
 
-def test_build_messages_single_create_failure_no_message() -> str:
-    messages = _build_messages(
-        command="gh pr create --fill",
-        cwd="/session/cwd",
-        exit_code=1,
-        output="",
-        is_create=True,
-        is_merge=False,
-        is_push=False,
-    )
-    assert messages == [], f"failed single create must not fire, got {messages!r}"
-    return "single failed gh pr create (exit != 0) -> no message (unchanged)"
-
-
 def test_build_messages_single_create_success_fires() -> str:
     messages = _build_messages(
         command="gh pr create --fill",
         cwd="/session/cwd",
-        exit_code=0,
         output="https://github.com/brownm09/dev-env/pull/501\n",
         is_create=True,
         is_merge=False,
@@ -705,7 +677,6 @@ def test_build_messages_single_merge_no_marker_no_message() -> str:
     messages = _build_messages(
         command="gh pr merge --squash",
         cwd="/session/cwd",
-        exit_code=0,
         output="X Pull request #1 is not mergeable",
         is_create=False,
         is_merge=True,
@@ -717,12 +688,10 @@ def test_build_messages_single_merge_no_marker_no_message() -> str:
 
 def test_build_messages_single_merge_worktree_nonzero_exit_still_fires() -> str:
     # dev-env#275: a worktree merge exits non-zero on local cleanup despite a
-    # real remote merge. Marker present -> must still fire regardless of
-    # exit_code (unchanged from before this fix).
+    # real remote merge. Marker present -> fires.
     messages = _build_messages(
         command="gh pr merge --squash --delete-branch",
         cwd="/session/cwd",
-        exit_code=1,
         output="Squashed and merged pull request #419",
         is_create=False,
         is_merge=True,
@@ -730,57 +699,34 @@ def test_build_messages_single_merge_worktree_nonzero_exit_still_fires() -> str:
     )
     assert len(messages) == 1
     assert "gh pr merge detected" in messages[0]
-    return "single gh pr merge, marker present, nonzero exit (worktree #275) -> fires (unchanged)"
-
-
-def test_build_messages_single_push_failure_no_message() -> str:
-    # exit_ok is False here, so the `is_push and ... and exit_ok` condition
-    # short-circuits before _open_pr_for_cwd is ever called.
-    messages = _build_messages(
-        command="git push",
-        cwd="/session/cwd",
-        exit_code=1,
-        output="",
-        is_create=False,
-        is_merge=False,
-        is_push=True,
-    )
-    assert messages == [], f"failed single push must not fire, got {messages!r}"
-    return "single failed git push (exit != 0) -> no message, no subprocess call (unchanged)"
+    return "single gh pr merge, marker present (worktree #275) -> fires"
 
 
 def test_build_messages_create_fails_merge_never_ran_no_message() -> str:
     # gh pr create --fill && gh pr merge --auto, where create ITSELF fails.
     # bash's && short-circuits: gh pr merge never runs, so is_merge is still
-    # True (static text match) but merge_ok is False (no marker) and the
-    # overall exit_code correctly reflects create's own failure. Must not
-    # fire a false "PR created" reminder for a PR that doesn't exist -- this
-    # is the regression an earlier `is_merge or exit_code == 0` draft of the
-    # #494 fix introduced.
+    # True (static text match) but merge_ok is False (no marker), and the
+    # output holds no created-PR URL. Must not fire a false "PR created"
+    # reminder for a PR that doesn't exist.
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --auto",
         cwd="/session/cwd",
-        exit_code=1,
         output="pull request create failed: no commits between main and branch",
         is_create=True,
         is_merge=True,
         is_push=False,
     )
     assert messages == [], f"create failure (merge never ran) must not fire, got {messages!r}"
-    return "chained create fails, merge never ran (no marker, exit != 0) -> no message"
+    return "chained create fails, merge never ran (no marker, no URL) -> no message"
 
 
 def test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire() -> str:
     # dev-env#275 chained with a preceding create: the merge completes
-    # remotely (marker present) but the worktree's local cleanup exits
-    # non-zero, dragging the chain's aggregate exit_code negative. A
-    # confirmed merge is independent proof create already succeeded, so both
-    # messages must still fire -- unlike a plain `exit_code == 0` gate, which
-    # would incorrectly suppress the create message here.
+    # remotely (marker present) and create printed its URL, so both messages
+    # fire.
     messages = _build_messages(
         command="gh pr create --fill && gh pr merge --squash --delete-branch",
         cwd="/session/cwd",
-        exit_code=1,
         output=(
             "https://github.com/brownm09/dev-env/pull/500\n"
             "Squashed and merged pull request #500"
@@ -792,7 +738,7 @@ def test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire
     assert len(messages) == 2, f"expected both messages, got {len(messages)}: {messages!r}"
     assert any("gh pr create detected" in m for m in messages)
     assert any("gh pr merge detected" in m for m in messages)
-    return "chained create + worktree-merge success (marker, nonzero exit) -> both fire (#275)"
+    return "chained create + worktree-merge success (URL, marker) -> both fire (#275)"
 
 
 def test_build_messages_push_suppressed_when_also_create() -> str:
@@ -802,7 +748,6 @@ def test_build_messages_push_suppressed_when_also_create() -> str:
     messages = _build_messages(
         command="gh pr create --fill && git push",
         cwd="/session/cwd",
-        exit_code=0,
         output="https://github.com/brownm09/dev-env/pull/500\n",
         is_create=True,
         is_merge=False,
@@ -827,7 +772,6 @@ def test_build_messages_live_confirmed_true_overrides_marker_less_merge() -> str
     messages = _build_messages(
         command="gh pr merge --squash --delete-branch",
         cwd="/session/cwd",
-        exit_code=1,
         output="failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'",
         is_create=False,
         is_merge=True,
@@ -846,7 +790,6 @@ def test_build_messages_live_confirmed_false_stays_unfired() -> str:
     messages = _build_messages(
         command="gh pr merge --squash --delete-branch",
         cwd="/session/cwd",
-        exit_code=1,
         output="failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'",
         is_create=False,
         is_merge=True,
@@ -864,7 +807,6 @@ def test_build_messages_live_confirmed_default_none_unchanged() -> str:
     messages = _build_messages(
         command="gh pr merge --squash",
         cwd="/session/cwd",
-        exit_code=1,
         output="X Pull request #1 is not mergeable",
         is_create=False,
         is_merge=True,
@@ -885,7 +827,6 @@ def test_build_messages_rest_merge_with_marker_fires() -> str:
     messages = _build_messages(
         command="gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
         cwd="/session/cwd",
-        exit_code=0,
         output='{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
         is_create=False,
         is_merge=False,
@@ -900,7 +841,6 @@ def test_build_messages_rest_merge_without_marker_no_message() -> str:
     messages = _build_messages(
         command="gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash",
         cwd="/session/cwd",
-        exit_code=0,
         output='{"message":"Merge already in progress"}',
         is_create=False,
         is_merge=False,
@@ -922,7 +862,6 @@ def test_build_messages_rest_merge_chained_push_no_duplicate_reminder() -> str:
             "&& git push"
         ),
         cwd="/session/cwd",
-        exit_code=0,
         output='{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}',
         is_create=False,
         is_merge=False,
@@ -941,7 +880,6 @@ def test_build_messages_rest_merge_get_method_not_matched() -> str:
     messages = _build_messages(
         command="gh api repos/brownm09/dev-env/pulls/42/merge",
         cwd="/session/cwd",
-        exit_code=0,
         output='{"merged":true}',
         is_create=False,
         is_merge=False,
@@ -951,38 +889,76 @@ def test_build_messages_rest_merge_get_method_not_matched() -> str:
     return "gh api GET (read-only merge-check) -> no message (dev-env#986/#991)"
 
 
-def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
-    """ADR-050 Amendment 28 post-review finding 6, pinned as an executable
-    proof rather than left as prose alone: this file's own
-    `exit_code = read_exit_code(data, default=0)` call coerces a
-    present-but-non-int-coercible exitCode (e.g. `exitCode: null`) to `0` --
-    indistinguishable, downstream, from a GENUINELY successful exitCode.
-    Pre-fix, `data.get("tool_response", {}).get("exitCode", 0)` returned the
-    raw `None` unchanged for this exact shape. The real consequence here:
-    `should_confirm_via_gh(exit_code, output)` (the dev-env#489/#504 live-gh
-    confirmation fallback) treats a malformed-but-present exitCode exactly
-    like a confirmed-successful one, so that fallback no longer fires for
-    this narrow case -- accepted, not fixed, per the same reasoning as
-    post-tool-use.py's identical pin in test_post_tool_use.py.
-    """
-    read_exit_code = pmr.read_exit_code
-    malformed = {"tool_response": {"exitCode": None, "stdout": "", "stderr": ""}}
-    genuinely_successful = {"tool_response": {"exitCode": 0, "stdout": "", "stderr": ""}}
-    assert read_exit_code(malformed, default=0) == 0, "malformed exitCode must coerce to the default"
-    assert read_exit_code(genuinely_successful, default=0) == 0, "a real exitCode:0 payload, for comparison"
-    assert read_exit_code(malformed, default=0) == read_exit_code(genuinely_successful, default=0)
-    # The real downstream consequence, pinned directly: should_confirm_via_gh
-    # (the dev-env#489/#504 live-gh confirmation fallback) sees the SAME
-    # exit_code=0 either way, so it does NOT fire for a malformed-but-present
-    # exitCode with no marker in output -- exactly as if the command had
-    # genuinely succeeded. A non-zero default (the four sibling files using
-    # default=-1) would fire it instead; this pin is what makes that
-    # divergence concrete rather than an abstract claim.
-    coerced_exit_code = read_exit_code(malformed, default=0)
-    assert pmr.should_confirm_via_gh(coerced_exit_code, "") is False, (
-        "a malformed exitCode coerced to 0 must NOT trigger the live-confirmation fallback"
-    )
-    return "exitCode:null coerces to 0 (default=0), indistinguishable from a genuine exitCode:0 -- accepted trade-off, pinned (ADR-050 Amendment 28)"
+# ---------------------------------------------------------------------------
+# main() end-to-end on the real payload shape (dev-env#1251): no exitCode key,
+# and no merge marker -- gh's completed-merge line reached 0 of 559 recorded
+# merge results. Before dev-env#1251, main() read the missing exitCode as 0 and
+# never ran the live confirmation, so a real merge never got its reminder.
+# confirm_merge_via_gh is swapped for a fake so no live gh call runs.
+# ---------------------------------------------------------------------------
+
+REAL_MERGE_PAYLOAD = {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {"command": "gh pr merge 2034 --squash --delete-branch 2>&1 | tail -5"},
+    "tool_response": {
+        "stdout": "failed to run git: fatal: 'main' is already used by worktree at 'C:/Users/brown/Git/career-playbook'\n",
+        "stderr": "",
+        "interrupted": False,
+        "isImage": False,
+        "noOutputExpected": False,
+    },
+    "cwd": "C:/Users/brown/Git/career-playbook/.claude/worktrees/x",
+}
+
+
+def _run_main_with_confirm(confirm_result):
+    """Run pmr.main() on REAL_MERGE_PAYLOAD; return (exit code, stderr, confirm calls)."""
+    import io
+    import json
+    import tempfile
+
+    calls = []
+
+    def fake_confirm(pr_number, repo, cwd):
+        calls.append((pr_number, repo, cwd))
+        return confirm_result
+
+    real = (pmr.confirm_merge_via_gh, pmr.sys.stdin, pmr.sys.stderr, os.environ.get("HOOK_HEARTBEAT_DIR_OVERRIDE"))
+    stderr = io.StringIO()
+    with tempfile.TemporaryDirectory() as heartbeat_tmp:
+        pmr.confirm_merge_via_gh = fake_confirm
+        pmr.sys.stdin = io.StringIO(json.dumps(REAL_MERGE_PAYLOAD))
+        pmr.sys.stderr = stderr
+        os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = heartbeat_tmp
+        try:
+            try:
+                pmr.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        finally:
+            pmr.confirm_merge_via_gh, pmr.sys.stdin, pmr.sys.stderr = real[:3]
+            if real[3] is None:
+                os.environ.pop("HOOK_HEARTBEAT_DIR_OVERRIDE", None)
+            else:
+                os.environ["HOOK_HEARTBEAT_DIR_OVERRIDE"] = real[3]
+    return code, stderr.getvalue(), calls
+
+
+def test_main_real_payload_merge_confirmed_live_fires_reminder() -> str:
+    code, err, calls = _run_main_with_confirm(2034)
+    assert len(calls) == 1, f"live confirmation must run once, got {calls!r}"
+    assert code == 2, f"expected exit 2 with the merge reminder, got {code}: {err!r}"
+    assert "gh pr merge detected" in err, err
+    return "real payload (no exitCode, no marker) -> live confirm runs, merge reminder fires (dev-env#1251)"
+
+
+def test_main_real_payload_merge_unconfirmed_stays_silent() -> str:
+    code, err, calls = _run_main_with_confirm(None)
+    assert len(calls) == 1, f"live confirmation must run once, got {calls!r}"
+    assert code == 0 and err == "", f"unconfirmed merge must stay silent, got {code}: {err!r}"
+    return "real payload, live confirm finds no merge (e.g. queued --auto) -> silent"
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +968,7 @@ def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
 # ---------------------------------------------------------------------------
 # dev-env#1243: a failed `gh pr create` inside a chained command. The stdout and
 # the response keys are from the real incident (PR #1235's session): the payload
-# has no exitCode key, so read_exit_code's default of 0 reads as success, and the
+# has no exitCode key (dev-env#1251), so only the output shows the failure, and the
 # old scan took the first PR URL anywhere in the output, here one inside prose.
 # ---------------------------------------------------------------------------
 
@@ -1011,16 +987,10 @@ CHAINED_CREATE_COMMAND = (
 )
 
 
-def _exit_code_as_main_reads_it(stdout: str) -> int:
-    response = {"stdout": stdout, "stderr": "", "interrupted": False, "isImage": False, "noOutputExpected": False}
-    return pmr.read_exit_code({"tool_response": response}, default=0)
-
-
 def test_build_messages_failed_create_in_chain_no_reminder() -> str:
     messages = _build_messages(
         command=CHAINED_CREATE_COMMAND,
         cwd="/session/cwd",
-        exit_code=_exit_code_as_main_reads_it(FAILED_CREATE_STDOUT),
         output=FAILED_CREATE_STDOUT,
         is_create=True,
         is_merge=False,
@@ -1043,7 +1013,6 @@ def test_build_messages_successful_create_names_created_pr() -> str:
     messages = _build_messages(
         command=CHAINED_CREATE_COMMAND,
         cwd="/session/cwd",
-        exit_code=_exit_code_as_main_reads_it(output),
         output=output,
         is_create=True,
         is_merge=False,
@@ -1065,7 +1034,6 @@ def test_build_messages_existing_pr_error_no_reminder() -> str:
     messages = _build_messages(
         command="gh pr create --fill 2>&1 | tail -3",
         cwd="/session/cwd",
-        exit_code=_exit_code_as_main_reads_it(output),
         output=output,
         is_create=True,
         is_merge=False,
@@ -1085,7 +1053,6 @@ def test_build_messages_failed_create_then_merge_only_merge_reminder() -> str:
     messages = _build_messages(
         command="gh pr create --fill 2>&1; gh pr merge 1218 --squash",
         cwd="/session/cwd",
-        exit_code=_exit_code_as_main_reads_it(output),
         output=output,
         is_create=True,
         is_merge=True,
@@ -1101,7 +1068,6 @@ def test_build_messages_empty_output_keeps_generic_reminder() -> str:
     messages = _build_messages(
         command="gh pr create --fill",
         cwd="/session/cwd",
-        exit_code=_exit_code_as_main_reads_it(""),
         output="",
         is_create=True,
         is_merge=False,
@@ -1128,7 +1094,6 @@ def test_build_messages_failed_create_chained_with_push_keeps_push_reminder() ->
         messages = _build_messages(
             command="git push; gh pr create --fill 2>&1 | tail -3",
             cwd="/session/cwd",
-            exit_code=_exit_code_as_main_reads_it(output),
             output=output,
             is_create=True,
             is_merge=False,
@@ -1191,22 +1156,21 @@ def main() -> int:
         ("build_messages: chained create + queued --auto -> create still fires (dev-env#494)", test_build_messages_chained_create_and_queued_auto_still_creates),
         ("build_messages: chained create + --help merge -> create still fires (dev-env#494)", test_build_messages_chained_create_and_help_shaped_merge_still_creates),
         ("build_messages: chained create + successful merge -> both fire", test_build_messages_chained_create_and_successful_merge_both_fire),
-        ("build_messages: single failed create -> no message", test_build_messages_single_create_failure_no_message),
         ("build_messages: single successful create -> fires", test_build_messages_single_create_success_fires),
         ("build_messages: single merge, no marker -> no message", test_build_messages_single_merge_no_marker_no_message),
         ("build_messages: single merge, worktree nonzero exit -> fires (#275)", test_build_messages_single_merge_worktree_nonzero_exit_still_fires),
-        ("build_messages: single failed push -> no message", test_build_messages_single_push_failure_no_message),
         ("build_messages: create fails, merge never ran -> no message", test_build_messages_create_fails_merge_never_ran_no_message),
         ("build_messages: chained create + worktree-merge success -> both fire (#275)", test_build_messages_chained_create_and_worktree_merge_nonzero_exit_both_fire),
         ("build_messages: push suppressed when also create", test_build_messages_push_suppressed_when_also_create),
         ("build_messages: live_confirmed=True overrides marker-less merge (dev-env#504)", test_build_messages_live_confirmed_true_overrides_marker_less_merge),
         ("build_messages: live_confirmed=False stays unfired", test_build_messages_live_confirmed_false_stays_unfired),
         ("build_messages: live_confirmed omitted -> unchanged", test_build_messages_live_confirmed_default_none_unchanged),
+        ("main(): real payload, merge confirmed live -> reminder (dev-env#1251)", test_main_real_payload_merge_confirmed_live_fires_reminder),
+        ("main(): real payload, merge unconfirmed -> silent (dev-env#1251)", test_main_real_payload_merge_unconfirmed_stays_silent),
         ("build_messages: REST merge fallback + \"merged\":true -> fires (dev-env#986/#991)", test_build_messages_rest_merge_with_marker_fires),
         ("build_messages: REST merge fallback without marker -> no message", test_build_messages_rest_merge_without_marker_no_message),
         ("build_messages: REST merge chained with push -> no duplicate reminder (dev-env#986/#991)", test_build_messages_rest_merge_chained_push_no_duplicate_reminder),
         ("build_messages: REST merge GET (no PUT) -> no message (dev-env#986/#991)", test_build_messages_rest_merge_get_method_not_matched),
-        ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
         ("build_messages: failed create in a chain -> no reminder (dev-env#1243)", test_build_messages_failed_create_in_chain_no_reminder),
         ("shard step: PR URL in prose is not named (dev-env#1243)", test_shard_step_ignores_pr_url_in_prose),
         ("build_messages: successful create in a chain names the created PR (dev-env#1243)", test_build_messages_successful_create_names_created_pr),

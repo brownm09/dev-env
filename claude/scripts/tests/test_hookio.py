@@ -40,10 +40,8 @@ from _hookio import (  # noqa: E402
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     read_tool_input_field,
     scan_top_level,
-    should_confirm_via_gh,
     split_top_level,
     strip_line_continuations,
 )
@@ -97,8 +95,8 @@ def test_read_command_output_non_dict_data() -> str:
     # dev-env#1028 post-review finding: a valid-JSON-but-non-dict top-level
     # payload (list/string/int/None) crashed at the FIRST `data.get(...)`
     # inside this function -- one level above the tool_response guard above,
-    # added alongside the same guard in the new read_command/read_cwd/
-    # read_exit_code helpers this dev-env#1028 fix introduces.
+    # added alongside the same guard in the new read_command/read_cwd
+    # helpers this dev-env#1028 fix introduces.
     for bad in (["not", "a", "dict"], "just a string", 42, None):
         assert read_command_output(bad) == "", f"non-dict data {bad!r} -> ''"
     return "non-dict top-level data (list/str/int/None) -> '', never raises"
@@ -114,8 +112,8 @@ def test_old_output_read_would_have_been_empty() -> str:
 
 
 # ---------------------------------------------------------------------------
-# read_command / read_cwd / read_exit_code (dev-env#1028) -- extend
-# read_command_output's "never raises" contract to three more fields
+# read_command / read_cwd (dev-env#1028) -- extend
+# read_command_output's "never raises" contract to more fields
 # usage-snapshot.py's main() (and fourteen sibling call sites, not migrated
 # here) previously read via an unguarded inline `.get(x, {}).get(...)` chain.
 # That chain's `{}` default only substitutes when the KEY is absent -- a
@@ -222,61 +220,6 @@ def test_read_cwd_missing_and_malformed() -> str:
     return "missing/None/non-string cwd, and non-dict data, all yield '' (no crash)"
 
 
-def test_read_exit_code_normal_dict() -> str:
-    assert read_exit_code({"tool_response": {"exitCode": 1}}, default=-1) == 1
-    assert read_exit_code({"tool_response": {"exitCode": 0}}, default=-1) == 0
-    return "normal tool_response dict -> its int exitCode"
-
-
-def test_read_exit_code_missing_and_malformed_tool_response() -> str:
-    assert read_exit_code({}, default=-1) == -1, "missing tool_response -> default -1"
-    assert read_exit_code({"tool_response": {}}, default=-1) == -1, "empty tool_response -> default"
-    assert read_exit_code({"tool_response": None}, default=-1) == -1, "None tool_response -> default (the dev-env#1028 crash shape)"
-    assert read_exit_code({"tool_response": "x"}, default=-1) == -1, "non-dict (str) tool_response -> default"
-    assert read_exit_code({"tool_response": [1, 2]}, default=-1) == -1, "non-dict (list) tool_response -> default"
-    return "missing/empty/None/non-dict tool_response all yield the default (no crash) -- was AttributeError pre-fix"
-
-
-def test_read_exit_code_non_dict_data() -> str:
-    # Same class as test_read_command_non_dict_data, for the exit-code helper.
-    for bad in (["not", "a", "dict"], "just a string", 42, None):
-        assert read_exit_code(bad, default=-1) == -1, f"non-dict data {bad!r} -> default"
-    return "non-dict top-level data (list/str/int/None) -> default, never raises"
-
-
-def test_read_exit_code_default_is_required() -> str:
-    # dev-env#1028 post-review finding: `default` used to itself default to
-    # -1, which would let a future drop-in migration at a 0-default sibling
-    # site (post-tool-use.py, pr-merge-reminder.py) silently flip an absent
-    # exitCode from 0 to -1 -- reintroducing the exact dev-env#557
-    # misattribution bug via a migration that looks like a no-op. `default`
-    # is now a required argument -- pin that omitting it is a TypeError, not
-    # a silent -1.
-    try:
-        read_exit_code({})  # type: ignore[call-arg]
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("read_exit_code({}) without `default` must raise TypeError")
-    assert read_exit_code({}, default=0) == 0
-    assert read_exit_code({"tool_response": None}, default=0) == 0
-    return "`default` is a required argument (TypeError if omitted); honored for both missing-key and None-value cases"
-
-
-def test_read_exit_code_non_coercible_exit_code_falls_back_to_default() -> str:
-    for bad in (None, [1, 2], "not-a-number", {}):
-        assert read_exit_code({"tool_response": {"exitCode": bad}}, default=-1) == -1, f"exitCode={bad!r} must not raise"
-    return "non-int-coercible exitCode values (None/list/non-numeric str/dict) -> default, never raises"
-
-
-def test_read_exit_code_numeric_string_is_coerced() -> str:
-    # Real payloads always send an int; int("1") legitimately succeeds -- pin
-    # this as deliberate coercion, not accidental leniency that could mask a
-    # different-shaped bug.
-    assert read_exit_code({"tool_response": {"exitCode": "1"}}, default=-1) == 1
-    return "a numeric-string exitCode is coerced via int(), not silently rejected"
-
-
 def test_merge_marker_detected() -> str:
     assert output_has_merge_marker("✓ Squashed and merged pull request #380 (T)")
     assert output_has_merge_marker("✓ Merged pull request #1")
@@ -299,46 +242,6 @@ def test_merge_pr_number_from_output() -> str:
     assert merge_pr_number_from_output("✓ Rebased and merged pull request o/r#7") == 7
     assert merge_pr_number_from_output("no marker here") is None
     return "marker PR number extracted; None when absent"
-
-
-# ---------------------------------------------------------------------------
-# should_confirm_via_gh  (dev-env#489)
-#
-# confirm_merge_via_gh itself shells out to `gh pr view` and is intentionally
-# not tested (repo convention: no subprocess mocks) -- these tests cover only
-# the pure "is it worth paying for a live confirmation?" decision. Its UTF-8
-# output-decoding behavior (dev-env#503) is covered separately by
-# test_winsubp.py's tests of _apply_windows_subprocess_defaults, the shared
-# helper the call now goes through via the _winsubp import this module added.
-# ---------------------------------------------------------------------------
-
-def test_should_confirm_nonzero_exit_no_marker() -> str:
-    # The dev-env#489 case: gh exited non-zero and its success marker did not
-    # survive to the captured output -- worth a live confirmation.
-    assert should_confirm_via_gh(1, "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'")
-    return "exit 1, no marker -> confirm (the lost-marker case)"
-
-
-def test_should_confirm_false_when_marker_present() -> str:
-    # The marker already confirms the merge -- no need to pay for a network call.
-    assert not should_confirm_via_gh(1, "Squashed and merged pull request #380")
-    return "exit 1, marker present -> no confirm needed (cheap path already succeeded)"
-
-
-def test_should_confirm_false_on_clean_exit() -> str:
-    # A clean exit 0 with no marker is a genuine non-merge (gh pr create, git
-    # push, or a queued --auto) -- never worth a network call.
-    assert not should_confirm_via_gh(0, "")
-    assert not should_confirm_via_gh(0, "✓ Pull request #380 will be automatically merged")
-    return "exit 0, no marker -> no confirm (common non-merge path stays cheap)"
-
-
-def test_should_confirm_default_exit_code_attempts() -> str:
-    # The real payload can omit exitCode (ADR-049); hooks default it to -1, which
-    # is != 0 -- so a missing exit code still attempts confirmation rather than
-    # silently skipping a possibly-real merge.
-    assert should_confirm_via_gh(-1, "")
-    return "default/missing exit code (-1) with no marker -> confirm (safer default)"
 
 
 # ---------------------------------------------------------------------------
@@ -1095,15 +998,14 @@ def test_mask_prose_flag_values_mid_word_flag_not_matched() -> str:
 #
 # `gh pr merge --help` textually satisfies `is_pr_merge_command`, the merge
 # predicate the hook family shares -- it *is* a `gh pr merge`
-# invocation. Since --help prints no success marker, `should_confirm_via_gh`
-# returns True (no marker + non-zero/-1 exit), triggering a live `gh pr view`
-# confirmation with no explicit PR number that resolves against cwd's checked-
+# invocation. Since --help prints no success marker, a caller would fall
+# through to a live `gh pr view` confirmation with no explicit PR number that resolves against cwd's checked-
 # out branch and can misattribute an unrelated already-merged PR to the
 # --help invocation (dev-env#557 -- a live incident: `gh pr merge --help` run
 # purely to check flag semantics moved an unrelated issue's project-board item
 # to Done). --help/-h can *categorically never* attempt a real merge, so a
 # command consisting only of --help/-h `gh pr merge` invocations should
-# short-circuit before that marker/exit-code logic runs at all.
+# short-circuit before that marker logic runs at all.
 # ---------------------------------------------------------------------------
 
 def test_is_merge_help_only_bare_help_long_flag() -> str:
@@ -1555,10 +1457,6 @@ def main() -> int:
         ("merge marker detected (incl cross-repo)", test_merge_marker_detected),
         ("merge marker excludes auto/failure/stray", test_merge_marker_excludes_auto_failure_and_stray),
         ("merge PR number from output", test_merge_pr_number_from_output),
-        ("should_confirm_via_gh: exit!=0, no marker -> True", test_should_confirm_nonzero_exit_no_marker),
-        ("should_confirm_via_gh: marker present -> False", test_should_confirm_false_when_marker_present),
-        ("should_confirm_via_gh: clean exit -> False", test_should_confirm_false_on_clean_exit),
-        ("should_confirm_via_gh: default exit code -> True", test_should_confirm_default_exit_code_attempts),
         ("merge dir: bare merge -> cwd", test_merge_dir_bare_merge_is_cwd),
         ("merge dir: cd <repo> && merge -> that repo", test_merge_dir_cd_chain_redirects),
         ("merge dir: cd <repo> && ... && merge -> repo dir", test_merge_dir_cd_chain_multi_segment),
@@ -1685,24 +1583,6 @@ def main() -> int:
             "read_cwd: missing/None/non-string cwd, non-dict data -> '' (dev-env#1028 post-review)",
             test_read_cwd_missing_and_malformed,
         ),
-        ("read_exit_code: normal tool_response dict -> int exitCode", test_read_exit_code_normal_dict),
-        (
-            "read_exit_code: missing/empty/None/non-dict tool_response -> default (dev-env#1028)",
-            test_read_exit_code_missing_and_malformed_tool_response,
-        ),
-        (
-            "read_exit_code: non-dict top-level data -> default (dev-env#1028 post-review)",
-            test_read_exit_code_non_dict_data,
-        ),
-        (
-            "read_exit_code: `default` is a required argument (dev-env#1028 post-review)",
-            test_read_exit_code_default_is_required,
-        ),
-        (
-            "read_exit_code: non-coercible exitCode -> default, never raises",
-            test_read_exit_code_non_coercible_exit_code_falls_back_to_default,
-        ),
-        ("read_exit_code: numeric-string exitCode is coerced", test_read_exit_code_numeric_string_is_coerced),
         ("created_item_url: bare lines only (dev-env#1243)", test_created_item_url_bare_lines_only),
         ("created_item_url: kind, repo, last match (dev-env#1243)", test_created_item_url_kind_repo_and_last_match),
         ("created_item_url: skips gh's 'already exists' error (dev-env#1243)", test_created_item_url_skips_already_exists_error),

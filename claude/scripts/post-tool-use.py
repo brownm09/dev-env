@@ -61,8 +61,7 @@ fallback when the live fetch fails (network, auth, timeout), and the printed
 reminder labels which source it used so staleness is visible instead of
 silent, the way it drifted undetected in lifting-logbook#628.
 
-Exit 0  — not a relevant command, no config, or a payload exitCode showing gh
-          failed (the real Bash payload has no such key); silent
+Exit 0  — not a relevant command, or no config; silent
 Exit 2  — item added (or failed to add), created in an expected-opt-in repo with
           no config, or a create that printed no URL; message emitted via stderr
 """
@@ -82,7 +81,6 @@ from _hookio import (
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     scan_top_level,
     SHELL_TOOLS,
 )
@@ -578,37 +576,14 @@ def main() -> None:
     if data is None:
         sys.exit(0)
 
-    # dev-env#1031/#1033: read_command()/read_cwd()/read_exit_code() never
-    # raise on a present-but-non-dict tool_input/cwd/tool_response
-    # (dev-env#1028's payload shape) -- the pre-fix unguarded chains crashed
-    # here, silently caught by the __main__ safe-exit guard below (which
-    # loses only this project-board add, an advisory side effect with other
-    # backstops -- see ADR-050 Amendment 27 for why pre-merge-findings-gate.py,
-    # a blocking merge gate, was fixed first and separately on fail-open
-    # severity grounds). default=0 here (not the -1 most sibling hooks use)
-    # matches this file's own pre-fix literal -- verified per-file, not
-    # copy-pasted, since a wrong default would reintroduce the dev-env#557
-    # misattribution bug (see read_exit_code's own docstring).
-    #
-    # Documented, accepted trade-off (ADR-050 Amendment 28 post-review finding
-    # 6): read_exit_code() ALSO coerces a present-but-non-int-coercible
-    # exitCode (e.g. null) to `default`, not just a genuinely MISSING one --
-    # the pre-fix `.get("exitCode", default)` only substituted the default on
-    # a missing key, so a present `exitCode: null` returned the raw `None`
-    # unchanged (crashing downstream, not silently treated as 0). Because
-    # `default=0` here, that coercion now makes a malformed-but-present
-    # exitCode indistinguishable from a genuinely successful (0) one -- the
-    # `if exit_code != 0: sys.exit(0)` gate below no longer skips for that
-    # narrow case. Accepted rather than special-cased: narrower and less
-    # confirmed than dev-env#1028's own top-level shape (no observed
-    # incident for this specific sub-field malformation), and the four
-    # `-1`-default sibling files are unaffected (both `None` and `-1` equally
-    # satisfy `!= 0`). See test_exit_code_coercion_pins_accepted_tradeoff in
-    # test_post_tool_use.py for the pinned, executable proof of this exact
-    # behavior.
+    # dev-env#1031/#1033: read_command()/read_cwd() never raise on a
+    # present-but-non-dict tool_input/cwd (dev-env#1028's payload shape) -- the
+    # pre-fix unguarded chains crashed here, silently caught by the __main__
+    # safe-exit guard below (see ADR-050 Amendment 27). There is no exit-code
+    # read: the payload never carries exitCode (dev-env#1251), so a failed
+    # create in a chain is caught by created_item_url below instead.
     command = read_command(data)
     output = read_command_output(data)
-    exit_code = read_exit_code(data, default=0)
     cwd = read_cwd(data)
 
     is_issue_create = is_issue_create_command(command)
@@ -624,13 +599,6 @@ def main() -> None:
         is_pr_create = False
 
     if not (is_issue_create or is_pr_create):
-        sys.exit(0)
-
-    # Don't process if the gh command itself failed. This only catches a payload
-    # that carries exitCode, and the real Bash payload doesn't (ADR-049), so a
-    # failed create in a chain gets past it. created_item_url is what catches
-    # that case (dev-env#1243).
-    if exit_code != 0:
         sys.exit(0)
 
     # A chain with both creates is handled as whichever one printed its URL.

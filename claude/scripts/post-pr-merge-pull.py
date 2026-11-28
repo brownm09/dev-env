@@ -51,9 +51,7 @@ from _hookio import (
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     SHELL_TOOLS,
-    should_confirm_via_gh,
 )
 import _hookutil
 from _repo_target import merge_args, repo_from_flag, repo_from_pr_url, repo_from_rest_merge_path
@@ -376,9 +374,6 @@ def main() -> None:
         # a live gh pr view confirmation that resolves against cwd's current
         # branch and can misattribute an unrelated already-merged PR (dev-env#557).
         if is_merge_help_only(command):
-            sys.exit(0)
-        exit_code = read_exit_code(data, default=-1)
-        if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)
         if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
             sys.exit(0)
