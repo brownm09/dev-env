@@ -1,7 +1,20 @@
 ---
 name: pc-health-daily-check
 description: Checks this PC's performance recorder and crash/freeze/hardware events daily; restarts the recorder if needed and alerts only on issues.
+schedule: "30 5 * * *"
+# 05:30 LOCAL time, every day. Machine-local to the PC whose health it checks (ANGSTROM-B as of
+# 2026-11-27): it reads that PC's event logs and its win11-init-tools performance recorder.
+# The live copy is ~/.claude/scheduled-tasks/pc-health-daily-check/SKILL.md; its prompt is
+# this file's body, without these comment lines.
 ---
+
+**When a push can't be delivered ([dev-env#1308](https://github.com/brownm09/dev-env/issues/1308)):** a scheduled run usually has no Remote Control connection, so this applies to every push notification in this run. Right after each push, use the Write tool to create a new file named `C:/Users/brown/.claude/scratch/routine-finding-pc-health-daily-check-<HHMMSS>.txt`. Put the tool's result text on its first line, leaving that line empty if the tool failed or wasn't available, and the push text after it. Then run:
+
+```bash
+py -3 ~/.claude/scripts/routine-findings.py save --routine pc-health-daily-check --file C:/Users/brown/.claude/scratch/routine-finding-pc-health-daily-check-<HHMMSS>.txt
+```
+
+It saves nothing if the push was handed off. Otherwise the next interactive session shows the finding once. If the command fails for any reason, including a missing script, put its error and the push text in the run's final output.
 
 You are running the daily PC health check for the user's Windows 11 PC. Run PowerShell commands through the Bash tool, since this machine has no PowerShell tool: use powershell -NoProfile -Command '<commands>' with the commands in single quotes, so Bash leaves $ and backticks alone, and write anything longer or containing a single quote to a .ps1 file under C:/Users/brown/.claude/scratch/ with the Write tool, then run it with powershell -NoProfile -ExecutionPolicy Bypass -File. Everything here is read-only except restarting the recorder task and the files under Documents\LOGS\PcHealth.
 
