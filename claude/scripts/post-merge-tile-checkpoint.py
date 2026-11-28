@@ -17,7 +17,7 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "..."},  # no exitCode key (dev-env#1251)
     "session_id": "...",
     "cwd": "..."
   }
@@ -45,9 +45,7 @@ from _hookio import (
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     SHELL_TOOLS,
-    should_confirm_via_gh,
 )
 import _hookutil
 
@@ -61,6 +59,11 @@ def is_successful_merge(command: str, output: str) -> bool:
     #275), while a clean exit 0 is also true for non-merge invocations like
     `gh pr merge --help` or a queued `--auto` — an exit-0-alone gate misfired
     on exactly that shape (dev-env#485).
+
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
 
     The command-shape check itself is `scan_top_level`-anchored rather than a
     raw substring test, so `gh pr merge` text inside a heredoc body, a quoted
@@ -107,9 +110,6 @@ def main() -> None:
         # a live gh pr view confirmation that resolves against cwd's current
         # branch and can misattribute an unrelated already-merged PR (dev-env#557).
         if is_merge_help_only(command):
-            sys.exit(0)
-        exit_code = read_exit_code(data, default=-1)
-        if not should_confirm_via_gh(exit_code, output):
             sys.exit(0)
         if confirm_merge_via_gh(None, "", effective_merge_dir(command, cwd)) is None:
             sys.exit(0)

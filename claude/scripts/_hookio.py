@@ -43,10 +43,13 @@ into ``is_help_only(command, invocation_re)`` so ``post-tool-use.py``'s
 ``gh issue create`` / ``gh pr create`` detectors — which had the identical
 ``--help`` false-positive — reuse the same segment-scan instead of a copy of it.
 
-``read_command`` / ``read_cwd`` / ``read_exit_code`` (dev-env#1028) extend
+``read_command`` / ``read_cwd`` (dev-env#1028) extend
 ``read_command_output``'s "never raises, so a hook can call it unguarded" contract to
-the ``tool_input.command``, ``cwd``, and ``tool_response.exitCode`` reads.
-``usage-snapshot.py``'s ``main()`` was migrated onto all three first; the dev-env#1031
+the ``tool_input.command`` and ``cwd`` reads. A third helper, ``read_exit_code``, was
+removed in dev-env#1251: the payload never carries ``exitCode``, so it only ever
+returned its caller's default.
+
+``usage-snapshot.py``'s ``main()`` was migrated onto these helpers first; the dev-env#1031
 follow-up (PRs #1034/#1035) migrated fourteen more sibling call sites onto the same
 shape, plus five more found by that migration's own strengthened regression test (the
 narrower ``(data.get("tool_input") or {}).get(...)`` variant — see ``read_command``'s
@@ -62,7 +65,7 @@ downstream shape gate either (see ``read_command``'s own docstring, and
 shape).
 
 Usage:
-    from _hookio import read_command, read_tool_input_field, read_command_output, read_cwd, read_exit_code
+    from _hookio import read_command, read_tool_input_field, read_command_output, read_cwd
     from _hookio import output_has_merge_marker
     from _hookio import effective_merge_dir, scan_top_level, split_top_level
     from _hookio import is_help_only, is_merge_help_only
@@ -211,39 +214,6 @@ def read_cwd(data: dict) -> str:
     return cwd if isinstance(cwd, str) else ""
 
 
-def read_exit_code(data: dict, default: int) -> int:
-    """Return a Bash/PowerShell command's exit code from a PostToolUse payload.
-
-    Returns *default* for a non-dict *data*, or a missing, empty, ``None``, or
-    non-dict ``tool_response``, or a non-int-coercible ``exitCode`` — never
-    raises, so a hook can call it unguarded.
-
-    *default* has **no** default value and is a required argument
-    (dev-env#1028 post-review finding): sibling hooks disagree on what an
-    absent ``exitCode`` should mean — ``usage-snapshot.py`` and three others
-    treat it as ``-1`` (the payload omits the field: 0 of 501 recorded create
-    results carried it, ADR-050 Amendment 31), but
-    ``post-tool-use.py``/``pr-merge-reminder.py`` treat it as ``0``. A
-    convenience default here (e.g. ``-1``) would let a future drop-in
-    migration at one of the ``0``-sites silently flip an absent ``exitCode``
-    from ``0`` (skip a live confirm) to ``-1`` (``-1 != 0`` — pay a live
-    ``gh pr view`` call with no PR number, resolving against *cwd*'s
-    checked-out branch) — reintroducing the exact misattribution failure
-    dev-env#557 is on record for, via a migration that looks like a no-op.
-    Forcing every caller to state its own default makes that class of
-    migration bug structurally impossible rather than merely documented.
-    """
-    if not isinstance(data, dict):
-        return default
-    tr = data.get("tool_response") or {}
-    if not isinstance(tr, dict):
-        return default
-    try:
-        return int(tr.get("exitCode", default))
-    except (TypeError, ValueError):
-        return default
-
-
 def output_has_merge_marker(output: str) -> bool:
     """Return True iff the output contains gh's completed-merge success line.
 
@@ -282,9 +252,8 @@ def created_item_url(output: str, kind: str, repo: str | None = None) -> str | N
     """Return the URL a create command printed in *output*, or ``None``.
 
     The evidence that a create succeeded inside a chained command (dev-env#1243).
-    Claude Code's Bash payload carries no ``exitCode`` key (ADR-049), so
-    ``read_exit_code`` returns the caller's default whether the create worked or
-    not, and PostToolUse fires for any chain the shell finishes normally.
+    Claude Code's Bash payload carries no ``exitCode`` key (ADR-049, dev-env#1251),
+    and PostToolUse fires for any chain the shell finishes normally.
 
     Only a bare item URL of *kind* (``"pull"`` or ``"issues"``) counts. That leaves
     out a URL inside a line of prose and a ``#issuecomment-`` URL from a chained
@@ -382,24 +351,15 @@ def effective_merge_dir(command: str, cwd: str) -> str:
     return path
 
 
-def should_confirm_via_gh(exit_code: int, output: str) -> bool:
-    """Pure: should a caller pay a live `gh pr view` call to confirm the merge?
-
-    Only when the cheap marker check found nothing AND the exit code signals a
-    possible loss (non-zero) — an exit-0 non-merge (a queued `--auto`, or any
-    other clean-exit command that merely matched `gh pr merge` textually) never
-    pays the network call. See `confirm_merge_via_gh` for why the check exists
-    at all (dev-env#489).
-    """
-    return exit_code != 0 and not output_has_merge_marker(output)
-
-
 def confirm_merge_via_gh(pr_number: int | None, repo: str, cwd: str) -> int | None:
     """Best-effort live confirmation that a `gh pr merge` actually merged.
 
     Returns the merged PR's number when `gh pr view` confirms ``state ==
     "MERGED"``, else ``None``. Fallback only — costs a network round-trip, so
-    callers should gate on `should_confirm_via_gh` first.
+    callers run it only when the marker is missing. That is every ``gh pr
+    merge`` in practice: dev-env#1251's replay found the marker in 0 of 519
+    recorded merge results. Callers used to gate on an exit code too, but the
+    payload never carries one (dev-env#1251).
 
     gh prints its completed-merge success line before attempting the local
     branch checkout/delete that can fail with "main is already checked out"
@@ -884,14 +844,9 @@ def output_has_rest_merge_marker(output: str) -> bool:
 
     GitHub's `PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge` returns
     `{"sha":...,"merged":true,"message":"Pull Request successfully merged"}`
-    on success. `gh api` does report a non-zero exit code on HTTP failure,
-    available to callers via `tool_response.exitCode` the same as every other
-    predicate in this module — this function checks the response *body*
-    alone, not the exit code, purely for consistency with
-    `output_has_merge_marker`'s own marker-only strictness (see that
-    function's docstring for the shared rationale: a queued `--auto`/failure
-    case must never look like a completed merge), not because the exit code
-    is unavailable.
+    on success. This function checks the response *body* alone: the payload
+    carries no exit code (dev-env#1251), and a call that exits non-zero on HTTP
+    failure runs no PostToolUse hook at all (ADR-053).
     """
     return bool(_MERGED_TRUE_RE.search(output))
 
@@ -1266,14 +1221,14 @@ def mask_prose_flag_values(command: str) -> str:
 #
 # `gh pr merge --help` textually satisfies `is_pr_merge_command`, the merge
 # predicate every hook in this family shares — it *is* a `gh pr merge`
-# invocation, syntactically. Since --help prints no success marker,
-# `should_confirm_via_gh` returns True (no marker + non-zero/-1 exit),
-# triggering a live `gh pr view` confirmation with no explicit PR number —
+# invocation, syntactically. Since --help prints no success marker, a
+# caller would fall through to a live `gh pr view` confirmation with no
+# explicit PR number —
 # which resolves against cwd's checked-out branch and can misattribute an
 # unrelated already-merged PR to the --help invocation (confirmed incident:
 # dev-env#557). --help/-h can *categorically never* attempt a real merge, so
 # a command consisting only of --help/-h invocations of a given kind should
-# short-circuit before any of that marker/exit-code logic runs at all.
+# short-circuit before any of that marker logic runs at all.
 #
 # `post-tool-use.py`'s `is_issue_create_command` / `is_pr_create_command` have
 # the identical shape of bug: `gh issue create --help` (run per this repo's own

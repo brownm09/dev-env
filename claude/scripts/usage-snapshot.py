@@ -19,7 +19,7 @@ Stdin JSON shape (PostToolUse):
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",  # or "PowerShell"
     "tool_input": {"command": "...", "description": "..."},
-    "tool_response": {"stdout": "...", "stderr": "...", "exitCode": 0},
+    "tool_response": {"stdout": "...", "stderr": "..."},  # no exitCode key (dev-env#1251)
     "session_id": "...",
     "cwd": "..."
   }
@@ -67,9 +67,10 @@ ever reached. `main()`'s own `command`/`exit_code` extraction, two lines
 before that call, used an unguarded inline `.get(x, {}).get(...)` chain that
 throws on a present-but-non-dict `tool_input`/`tool_response` — silently
 caught by the outermost safe-exit guard, with nothing written anywhere. Fixed
-by routing both reads through `_hookio.read_command`/`read_exit_code` (which
-extend `read_command_output`'s pre-existing "never raises" contract to these
-two fields), plus a defense-in-depth `try/except` around the `resolve_merge()`
+by routing both reads through `_hookio` helpers that extend
+`read_command_output`'s pre-existing "never raises" contract to these two
+fields (the exit-code read was later removed outright, dev-env#1251: the payload
+never carries `exitCode`), plus a defense-in-depth `try/except` around the `resolve_merge()`
 call itself with a new `reason: "classify_error"` trace entry — so a
 merge-shaped command can no longer vanish from the trace no matter which layer
 of this pipeline throws.
@@ -107,9 +108,7 @@ from _hookio import (
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     SHELL_TOOLS,
-    should_confirm_via_gh,
 )
 import _hookutil
 from _worktree_canon import canonical_root_from_worktree
@@ -138,6 +137,11 @@ def merge_confirmed(command: str, output: str) -> bool:
     this repo (dev-env#474; mirrors post-pr-merge-project.py's
     merge_succeeded(), see ADR-049/ADR-050).
 
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
+
     gh's already-printed marker does not always survive to this hook's
     captured output when gh exits abruptly right after that same
     local-cleanup failure (dev-env#489) — main() falls back to a live
@@ -159,7 +163,6 @@ def merge_confirmed(command: str, output: str) -> bool:
 def resolve_merge(
     command: str,
     output: str,
-    exit_code: int,
     cwd: str,
     confirm_fn=confirm_merge_via_gh,
 ) -> dict:
@@ -170,7 +173,7 @@ def resolve_merge(
                                   shape at all (worth tracing even when unconfirmed)
       "confirmed": bool       -- True iff main() should proceed to emit a snapshot
       "reason": str           -- one of "marker", "rest_marker", "not_merge_shape",
-                                  "help_only", "no_confirm_needed", "gh_view_confirmed",
+                                  "help_only", "gh_view_confirmed",
                                   "gh_view_unconfirmed"
 
     "marker" vs "rest_marker" is a best-effort re-classification for the trace, not a
@@ -183,8 +186,8 @@ def resolve_merge(
     confirmed", not "which internal branch fired", in that edge case.
 
     Mirrors main()'s pre-existing branch order exactly (marker check, then
-    `gh pr merge`-shape check, then `--help`-only guard, then the
-    `should_confirm_via_gh` cost gate, then the live `gh pr view` fallback) so
+    `gh pr merge`-shape check, then `--help`-only guard, then the live
+    `gh pr view` fallback) so
     this is a pure refactor of that control flow, not a behavior change -- see
     test_resolve_merge_* below and test_merge_confirmed_* above (unchanged) for
     the shared fixtures. `confirm_fn` is dependency-injected so the live-network
@@ -216,9 +219,6 @@ def resolve_merge(
     # branch and can misattribute an unrelated already-merged PR (dev-env#557).
     if is_merge_help_only(command):
         return {"is_merge_shaped": True, "confirmed": False, "reason": "help_only"}
-
-    if not should_confirm_via_gh(exit_code, output):
-        return {"is_merge_shaped": True, "confirmed": False, "reason": "no_confirm_needed"}
 
     # No PR number to extract here: merge_confirmed() already ruled out "not a
     # merge command" above, so its False result means the marker itself is
@@ -602,7 +602,6 @@ def main() -> None:
     command = read_command(data)
     output = read_command_output(data)
     cwd = read_cwd(data)
-    exit_code = read_exit_code(data, default=-1)
 
     # dev-env#1028 post-review finding (independently confirmed, by execution,
     # by both review passes): read_command()'s crash-prevention alone still
@@ -622,7 +621,6 @@ def main() -> None:
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "cwd": cwd,
-                "exit_code": exit_code,
                 "is_merge_shaped": True,
                 "confirmed": confirmed,
                 "reason": "malformed_payload",
@@ -636,7 +634,7 @@ def main() -> None:
         # entirely: `command` no longer carries usable information for it.
     else:
         try:
-            resolution = resolve_merge(command, output, exit_code, cwd)
+            resolution = resolve_merge(command, output, cwd)
         except Exception as exc:
             # Defense-in-depth (dev-env#1028): a genuine gh-pr-merge-shaped
             # command must never vanish from the trace just because something
@@ -654,7 +652,6 @@ def main() -> None:
                     {
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "cwd": cwd,
-                        "exit_code": exit_code,
                         "is_merge_shaped": True,
                         "confirmed": False,
                         "reason": "classify_error",
@@ -668,7 +665,6 @@ def main() -> None:
                 {
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "cwd": cwd,
-                    "exit_code": exit_code,
                     **resolution,
                 }
             )

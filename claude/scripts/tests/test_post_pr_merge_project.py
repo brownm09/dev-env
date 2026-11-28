@@ -17,11 +17,10 @@ dev-env#489: gh's success marker does not always survive to this hook's captured
 output when gh exits abruptly right after a worktree's local-cleanup git
 subprocess fails ("main is already checked out") — even though gh prints the
 marker before that failure. `main()` now falls back to a live `gh pr view`
-confirmation (`_hookio.confirm_merge_via_gh`, gated by `_hookio.
-should_confirm_via_gh`) when the marker is absent and the exit code is
-non-zero, since a missed move-to-Done has no other backstop. `should_confirm_via_gh`
-is covered in `test_hookio.py`; `confirm_merge_via_gh` itself is not (it shells
-out to `gh pr view`).
+confirmation (`_hookio.confirm_merge_via_gh`) when the marker is absent,
+since a missed move-to-Done has no other backstop. An exit-code condition on
+that fallback was removed in dev-env#1251: the payload never carries one.
+`confirm_merge_via_gh` itself is not tested (it shells out to `gh pr view`).
 
 dev-env#557: `main()` gates that live-confirmation fallback behind a new
 `_hookio.is_merge_help_only(command)` check (`if is_merge_help_only(command):

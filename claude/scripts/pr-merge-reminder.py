@@ -50,10 +50,8 @@ from _hookio import (
     read_command,
     read_command_output,
     read_cwd,
-    read_exit_code,
     scan_top_level,
     SHELL_TOOLS,
-    should_confirm_via_gh,
 )
 import _hookutil
 from _repo_target import create_args, merge_args, repo_from_flag
@@ -264,6 +262,11 @@ def _is_successful_merge_call(output: str) -> bool:
     neither of which the caller's `is_pr_merge_command` command-shape check
     filters out. Mirrors merge_succeeded() in post-pr-merge-project.py and
     merge_confirmed() in usage-snapshot.py (dev-env#485).
+
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
     """
     return output_has_merge_marker(output)
 
@@ -271,7 +274,6 @@ def _is_successful_merge_call(output: str) -> bool:
 def _build_messages(
     command: str,
     cwd: str,
-    exit_code: int,
     output: str,
     is_create: bool,
     is_merge: bool,
@@ -293,24 +295,18 @@ def _build_messages(
     while a clean exit 0 does NOT mean a merge happened (--help, a queued
     --auto).
 
-    gh pr create and git push are first gated on `exit_code == 0 or merge_ok` — NOT
-    on `is_merge` alone (a static text match, true even when `&&` short-
-    circuited before merge ever ran: `gh pr create --fill && gh pr merge
-    --auto` with create itself failing has is_merge True and merge_ok False,
-    so this gate correctly stays False, matching the pre-#494-fix behavior of
-    suppressing everything). A *confirmed* merge (merge_ok True) is
-    independent proof create already succeeded — merge cannot complete
-    against a PR that was never opened — so it counts as evidence for create
-    even when the chain's aggregate exit code is non-zero (the #275 worktree
-    case, chained with a preceding create).
+    No exit code is available here in any case: the payload never carries one,
+    and a call that exits non-zero runs no PostToolUse hook (dev-env#1251,
+    ADR-053). So a worktree merge whose local cleanup fails reaches this hook
+    only when a pipe such as ``| tail`` masks that exit code.
 
     *live_confirmed* — dev-env#504: gh's marker does not always survive to
-    this hook's captured output when gh exits abruptly right after a
-    worktree's local-cleanup failure (dev-env#489). `main()` resolves the
+    this hook's captured output (dev-env#489); it reached 0 of 519 recorded
+    merge results in dev-env#1251's replay. `main()` resolves the
     live `gh pr view` fallback (a subprocess call) itself, BEFORE calling this
     function, and passes the result here — this function never shells out.
     `None` (the default) means main() never attempted the live check (marker
-    already found, or exit_code/output didn't warrant it) and `merge_ok` keeps
+    already found, a help-only call, or not a `gh pr merge`) and `merge_ok` keeps
     its marker-only value, so every existing caller/test that omits this
     parameter is unaffected. `True`/`False` means main() did attempt it and
     authoritatively overrides `merge_ok`.
@@ -329,9 +325,8 @@ def _build_messages(
     REST path).
 
     The create reminder also needs the URL gh prints on success. The real Bash
-    payload has no exitCode key (ADR-049), so `exit_code` reads as 0 for a failed
-    create in a chain, and only the output can show the create failed
-    (dev-env#1243). A confirmed merge doesn't stand in for that URL: `gh pr create;
+    payload has no exitCode key (ADR-049, dev-env#1251), so only the output can
+    show that a create in a chain failed (dev-env#1243). A confirmed merge doesn't stand in for that URL: `gh pr create;
     gh pr merge 5` can merge a different PR. Empty output shows nothing either way,
     as with `run_in_background`, so it keeps the generic reminder. A failed create
     no longer suppresses the push reminder either: `git push; gh pr create` on a
@@ -342,8 +337,7 @@ def _build_messages(
         merge_ok = is_rest_merge_command(command) and output_has_rest_merge_marker(output)
     if live_confirmed is not None:
         merge_ok = live_confirmed
-    create_push_ok = exit_code == 0 or merge_ok
-    create_ok = is_create and create_push_ok and (
+    create_ok = is_create and (
         not output.strip() or bool(created_item_url(output, "pull"))
     )
     messages = []
@@ -385,7 +379,7 @@ def _build_messages(
             " && git push"
         )
 
-    if is_push and not (create_ok or is_merge or is_rest_merge_command(command)) and create_push_ok:
+    if is_push and not (create_ok or is_merge or is_rest_merge_command(command)):
         # Scope the open-PR lookup to the repo the push actually targets: a
         # `cd <other-repo> && git push` must not fire the session cwd's reminder
         # (issue #442 / ADR-065).  Engineering-journal pushes route into the
@@ -435,17 +429,10 @@ def main() -> None:
     if data is None:
         sys.exit(0)
 
-    # dev-env#1031/#1033: read_command()/read_exit_code() never raise on a
-    # present-but-non-dict tool_input/tool_response (dev-env#1028's payload
-    # shape) -- the pre-fix unguarded chains crashed here, silently caught by
-    # the __main__ safe-exit guard below (which loses only this reminder, an
-    # advisory side effect -- see ADR-050 Amendment 27 for why
-    # pre-merge-findings-gate.py, a blocking merge gate, was fixed first and
-    # separately on fail-open severity grounds). default=0 here (not the -1
-    # most sibling hooks use) matches this file's own pre-fix literal --
-    # verified per-file, not copy-pasted, since a wrong default would
-    # reintroduce the dev-env#557 misattribution bug (see read_exit_code's
-    # own docstring).
+    # dev-env#1031/#1033: read_command() never raises on a present-but-non-dict
+    # tool_input (dev-env#1028's payload shape) -- the pre-fix unguarded chains
+    # crashed here, silently caught by the __main__ safe-exit guard below (see
+    # ADR-050 Amendment 27).
     #
     # cwd keeps its own `read_cwd(data) or "<unknown>"` form rather than the
     # bare `read_cwd(data)` every other sibling hook uses: this file's pre-fix
@@ -453,24 +440,8 @@ def main() -> None:
     # displayed verbatim in this hook's own reminder text (`f"  cwd: {cwd}\n"`
     # below) -- falling back to "" instead would silently change what a user
     # reading the reminder sees for a missing/malformed cwd.
-    #
-    # Documented, accepted trade-off (ADR-050 Amendment 28 post-review finding
-    # 6): read_exit_code() ALSO coerces a present-but-non-int-coercible
-    # exitCode (e.g. null) to `default`, not just a genuinely MISSING one --
-    # the pre-fix `.get("exitCode", default)` only substituted the default on
-    # a missing key, so a present `exitCode: null` returned the raw `None`
-    # unchanged. Because `default=0` here, a malformed-but-present exitCode
-    # now reads as "confirmed success" (0), so the dev-env#489/#504
-    # live-gh-confirmation fallback (should_confirm_via_gh, below) no longer
-    # fires for that narrow case. Accepted rather than special-cased: no
-    # observed incident for this specific sub-field malformation (narrower
-    # than dev-env#1028's own confirmed top-level shape), and the four
-    # `-1`-default sibling files are unaffected. See
-    # test_exit_code_coercion_pins_accepted_tradeoff in
-    # test_pr_merge_reminder.py for the pinned, executable proof.
     command = read_command(data)
     cwd = read_cwd(data) or "<unknown>"
-    exit_code = read_exit_code(data, default=0)
 
     is_create = is_pr_create_command(command)
     is_merge = is_pr_merge_command(command)
@@ -485,11 +456,16 @@ def main() -> None:
 
     output = read_command_output(data)
 
-    # dev-env#504: when the marker-based check fails but the command was a
-    # genuine gh pr merge with a non-zero exit code, fall back to a live
-    # `gh pr view` confirmation (dev-env#489) before conceding no merge
-    # happened. Resolved here, not inside _build_messages, so that function's
-    # existing direct-call test suite can never trigger a live subprocess.
+    # dev-env#504: when the marker-based check fails for a genuine gh pr
+    # merge, fall back to a live `gh pr view` confirmation (dev-env#489)
+    # before conceding no merge happened. Resolved here, not inside
+    # _build_messages, so that function's existing direct-call test suite
+    # can never trigger a live subprocess.
+    #
+    # gh's marker reached 0 of 519 recorded merge results (dev-env#1251),
+    # so this is how a gh pr merge is confirmed in practice. Until
+    # dev-env#1251 this also required a non-zero exit code, which the
+    # payload never carries, so the fallback never ran.
     #
     # `gh pr merge --help` (or any other non-mutating gh pr merge invocation
     # that prints no marker) can categorically never attempt a real merge —
@@ -501,7 +477,6 @@ def main() -> None:
     if (
         is_merge
         and not _is_successful_merge_call(output)
-        and should_confirm_via_gh(exit_code, output)
         and not is_merge_help_only(command)
     ):
         live_confirmed = (
@@ -509,7 +484,7 @@ def main() -> None:
         )
 
     messages = _build_messages(
-        command, cwd, exit_code, output, is_create, is_merge, is_push,
+        command, cwd, output, is_create, is_merge, is_push,
         live_confirmed=live_confirmed,
     )
 

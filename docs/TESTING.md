@@ -132,10 +132,11 @@ For a one-line navigational map of the older tests, see
    success marker, so this hook previously silently dropped the snapshot on every REST-only merge).
    Also pins `resolve_merge()` — the pure decision function that replaced the inline branching in
    `main()` and makes each branch's outcome (`"marker"`, `"rest_marker"`, `"not_merge_shape"`,
-   `"help_only"`, `"no_confirm_needed"`, `"gh_view_confirmed"`, `"gh_view_unconfirmed"`) an explicit,
-   traced return value — covering all seven `reason`s, including the two live-`gh pr view` outcomes via
+   `"help_only"`, `"gh_view_confirmed"`, `"gh_view_unconfirmed"`) an explicit,
+   traced return value — covering all six `reason`s, including the two live-`gh pr view` outcomes via
    an injected `confirm_fn` so the network
-   call is never exercised, and that `no_confirm_needed` never pays that call at all. Added because two
+   call is never exercised. A seventh, `no_confirm_needed`, was removed in dev-env#1251: it needed an exit
+   code the payload never carries, so a queued `--auto` now pays the live call. Added because two
    live reproductions after the original dev-env#474 fix landed (PR #954 on 2026-08-07, PR #988 on
    2026-08-16) both saw no snapshot appear with no way to tell which fallback branch actually ran; every
    merge-shaped invocation is now appended as one line to a best-effort JSONL trace
@@ -352,10 +353,9 @@ For a one-line navigational map of the older tests, see
     `read_command_output()` and merge-marker helpers (`output_has_merge_marker` / `merge_pr_number_from_output`) offline (no network, no gh): pins that the real `stdout`/`stderr`-shaped
     Bash payload yields the command output (the pre-#380 `output` read was always `""`), that stdout and
     stderr are joined, that the legacy `output` field is still honored as a fallback, and that a missing /
-    empty / `None` / non-dict `tool_response` yields `""` without raising. Also exercises the pure
-    `should_confirm_via_gh(exit_code, output)` predicate: only a non-zero exit code with no marker present
-    is worth a live `gh pr view` confirmation (dev-env#489, [ADR-050 amendment 3](adr/050-shared-hookio-sibling-hook-fixes.md));
-    a clean exit or a marker already found never pays the network call. Also exercises `effective_merge_dir()`
+    empty / `None` / non-dict `tool_response` yields `""` without raising. (The
+    `should_confirm_via_gh(exit_code, output)` predicate it used to cover was removed in dev-env#1251, since
+    the payload never carries an exit code.) Also exercises `effective_merge_dir()`
     (cd-chain / cwd resolution, [ADR-067](adr/067-scope-merge-keyed-hooks-to-target-repo.md)) and
     `scan_top_level()` — the stack-based top-level-statement parser shared with `pr-merge-reminder.py` and
     `post-tool-use.py` ([ADR-050 Amendment 5](adr/050-shared-hookio-sibling-hook-fixes.md)): anchored-match
@@ -3946,8 +3946,8 @@ For a one-line navigational map of the older tests, see
     `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`, `post-tool-use.py`,
     `pr-merge-reminder.py`, `pre-auto-merge-checkpoint-gate.py`, `pre-commit-branch-check.py`,
     `pre-merge-branch-check.py`, `pre-merge-message-check.py`, `pre-merge-numbering-check.py`,
-    `pre-pr-create-check.py`), `_hookio.py`'s `read_command`/`read_tool_input_field`/`read_cwd`/
-    `read_exit_code`, or `test_sibling_hooks_hardened_io.py` itself. (`pre-tool-use-worktree-path-check.py`'s
+    `pre-pr-create-check.py`), `_hookio.py`'s `read_command`/`read_tool_input_field`/`read_cwd`,
+    or `test_sibling_hooks_hardened_io.py` itself. (`pre-tool-use-worktree-path-check.py`'s
     own dev-env#1031 coverage lives in item 32's `test_worktree_path_check.py` instead, since that
     file already carried a loaded-module reference this file would otherwise duplicate;
     `pre-merge-findings-gate.py`'s coverage is item 38's `test_pre_merge_findings_gate.py` +
@@ -4037,22 +4037,18 @@ For a one-line navigational map of the older tests, see
       (`test_pre_auto_merge_checkpoint_gate_exits_open_on_non_dict_data`) specifically because a
       PRIOR revision asserted the opposite (exit 2) for this exact payload, making the reversal
       worth a dedicated regression pin rather than folding silently into the 11-file loop.
-    - Of the six migrated files reading `exit_code`, only `post-tool-use.py` and
-      `pr-merge-reminder.py` read it *unconditionally* (before any business-logic branch) — safe to
-      drive with a genuinely malformed `tool_response` alongside a non-matching command (`"git
-      status"`). The other four (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`,
-      `post-pr-merge-pull.py`, `post-pr-merge-reclaim.py`) read `exit_code` only inside the
-      "marker didn't confirm the merge" fallback branch — reaching that line via a malformed
-      `tool_response` (which also empties `output`, so no marker survives) makes
-      `should_confirm_via_gh()` return `True`, which would attempt a *real* `gh pr view`
+    - `post-tool-use.py` and `pr-merge-reminder.py` are driven with a genuinely malformed
+      `tool_response` alongside a non-matching command (`"git status"`). The four merge hooks
+      (`post-merge-tile-checkpoint.py`, `post-pr-merge-project.py`, `post-pr-merge-pull.py`,
+      `post-pr-merge-reclaim.py`) are not: a `gh pr merge` with a malformed `tool_response` (which
+      also empties `output`, so no marker survives) would attempt a *real* `gh pr view`
       subprocess call. Forcing that call (or monkeypatching `confirm_merge_via_gh`, which none of
       these four files' own test suites do — ADR-050 Amendment 3/8's no-subprocess-mocks
       convention) is exactly the environment-dependent-assertion trap dev-env#1028's own
       post-review CI failure warned against. These four files' `tool_input:null` coverage already
-      proves the primary, most-severe crash class doesn't crash their `main()` dispatch; their
-      `exit_code` line's correctness rests on `read_exit_code`'s own exhaustive coverage plus the
-      per-file default-value verification recorded in each file's own inline migration comment and
-      ADR-050 Amendment 28.
+      proves the primary, most-severe crash class doesn't crash their `main()` dispatch. (All six
+      used to read an exit code too; dev-env#1251 removed those reads, since the payload never
+      carries one.)
 
     ```bash
     py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py

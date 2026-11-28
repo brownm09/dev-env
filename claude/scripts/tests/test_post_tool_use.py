@@ -742,12 +742,10 @@ def test_extract_repo_flag_quoted_url_decoy_not_hijacked() -> str:
 
 
 # ---------------------------------------------------------------------------
-# main() end-to-end: the exit_code != 0 gate (lines immediately following the
-# detection swap) must still short-circuit correctly. Both cases share cwd,
-# command, and output -- differing only in exitCode -- so the outcome
-# difference (exit 0 vs exit 2) isolates exactly the gate under test, without
-# ever invoking a live `gh`/network call in either branch (the "no GitHub URL
-# found" advisory path is reached, not add_to_project).
+# main() end-to-end: a detected create with no URL in its output reaches the
+# "no GitHub URL found" advisory, without ever invoking a live `gh`/network
+# call (add_to_project is never reached). There is no exit-code gate before it:
+# the payload never carries exitCode (dev-env#1251).
 # ---------------------------------------------------------------------------
 
 def _run_hook(payload: dict) -> subprocess.CompletedProcess:
@@ -768,35 +766,14 @@ def _hook_config_cwd(tmp_root: str) -> str:
     return tmp_root
 
 
-def test_main_exit_code_nonzero_short_circuits_even_when_create_detected() -> str:
+def test_main_create_without_url_reaches_no_url_advisory() -> str:
+    # The payload has no exitCode key, as in every recorded result (dev-env#1251).
     with tempfile.TemporaryDirectory() as tmp_root:
         cwd = _hook_config_cwd(tmp_root)
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --fill"},
-            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 1},
-            "cwd": cwd,
-        }
-        result = _run_hook(payload)
-        assert result.returncode == 0, (
-            f"expected exit 0 (exit_code gate short-circuits), got {result.returncode}: "
-            f"stderr={result.stderr!r}"
-        )
-        assert result.stderr == "", f"expected no stderr output, got {result.stderr!r}"
-    return "genuine top-level create + exitCode!=0 -> exit 0, silent (gate unaffected by the fix)"
-
-
-def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
-    # Control for the test above: same command/config/output, only exitCode
-    # differs. This proves detection really fired True (the run reaches the
-    # downstream "no GitHub URL found" branch, exit 2) rather than the exit-0
-    # result above being coincidental (e.g. config missing regardless).
-    with tempfile.TemporaryDirectory() as tmp_root:
-        cwd = _hook_config_cwd(tmp_root)
-        payload = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "gh pr create --fill"},
-            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 0},
+            "tool_response": {"stdout": "done", "stderr": ""},
             "cwd": cwd,
         }
         result = _run_hook(payload)
@@ -805,7 +782,7 @@ def test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory() -> str:
             f"stderr={result.stderr!r}"
         )
         assert "no GitHub URL found" in result.stderr, f"got {result.stderr!r}"
-    return "genuine top-level create + exitCode==0, no URL in output -> exit 2 advisory (detection fired)"
+    return "genuine top-level create, no URL in output -> exit 2 advisory (detection fired)"
 
 
 # ---------------------------------------------------------------------------
@@ -865,7 +842,7 @@ def _no_config_create_payload(cwd: str, stdout: str) -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": "gh issue create --title t --body-file b.md"},
-        "tool_response": {"stdout": stdout, "stderr": "", "exitCode": 0},
+        "tool_response": {"stdout": stdout, "stderr": ""},
         "cwd": cwd,
     }
 
@@ -933,7 +910,7 @@ def test_main_help_only_issue_create_is_silent() -> str:
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh issue create --help"},
-            "tool_response": {"stdout": "USAGE\n  gh issue create [flags]\n...", "stderr": "", "exitCode": 0},
+            "tool_response": {"stdout": "USAGE\n  gh issue create [flags]\n...", "stderr": ""},
             "cwd": cwd,
         }
         result = _run_hook(payload)
@@ -951,7 +928,7 @@ def test_main_help_only_pr_create_is_silent() -> str:
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr create --help"},
-            "tool_response": {"stdout": "USAGE\n  gh pr create [flags]\n...", "stderr": "", "exitCode": 0},
+            "tool_response": {"stdout": "USAGE\n  gh pr create [flags]\n...", "stderr": ""},
             "cwd": cwd,
         }
         result = _run_hook(payload)
@@ -969,7 +946,7 @@ def test_main_chained_help_only_issue_create_and_real_pr_create_still_processes(
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": 'gh issue create --help && gh pr create --fill'},
-            "tool_response": {"stdout": "done", "stderr": "", "exitCode": 0},
+            "tool_response": {"stdout": "done", "stderr": ""},
             "cwd": cwd,
         }
         result = _run_hook(payload)
@@ -1151,38 +1128,10 @@ def test_format_reminder_field_not_in_live_options_uses_cached_unlabeled() -> st
     return "field_id absent from live_options -> cached data, unlabeled (not mistaken for a failure)"
 
 
-def test_exit_code_coercion_pins_accepted_tradeoff() -> str:
-    """ADR-050 Amendment 28 post-review finding 6, pinned as an executable
-    proof rather than left as prose alone: this file's own
-    `exit_code = read_exit_code(data, default=0)` call coerces a
-    present-but-non-int-coercible exitCode (e.g. `exitCode: null`) to `0` --
-    indistinguishable, downstream, from a GENUINELY successful exitCode.
-    Pre-fix, `data.get("tool_response", {}).get("exitCode", 0)` returned the
-    raw `None` unchanged for this exact shape (the `.get(..., 0)` default
-    only substitutes on a MISSING key, not a present-but-malformed value) --
-    a real, documented, accepted behavior change specific to this file and
-    pr-merge-reminder.py (the two `default=0` sibling hooks), not shared by
-    the four `default=-1` siblings (where `None` and `-1` both equally
-    satisfy a `!= 0` check, so the boolean OUTCOME is unchanged there).
-    """
-    read_exit_code = post_tool_use.read_exit_code
-    malformed = {"tool_response": {"exitCode": None, "stdout": "", "stderr": ""}}
-    genuinely_successful = {"tool_response": {"exitCode": 0, "stdout": "", "stderr": ""}}
-    assert read_exit_code(malformed, default=0) == 0, "malformed exitCode must coerce to the default"
-    assert read_exit_code(genuinely_successful, default=0) == 0, "a real exitCode:0 payload, for comparison"
-    # The point of this pin: the two payloads above are DELIBERATELY
-    # indistinguishable through this file's own read -- this file's
-    # `if exit_code != 0: sys.exit(0)` gate (main()) cannot tell them apart,
-    # and per ADR-050 Amendment 28 that is an accepted, documented trade-off,
-    # not an oversight.
-    assert read_exit_code(malformed, default=0) == read_exit_code(genuinely_successful, default=0)
-    return "exitCode:null coerces to 0 (default=0), indistinguishable from a genuine exitCode:0 -- accepted trade-off, pinned (ADR-050 Amendment 28)"
-
-
 # ---------------------------------------------------------------------------
 # dev-env#1243: a failed `gh pr create` inside a chained command. The stdout and
 # the response keys are from the real incident (PR #1235's session). The payload
-# has no exitCode key at all, so the exit_code gate above cannot see the failure,
+# has no exitCode key at all (dev-env#1251), so only the output shows the failure,
 # and the only URLs in the output belong to the chain's other commands.
 # ---------------------------------------------------------------------------
 
@@ -1389,8 +1338,7 @@ def main() -> int:
         ("extract_repo_flag: --repo on backslash-continued issue-create line resolves (#838)", test_extract_repo_flag_issue_create_continuation_line),
         ("extract_repo_flag: quoted --body decoy --repo not hijacked (#838)", test_extract_repo_flag_quoted_body_decoy_not_hijacked),
         ("extract_repo_flag: quoted --title decoy URL not hijacked (#838)", test_extract_repo_flag_quoted_url_decoy_not_hijacked),
-        ("main(): exitCode!=0 short-circuits even when create detected", test_main_exit_code_nonzero_short_circuits_even_when_create_detected),
-        ("main(): exitCode==0 proceeds to no-URL advisory", test_main_exit_code_zero_proceeds_past_gate_to_no_url_advisory),
+        ("main(): create with no URL reaches the no-URL advisory", test_main_create_without_url_reaches_no_url_advisory),
         ("expected opt-in: tracked repo matched (dev-env#669)", test_expected_opt_in_config_matches_tracked_repo),
         ("expected opt-in: other repo -> None (dev-env#669)", test_expected_opt_in_config_other_repo_is_none),
         ("expected opt-in: unusable source -> None (dev-env#669)", test_expected_opt_in_config_unusable_source_is_none),
@@ -1417,7 +1365,6 @@ def main() -> int:
         ("format_reminder: failed live fetch falls back to cached, labeled", test_format_reminder_falls_back_to_cached_on_live_failure),
         ("format_reminder: required_fields param used directly over config", test_format_reminder_required_fields_param_used_directly_over_config),
         ("format_reminder: field absent from live_options -> cached, unlabeled", test_format_reminder_field_not_in_live_options_uses_cached_unlabeled),
-        ("exit_code coercion pins the accepted default=0 trade-off (ADR-050 Amendment 28)", test_exit_code_coercion_pins_accepted_tradeoff),
         ("main(): failed create in a chain adds nothing (dev-env#1243)", test_main_failed_create_in_chain_adds_nothing),
         ("main(): failed create, no config -> no created-item warning (dev-env#1243)", test_main_failed_create_no_config_does_not_warn_of_created_item),
         ("main(): successful create in a chain adds the created PR (dev-env#1243)", test_main_successful_create_in_chain_adds_the_created_pr),
