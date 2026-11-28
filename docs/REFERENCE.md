@@ -816,6 +816,23 @@ post-merge step, not implied by the code landing on `main`.
 
 ---
 
+### pc-health-daily-check and pc-health-weekly-analysis
+
+**Schedule:** `30 5 * * *` (daily check, 05:30 local) and `0 6 * * 6` (weekly analysis, Saturday
+06:00 local).
+
+Health checks for the PC they run on (ANGSTROM-B as of 2026-11-27). Both run `pc_health_data.ps1`
+from the win11-init-tools checkout that the "win11-init-tools performance recorder" scheduled task
+names, restart that recorder if it is down or hung, and judge the events and recorder data against
+`Documents\LOGS\PcHealth\machine-notes.md`. The daily check appends a line to `daily.log` and, on
+issues, a section to `alerts.md`; the weekly analysis writes `Weekly_YYYY-MM-DD.md`. Each sends one
+push notification only when something needs attention, and saves it through `routine-findings.py`
+when the push isn't delivered (dev-env#1308). They read no repo-resident files, so neither runs
+`sync-routine-worktree`. The live prompts are these files' bodies, copied by hand with
+`update_scheduled_task`. **Origin:** dev-env#1343, which brought them under version control.
+
+---
+
 ## Utilities
 
 On-demand scripts — not wired to any event. Run manually or from other scripts. See
