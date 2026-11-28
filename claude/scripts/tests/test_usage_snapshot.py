@@ -94,8 +94,8 @@ case below pins that directly, the same way as the existing
 up: `main()`'s own `command`/`exit_code` extraction crashed (silently, caught
 only by the outermost safe-exit guard) on a present-but-non-dict
 `tool_input`/`tool_response`, before `resolve_merge()` was ever called — see
-`test_hookio.py`'s new `read_command`/`read_exit_code` coverage for the fix
-itself. The tests below add what no test in this file had before: genuine
+`test_hookio.py`'s `read_command` coverage for the fix itself (the exit-code
+read was removed in dev-env#1251). The tests below add what no test in this file had before: genuine
 end-to-end coverage of `main()`'s own dispatch (stdin -> JSON parse ->
 extraction -> `resolve_merge()` -> trace write), for the three scenarios that
 don't require a live `gh pr view` call (matching this file's own
@@ -532,7 +532,7 @@ def test_resolve_merge_marker_reason() -> str:
         "junction topology in docs)\n"
         "error: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
     )
-    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo")
+    result = resolve_merge(command, output, cwd="C:/repo")
     assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "marker"}, result
     return "worktree-merge marker present -> confirmed, reason='marker'"
 
@@ -540,13 +540,13 @@ def test_resolve_merge_marker_reason() -> str:
 def test_resolve_merge_rest_marker_reason() -> str:
     command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
     output = '{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}'
-    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo")
+    result = resolve_merge(command, output, cwd="C:/repo")
     assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "rest_marker"}, result
     return "REST merge marker present -> confirmed, reason='rest_marker' (dev-env#986)"
 
 
 def test_resolve_merge_not_merge_shape_for_unrelated_command() -> str:
-    result = resolve_merge("git push origin main", "some output", exit_code=0, cwd="C:/repo")
+    result = resolve_merge("git push origin main", "some output", cwd="C:/repo")
     assert result == {"is_merge_shaped": False, "confirmed": False, "reason": "not_merge_shape"}, result
     return "unrelated command -> not merge-shaped, not confirmed, not traced by main()"
 
@@ -557,7 +557,7 @@ def test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call() -> s
     # `gh pr merge` shape), but IS still worth tracing as an informative outcome.
     command = "gh api -X PUT repos/brownm09/dev-env/pulls/42/merge -f merge_method=squash"
     output = '{"message":"Merge already in progress"}'
-    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo")
+    result = resolve_merge(command, output, cwd="C:/repo")
     assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "not_merge_shape"}, result
     return "REST call without merged:true -> unconfirmed but still traced (is_merge_shaped=True)"
 
@@ -565,27 +565,31 @@ def test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call() -> s
 def test_resolve_merge_help_only_reason() -> str:
     command = "gh pr merge --help"
     output = "FLAGS\n      --admin   Use administrator privileges to merge a pull request"
-    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo")
+    result = resolve_merge(command, output, cwd="C:/repo")
     assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "help_only"}, result
     return "gh pr merge --help -> not confirmed, reason='help_only' (dev-env#557)"
 
 
-def test_resolve_merge_no_confirm_needed_reason() -> str:
-    # A queued --auto exits 0 with no marker -- should_confirm_via_gh is False
-    # (exit_code == 0), so no live gh pr view call is paid.
+def test_resolve_merge_queued_auto_pays_live_check_and_stays_unconfirmed() -> str:
+    # A queued --auto prints no merge marker. The payload carries no exit code
+    # to tell it from a lost marker (dev-env#1251), so the live gh pr view runs
+    # and finds the PR still open.
     command = "gh pr merge --auto --squash --delete-branch"
     output = "Pull request #466 will be automatically merged when checks pass"
+    calls = []
 
-    def confirm_fn(*a, **k):
-        raise AssertionError("must not pay a live gh pr view call on exit 0")
+    def confirm_fn(pr_number, repo, cwd):
+        calls.append((pr_number, repo, cwd))
+        return None
 
-    result = resolve_merge(command, output, exit_code=0, cwd="C:/repo", confirm_fn=confirm_fn)
-    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "no_confirm_needed"}, result
-    return "queued --auto, exit 0 -> not confirmed, reason='no_confirm_needed', no network call paid"
+    result = resolve_merge(command, output, cwd="C:/repo", confirm_fn=confirm_fn)
+    assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "gh_view_unconfirmed"}, result
+    assert calls == [(None, "", "C:/repo")], calls
+    return "queued --auto -> live check paid, PR still open -> reason='gh_view_unconfirmed' (dev-env#1251)"
 
 
 def test_resolve_merge_gh_view_confirmed_reason() -> str:
-    # The dev-env#489/#496 shape: marker lost, non-zero exit -> live gh pr view
+    # The dev-env#489/#496 shape: marker lost -> live gh pr view
     # fallback is paid and confirms the merge.
     command = "gh pr merge --squash --delete-branch"
     output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
@@ -595,7 +599,7 @@ def test_resolve_merge_gh_view_confirmed_reason() -> str:
         calls.append((pr_number, repo, cwd))
         return 954
 
-    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo", confirm_fn=confirm_fn)
+    result = resolve_merge(command, output, cwd="C:/repo", confirm_fn=confirm_fn)
     assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "gh_view_confirmed"}, result
     assert calls == [(None, "", "C:/repo")], calls
     return "marker lost + live gh pr view confirms -> confirmed, reason='gh_view_confirmed' (dev-env#489/#496)"
@@ -607,7 +611,7 @@ def test_resolve_merge_gh_view_unconfirmed_reason() -> str:
     # trace from every other unconfirmed reason.
     command = "gh pr merge --squash --delete-branch"
     output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/dev-env'"
-    result = resolve_merge(command, output, exit_code=1, cwd="C:/repo", confirm_fn=lambda *a, **k: None)
+    result = resolve_merge(command, output, cwd="C:/repo", confirm_fn=lambda *a, **k: None)
     assert result == {"is_merge_shaped": True, "confirmed": False, "reason": "gh_view_unconfirmed"}, result
     return "marker lost + live gh pr view finds nothing -> not confirmed, reason='gh_view_unconfirmed'"
 
@@ -621,7 +625,7 @@ def test_resolve_merge_worktree_holding_branch_url_argument_issue_1028() -> str:
     # literal hypothesis in the issue's own title -- that this exact text
     # causes an early return inside resolve_merge() -- does not hold: this
     # pins that it correctly reaches the same gh_view_* fallback every other
-    # exit-1 "marker lost" case above reaches.
+    # "marker lost" case above reaches.
     command = 'gh pr merge "https://github.com/brownm09/career-playbook/pull/1356" --squash --delete-branch'
     output = "failed to run git: fatal: 'main' is already checked out at 'C:/Users/brown/Git/career-playbook'"
     cwd = "C:/Users/brown/Git/career-playbook/.claude/worktrees/suspicious-bun-9dfa4b"
@@ -631,7 +635,7 @@ def test_resolve_merge_worktree_holding_branch_url_argument_issue_1028() -> str:
         calls.append((pr_number, repo, resolved_cwd))
         return 1356
 
-    result = resolve_merge(command, output, exit_code=1, cwd=cwd, confirm_fn=confirm_fn)
+    result = resolve_merge(command, output, cwd=cwd, confirm_fn=confirm_fn)
     assert result == {"is_merge_shaped": True, "confirmed": True, "reason": "gh_view_confirmed"}, result
     assert calls == [(None, "", cwd)], calls
     return "dev-env#1028's exact URL-argument command + stderr -> gh_view_confirmed (the original hypothesis, not confirmed)"
@@ -1105,7 +1109,7 @@ def main() -> int:
             test_resolve_merge_not_merge_shape_still_traces_unconfirmed_rest_call,
         ),
         ("resolve_merge: --help -> help_only", test_resolve_merge_help_only_reason),
-        ("resolve_merge: queued --auto -> no_confirm_needed, no network call", test_resolve_merge_no_confirm_needed_reason),
+        ("resolve_merge: queued --auto -> live check, unconfirmed (dev-env#1251)", test_resolve_merge_queued_auto_pays_live_check_and_stays_unconfirmed),
         ("resolve_merge: live gh pr view confirms -> gh_view_confirmed", test_resolve_merge_gh_view_confirmed_reason),
         ("resolve_merge: live gh pr view finds nothing -> gh_view_unconfirmed", test_resolve_merge_gh_view_unconfirmed_reason),
         (

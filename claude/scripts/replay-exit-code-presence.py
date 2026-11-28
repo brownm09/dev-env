@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Count how many recorded shell results carry an ``exitCode`` key (dev-env#1251).
 
+Purpose: replay transcripts to measure whether PostToolUse payloads ever hold ``exitCode``.
+
 Seven hooks used to read ``_hookio.read_exit_code``, assuming a PostToolUse
 payload's ``tool_response`` may hold ``exitCode``. A session transcript records that same
 object as the ``toolUseResult`` of the user record that carries the tool_result,

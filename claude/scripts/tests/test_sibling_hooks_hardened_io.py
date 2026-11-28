@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dev-env#1031/#1033: migration coverage for the sibling hooks moved onto
-_hookio's hardened read_command/read_tool_input_field/read_cwd/read_exit_code
-helpers.
+_hookio's hardened read_command/read_tool_input_field/read_cwd helpers (and a
+read_exit_code helper, removed in dev-env#1251).
 
 Two responsibilities in one file, since they're two views of the same fix:
 
@@ -73,39 +73,25 @@ Two responsibilities in one file, since they're two views of the same fix:
    blind `hook-liveness-check.py`'s staleness detector (up to its 7-day
    cadence, ADR-106) on every test run.
 
-   read_command/read_tool_input_field/read_cwd/read_exit_code's own
-   correctness (normal/missing/None/non-dict/non-string inputs, the
-   required `default` contract) is already exhaustively covered in
-   test_hookio.py -- NOT re-tested per-caller here. Each hook's own existing
-   pure-helper test file is unaffected and still covers its own business
-   logic; this file only proves the migrated main() dispatch reaches the
-   helpers and doesn't crash.
+   read_command/read_tool_input_field/read_cwd's own correctness
+   (normal/missing/None/non-dict/non-string inputs) is already exhaustively
+   covered in test_hookio.py -- NOT re-tested per-caller here. Each hook's
+   own existing pure-helper test file is unaffected and still covers its own
+   business logic; this file only proves the migrated main() dispatch reaches
+   the helpers and doesn't crash.
 
-   Scope note on tool_response/exit_code coverage: of the six migrated
-   files that also read exit_code, only post-tool-use.py and
-   pr-merge-reminder.py read it UNCONDITIONALLY (right after command/cwd
-   extraction, before any business-logic branch) -- safe to drive with an
-   ordinary non-matching command ("git status"), since the exit_code VALUE
-   never changes the outcome for a non-matching command. The other four
+   Scope note on tool_response coverage: post-tool-use.py and
+   pr-merge-reminder.py are driven with a malformed tool_response and an
+   ordinary non-matching command ("git status"). The four merge hooks
    (post-merge-tile-checkpoint.py, post-pr-merge-project.py,
-   post-pr-merge-pull.py, post-pr-merge-reclaim.py) read exit_code only
-   INSIDE the "marker didn't confirm the merge" fallback branch, gated
-   behind should_confirm_via_gh() -- reaching that line via a genuinely
-   malformed tool_response (which also empties `output`, so no marker can
-   survive) makes should_confirm_via_gh() return True, which would then
-   attempt a REAL `gh pr view` subprocess call. Forcing that call (or
-   monkeypatching confirm_merge_via_gh, which none of these four files' own
-   test files do -- ADR-050 Amendment 3/8's "the repo avoids subprocess
-   mocks" convention) is exactly the kind of environment-dependent
-   assertion dev-env#1028's own post-review CI failure warned against (PR
-   #1030: an assertion that passed locally and failed in CI for reasons
-   unrelated to the fix). These four files' own tool_input:null coverage
-   below already proves the PRIMARY, most-severe crash class (the exact
-   dev-env#1028 incident shape) doesn't crash their main() dispatch; their
-   exit_code line's correctness rests on read_exit_code's own exhaustive
-   test_hookio.py coverage plus the per-file default-value verification
-   recorded in each file's own inline migration comment and ADR-050
-   Amendment 28 -- a deliberate scope boundary, not an oversight.
+   post-pr-merge-pull.py, post-pr-merge-reclaim.py) are not: a gh pr merge
+   whose tool_response is malformed has no marker in `output`, so it would
+   attempt a REAL `gh pr view` subprocess call -- exactly the kind of
+   environment-dependent assertion dev-env#1028's own post-review CI failure
+   warned against (PR #1030). Their tool_input:null coverage below proves the
+   primary crash class (the dev-env#1028 incident shape) doesn't crash their
+   main() dispatch. These hooks used to read an exit code as well; that read
+   was removed in dev-env#1251, since the payload never carries one.
 
 Usage:
     py -3 claude/scripts/tests/test_sibling_hooks_hardened_io.py
@@ -556,7 +542,7 @@ def test_repo_has_no_unexpected_or_stale_unguarded_chains() -> str:
                 lines.append(f"  {filename}:{lineno}: X.get({field!r}, ...) read as a dict, unguarded")
             lines.append(
                 "Fix: converge onto _hookio.read_command / read_tool_input_field / read_cwd / "
-                "read_exit_code (or a small local wrapper mirroring their contract for a computed "
+                "read_command_output (or a small local wrapper mirroring their contract for a computed "
                 "field name), or add a justified entry to _KNOWN_EXCEPTIONS in this file."
             )
         if stale:
@@ -724,16 +710,12 @@ def test_pre_auto_merge_checkpoint_gate_exits_open_on_non_dict_data() -> str:
     return "non-dict top-level JSON -> exit 0 for pre-auto-merge-checkpoint-gate.py too (corrected post-review)"
 
 
-def test_malformed_tool_response_does_not_crash_unconditional_exit_code_readers() -> str:
-    """post-tool-use.py and pr-merge-reminder.py read exit_code
-    UNCONDITIONALLY (before any business-logic branch) -- safe to drive
-    with a genuinely malformed tool_response plus an ordinary non-matching
-    command ("git status"), since the exit_code VALUE never changes the
-    outcome for a command neither file's own is_*_command gate recognizes.
-    See this file's own module docstring for why the other four
-    exit_code-reading hooks are NOT driven this way (would require either a
-    live `gh` call or subprocess-mocking neither file's own test convention
-    uses)."""
+def test_malformed_tool_response_does_not_crash_create_and_reminder_hooks() -> str:
+    """post-tool-use.py and pr-merge-reminder.py, driven with a genuinely
+    malformed tool_response plus an ordinary non-matching command ("git
+    status"). See this file's own module docstring for why the four merge
+    hooks are NOT driven this way (would require either a live `gh` call or
+    subprocess-mocking neither file's own test convention uses)."""
     failures = []
     for hook in ("post-tool-use.py", "pr-merge-reminder.py"):
         payload = {
@@ -778,7 +760,7 @@ def main() -> int:
         ("malformed tool_input+cwd does not crash any of the 12 Bash hooks (direct main() calls)", test_malformed_tool_input_and_cwd_does_not_crash_any_bash_hook),
         ("non-dict top-level data does not crash 11 of the 12 Bash hooks (direct main() calls)", test_non_dict_top_level_data_does_not_crash_most_bash_hooks),
         ("pre-auto-merge-checkpoint-gate.py now also exits open on non-dict data (corrected post-review)", test_pre_auto_merge_checkpoint_gate_exits_open_on_non_dict_data),
-        ("malformed tool_response does not crash the 2 unconditional exit_code readers", test_malformed_tool_response_does_not_crash_unconditional_exit_code_readers),
+        ("malformed tool_response does not crash post-tool-use.py or pr-merge-reminder.py", test_malformed_tool_response_does_not_crash_create_and_reminder_hooks),
     ]
 
     # dev-env#1031/#1033 /review finding: every hook's own main() calls

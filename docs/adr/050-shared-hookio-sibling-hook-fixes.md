@@ -2754,3 +2754,55 @@ GraphQL budget during the exact outage that caused this, on every create. Parsin
 code doesn't work, since a chain's code is its last command's and a pipe hides the rest. Fixing only the two
 regexes would stop the wrong URL but leave the reminder firing for a create that failed.
 
+## Amendment 32 (2026-11-28) — no hook reads an exit code (dev-env#1251)
+
+**What happened.** Amendment 31 measured `exitCode` only on the create path. Seven hooks read it through
+`_hookio.read_exit_code`: four merge hooks and `usage-snapshot.py` with `default=-1`, and `post-tool-use.py`
+and `pr-merge-reminder.py` with `default=0`.
+
+**The measurement.** `claude/scripts/replay-exit-code-presence.py` reads the `toolUseResult` that each
+transcript records for a Bash or PowerShell call. That is the object the hook gets as `tool_response`. Over
+the 60 days to 2026-11-27:
+
+| # | Command class | Results | Dict results | With `exitCode` | With gh's merge line | Error results |
+|---|---|---|---|---|---|---|
+| 1 | `gh pr merge` | 621 | 559 | 0 | 0 | 33 |
+| 2 | `git push` | 4,076 | 3,872 | 0 | 0 | 134 |
+| 3 | `gh pr create` / `gh issue create` | 970 | 919 | 0 | 0 | 17 |
+| 4 | everything else | 66,365 | 44,343 | 0 | 5 | 1,786 |
+
+Error results are strings, not dicts. They are the calls that exited non-zero, and those run
+`PostToolUseFailure`, not PostToolUse (ADR-053). So a PostToolUse hook never sees a non-zero exit, and the
+key it would read one from is never there. `~/.claude/scratch/usage-snapshot-merge-trace.log` agrees: all
+500 entries show `exit_code: -1`, and none has reason `marker`.
+
+**What each branch did with the key always absent.**
+
+- **The four merge hooks and `usage-snapshot.py`** gated the live `gh pr view` on
+  `should_confirm_via_gh(exit_code, output)`, so `exit_code != 0 and no marker`. With `-1` the exit-code half
+  was always true, and every caller had already established that the marker was absent, so the gate was
+  always true. Every marker-less merge paid the live call, which is how all 218 confirmed merges in the trace
+  were confirmed. Its `no_confirm_needed` reason could never be returned.
+- **`pr-merge-reminder.py`** used the same gate with `0`, so it was always false. The live confirmation
+  never ran, and with gh's merge line in 0 of 559 results, the journal reminder never fired for a
+  `gh pr merge`. The 35 fires recorded in the window all carry reminder text removed on 2026-07-14, so they
+  came from an older copy of the hook. Its `create_push_ok = exit_code == 0 or merge_ok` was always true.
+- **`post-tool-use.py`**'s `if exit_code != 0: sys.exit(0)` never fired. Amendment 31's `created_item_url`
+  already did the work.
+
+**The decision.** Remove the reads, not the defaults. `read_exit_code` and `should_confirm_via_gh` are
+deleted from `_hookio`. The merge hooks call `confirm_merge_via_gh` whenever the marker is missing, which is
+what they did already. `pr-merge-reminder.py` now does the same, so a merge gets its reminder. A queued
+`--auto` pays the live call there too and comes back unconfirmed, as it already did in the other hooks.
+The usage-snapshot trace drops its `exit_code` field and its `no_confirm_needed` reason.
+
+**Calibration.** The replay's own test calibrates its counter with a synthetic transcript holding one result
+with `exitCode` and several without. `pr-merge-reminder.py`'s new end-to-end tests feed `main()` a payload
+shaped like a recorded merge result, with no `exitCode` and no marker, and fail when the old gate is put back.
+Nothing here blocks a tool call.
+
+**Alternatives considered.** Changing `pr-merge-reminder.py`'s default to `-1` would revive its reminder but
+keep a branch that reads a key no payload has. Keeping `read_exit_code` for a future payload change would
+leave seven callers whose comments describe exit codes they never see. Reading an exit code from the
+transcript doesn't work, as Amendment 31 found.
+
